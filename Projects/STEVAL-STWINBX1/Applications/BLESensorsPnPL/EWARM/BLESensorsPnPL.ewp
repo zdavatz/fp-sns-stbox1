@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project>
-  <fileVersion>3</fileVersion>
+  <fileVersion>4</fileVersion>
   <configuration>
     <name>BLESensorsPnPL</name>
     <toolchain>
@@ -11,7 +11,7 @@
       <name>General</name>
       <archiveVersion>3</archiveVersion>
       <data>
-        <version>34</version>
+        <version>37</version>
         <wantNonLocal>1</wantNonLocal>
         <debug>1</debug>
         <option>
@@ -62,7 +62,7 @@
         </option>
         <option>
           <name>RTDescription</name>
-          <state>Use the full configuration of the C/C++ runtime library. Full locale interface, C locale, file descriptor support, multibytes in printf and scanf, and hex floats in strtod.</state>
+          <state>A complete configuration of the C/C++14 runtime library. Full locale interface, C locale, file descriptor support, multibytes in printf and scanf, and hex floats in strtod.</state>
         </option>
         <option>
           <name>OGProductVersion</name>
@@ -70,7 +70,7 @@
         </option>
         <option>
           <name>OGLastSavedByProductVersion</name>
-          <state>9.20.1.43525</state>
+          <state>9.60.3.7274</state>
         </option>
         <option>
           <name>OGChipSelectEditMenu</name>
@@ -98,8 +98,8 @@
         </option>
         <option>
           <name>GBECoreSlave</name>
-          <version>31</version>
-          <state>59</state>
+          <version>34</version>
+          <state>61</state>
         </option>
         <option>
           <name>OGUseCmsis</name>
@@ -115,8 +115,8 @@
         </option>
         <option>
           <name>CoreVariant</name>
-          <version>31</version>
-          <state>59</state>
+          <version>34</version>
+          <state>61</state>
         </option>
         <option>
           <name>GFPUDeviceSlave</name>
@@ -138,8 +138,8 @@
         </option>
         <option>
           <name>GFPUCoreSlave2</name>
-          <version>31</version>
-          <state>59</state>
+          <version>34</version>
+          <state>61</state>
         </option>
         <option>
           <name>OGCMSISPackSelectDevice</name>
@@ -203,13 +203,30 @@
           <name>BuildFilesPath</name>
           <state>BLESensorsPnPL</state>
         </option>
+        <option>
+          <name>PointerAuthentication</name>
+          <state>0</state>
+        </option>
+        <option>
+          <name>FPU64</name>
+          <state>1</state>
+        </option>
+        <option>
+          <name>OG_32_64DeviceCoreSlave</name>
+          <version>34</version>
+          <state>61</state>
+        </option>
+        <option>
+          <name>GOutputSo</name>
+          <state>0</state>
+        </option>
       </data>
     </settings>
     <settings>
       <name>ICCARM</name>
       <archiveVersion>2</archiveVersion>
       <data>
-        <version>37</version>
+        <version>39</version>
         <wantNonLocal>1</wantNonLocal>
         <debug>1</debug>
         <option>
@@ -259,7 +276,7 @@
         </option>
         <option>
           <name>CCDiagSuppress</name>
-          <state></state>
+          <state>Pa205</state>
         </option>
         <option>
           <name>CCDiagRemark</name>
@@ -345,11 +362,14 @@
           <state>$PROJ_DIR$/../../../../../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy</state>
           <state>$PROJ_DIR$/../../../../../Drivers/CMSIS/Device/ST/STM32U5xx/Include</state>
           <state>$PROJ_DIR$/../../../../../Drivers/CMSIS/Include</state>
-          <state>$PROJ_DIR$/../../../../../Drivers/BSP/Components/Common</state>
-          <state>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box</state>
-          <state>$PROJ_DIR$/../../../../../Middlewares/ST/PnPLCompManager/Inc</state>
           <state>$PROJ_DIR$/../../../../../Middlewares/ST/STM32_BLE_Manager/Inc</state>
           <state>$PROJ_DIR$/../../../../../Middlewares/Third_Party/parson</state>
+          <state>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box</state>
+          <state>$PROJ_DIR$/../../../../../Drivers/BSP/Components/Common</state>
+          <state>$PROJ_DIR$/../../../../../Middlewares/ST/PnPLCompManager/Inc</state>
+          <state>$PROJ_DIR$/../../../../../Middlewares/ST/BlueNRG-2/hci/hci_tl_patterns/Basic</state>
+          <state>$PROJ_DIR$/../../../../../Middlewares/ST/BlueNRG-2/utils</state>
+          <state>$PROJ_DIR$/../../../../../Middlewares/ST/BlueNRG-2/includes</state>
           <state>$PROJ_DIR$/../../../../../Drivers/BSP/Components/ism330dhcx</state>
           <state>$PROJ_DIR$/../../../../../Drivers/BSP/Components/iis2mdc</state>
           <state>$PROJ_DIR$/../../../../../Drivers/BSP/Components/iis2dlpc</state>
@@ -357,9 +377,6 @@
           <state>$PROJ_DIR$/../../../../../Drivers/BSP/Components/iis3dwb</state>
           <state>$PROJ_DIR$/../../../../../Drivers/BSP/Components/stts22h</state>
           <state>$PROJ_DIR$/../../../../../Drivers/BSP/Components/ilps22qs</state>
-          <state>$PROJ_DIR$/../../../../../Middlewares/ST/BlueNRG-2/hci/hci_tl_patterns/Basic</state>
-          <state>$PROJ_DIR$/../../../../../Middlewares/ST/BlueNRG-2/utils</state>
-          <state>$PROJ_DIR$/../../../../../Middlewares/ST/BlueNRG-2/includes</state>
           <state>$PROJ_DIR$/../../../../../Drivers/BSP/Components/ST25DV</state>
         </option>
         <option>
@@ -472,13 +489,29 @@
           <name>CCStackProtection</name>
           <state>0</state>
         </option>
+        <option>
+          <name>CCPointerAutentiction</name>
+          <state>0</state>
+        </option>
+        <option>
+          <name>CCBranchTargetIdentification</name>
+          <state>0</state>
+        </option>
+        <option>
+          <name>CCPosRadRwpi</name>
+          <state>0</state>
+        </option>
+        <option>
+          <name>CCPosSharedSlave</name>
+          <state>0</state>
+        </option>
       </data>
     </settings>
     <settings>
       <name>AARM</name>
       <archiveVersion>2</archiveVersion>
       <data>
-        <version>11</version>
+        <version>12</version>
         <wantNonLocal>1</wantNonLocal>
         <debug>1</debug>
         <option>
@@ -638,6 +671,10 @@
           <name>PreInclude</name>
           <state></state>
         </option>
+        <option>
+          <name>A_32_64Device</name>
+          <state>1</state>
+        </option>
       </data>
     </settings>
     <settings>
@@ -672,27 +709,18 @@
     </settings>
     <settings>
       <name>CUSTOM</name>
-      <archiveVersion>3</archiveVersion>
+      <archiveVersion>4</archiveVersion>
       <data>
         <extensions></extensions>
         <cmdline></cmdline>
-        <hasPrio>0</hasPrio>
         <buildSequence>inputOutputBased</buildSequence>
-      </data>
-    </settings>
-    <settings>
-      <name>BUILDACTION</name>
-      <archiveVersion>1</archiveVersion>
-      <data>
-        <prebuild></prebuild>
-        <postbuild></postbuild>
       </data>
     </settings>
     <settings>
       <name>ILINK</name>
       <archiveVersion>0</archiveVersion>
       <data>
-        <version>26</version>
+        <version>28</version>
         <wantNonLocal>1</wantNonLocal>
         <debug>1</debug>
         <option>
@@ -1052,6 +1080,18 @@
           <name>IlinkWrapperFile</name>
           <state></state>
         </option>
+        <option>
+          <name>IlinkProcessor</name>
+          <state>1</state>
+        </option>
+        <option>
+          <name>IlinkFpuProcessor</name>
+          <state>1</state>
+        </option>
+        <option>
+          <name>IlinkSharedSlave</name>
+          <state>0</state>
+        </option>
       </data>
     </settings>
     <settings>
@@ -1076,6 +1116,11 @@
       </data>
     </settings>
     <settings>
+      <name>BUILDACTION</name>
+      <archiveVersion>2</archiveVersion>
+      <data></data>
+    </settings>
+    <settings>
       <name>Coder</name>
       <archiveVersion>0</archiveVersion>
       <data></data>
@@ -1095,31 +1140,31 @@
         <name>$PROJ_DIR$\..\Src\main.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\OTA.c</name>
+        <name>$PROJ_DIR$\..\Src\ota.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\BLE_Function.c</name>
+        <name>$PROJ_DIR$\..\Src\ble_function.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\Configuration_PnPL.c</name>
+        <name>$PROJ_DIR$\..\Src\configuration_pn_p_l.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\Control_PnPL.c</name>
+        <name>$PROJ_DIR$\..\Src\control_pn_p_l.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\Deviceinformation_PnPL.c</name>
+        <name>$PROJ_DIR$\..\Src\device_information_pn_p_l.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\Environmental_PnPL.c</name>
+        <name>$PROJ_DIR$\..\Src\environmental_pn_p_l.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\Inertial_PnPL.c</name>
+        <name>$PROJ_DIR$\..\Src\inertial_pn_p_l.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\App_model.c</name>
+        <name>$PROJ_DIR$\..\Src\app_model.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\IControl.c</name>
+        <name>$PROJ_DIR$\..\Src\i_control.c</name>
       </file>
       <file>
         <name>$PROJ_DIR$\..\Src\app_blesensorspnpl.c</name>
@@ -1128,7 +1173,7 @@
         <name>$PROJ_DIR$\..\Src\hci_tl_interface.c</name>
       </file>
       <file>
-        <name>$PROJ_DIR$\..\Src\BLE_Implementation.c</name>
+        <name>$PROJ_DIR$\..\Src\ble_implementation.c</name>
       </file>
       <file>
         <name>$PROJ_DIR$\..\Src\steval_stwinbx1_bus.c</name>
@@ -1227,6 +1272,36 @@
         </file>
         <file>
           <name>$PROJ_DIR$\..\..\..\..\..\Drivers\BSP\STWIN.box\STWIN.box_sd.c</name>
+        </file>
+      </group>
+      <group>
+        <name>STWINbox</name>
+        <file>
+          <name>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box/STWIN.box_audio.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box/STWIN.box_bc.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box/STWIN.box_debug_pins.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box/STWIN.box_env_sensors.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box/STWIN.box_env_sensors_ex.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box/STWIN.box_motion_sensors.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box/STWIN.box_motion_sensors_ex.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box/STWIN.box_nfctag.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../../../../../Drivers/BSP/STWIN.box/STWIN.box_sd.c</name>
         </file>
       </group>
     </group>
@@ -1344,6 +1419,15 @@
         <name>$PROJ_DIR$\..\..\..\..\..\Drivers\STM32U5xx_HAL_Driver\Src\stm32u5xx_hal_sd_ex.c</name>
       </file>
       <file>
+        <name>$PROJ_DIR$\..\..\..\..\..\Drivers\STM32U5xx_HAL_Driver\Src\stm32u5xx_hal_mmc.c</name>
+      </file>
+      <file>
+        <name>$PROJ_DIR$\..\..\..\..\..\Drivers\STM32U5xx_HAL_Driver\Src\stm32u5xx_hal_mmc_ex.c</name>
+      </file>
+      <file>
+        <name>$PROJ_DIR$\..\..\..\..\..\Drivers\STM32U5xx_HAL_Driver\Src\stm32u5xx_hal_sdio.c</name>
+      </file>
+      <file>
         <name>$PROJ_DIR$\..\..\..\..\..\Drivers\STM32U5xx_HAL_Driver\Src\stm32u5xx_hal_tim.c</name>
       </file>
       <file>
@@ -1426,35 +1510,44 @@
       </group>
     </group>
     <group>
+      <name>STEVAL-STWINBX1</name>
+      <group>
+        <name>Documentation</name>
+        <file>
+          <name>$PROJ_DIR$\..\..\..\..\..\Drivers\BSP\Components\Common\LICENSE.txt</name>
+        </file>
+      </group>
+    </group>
+    <group>
       <name>STM32_BLE_Manager</name>
+      <group>
+        <name>BLE_Features/BLE_Manager</name>
+        <file>
+          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\ble_manager.c</name>
+        </file>
+      </group>
       <group>
         <name>BLE_Features/HardwareSensors/Battery</name>
         <file>
-          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\BLE_Battery.c</name>
+          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\ble_battery.c</name>
         </file>
       </group>
       <group>
         <name>BLE_Features/HardwareSensors/Environmental</name>
         <file>
-          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\BLE_Environmental.c</name>
+          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\ble_environmental.c</name>
         </file>
       </group>
       <group>
         <name>BLE_Features/HardwareSensors/Inertial</name>
         <file>
-          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\BLE_Inertial.c</name>
+          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\ble_inertial.c</name>
         </file>
       </group>
       <group>
         <name>BLE_Features/PnP/PnPLike</name>
         <file>
-          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\BLE_PnPLike.c</name>
-        </file>
-      </group>
-      <group>
-        <name>BLE_Manager/BLE_Manager</name>
-        <file>
-          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\BLE_Manager.c</name>
+          <name>$PROJ_DIR$\..\..\..\..\..\Middlewares\ST\STM32_BLE_Manager\Src\ble_pn_p_like.c</name>
         </file>
       </group>
     </group>

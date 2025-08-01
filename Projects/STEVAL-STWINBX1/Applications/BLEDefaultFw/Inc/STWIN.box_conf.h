@@ -7,7 +7,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -208,12 +208,13 @@ extern EXTI_HandleTypeDef hexti10;
 #define POWER_BUTTON_GPIO_CLK_ENABLE()             __HAL_RCC_GPIOD_CLK_ENABLE()
 #define POWER_BUTTON_GPIO_CLK_DISABLE()            __HAL_RCC_GPIOD_CLK_DISABLE()
 #define POWER_BUTTON_EXTI_LINE                     EXTI_LINE_10
-#define POWER_BUTTON_EXTI_IRQn                     EXTI10_IRQn
+#define POWER_BUTTON_EXTI_IRQ_N                    EXTI10_IRQn
 
 /**  Definition for acceleration sensor SPI **/
 #define HANDLE_ISM330DHCX_SPI                      hspi2
 #define HANDLE_ACC_SPI                             SPI2
-#define MX_ACC_SPI_Init                            MX_SPI2_Init
+#define MX_ACC_SPI_INIT                            MX_SPI2_Init
+#define ACC_SPI_DEINIT                             BSP_SPI2_DeInit
 
 /* ST25DV nfc Device */
 #define BSP_ST25DV_I2C_INIT                     BSP_I2C2_Init

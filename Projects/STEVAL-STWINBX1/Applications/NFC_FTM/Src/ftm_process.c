@@ -1,15 +1,13 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    NFC_FTM\Src\ftm_process.c
+  * @file    ftm_process.c
   * @author  System Research & Applications Team - Catania Lab.
-  * @version V2.0.0
-  * @date    10-Jun-2024
   * @brief   FTM Process
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -38,7 +36,8 @@
 
 /* Static typedef *************************************************************/
 /*! Response code to the commands (2nd response byte) */
-typedef enum {
+typedef enum
+{
   FTM_VALID        = ((uint8_t)0x81),  /*!> Command has been successfully processed */
   FTM_ERROR        = ((uint8_t)0x82),  /*!> Failure when processing the command */
   FTM_INTERNAL_ERR = ((uint8_t)0x83),  /*!> Unused value */
@@ -47,19 +46,21 @@ typedef enum {
 } ftm_status_t;
 
 /*! Supported command codes */
-typedef enum {
- FTM_READ_ID        = 0x0,  /*!> Get FW and board version */
- FTM_SEND_PICTURE   = 0x1,  /*!> Send a picture to the FW */
- FTM_READ_PICTURE   = 0x2,  /*!> Read a picture from the FW */
- FTM_STOPWATCH      = 0x3,  /*!> Send timestamp */
- FTM_FW_UPGRADE     = 0x4,  /*!> Send a new FW */
- FTM_SEND_DATA      = 0x5,  /*!> Send data to the FW */
- FTM_READ_DATA      = 0x6,  /*!> Read data from the FW */
- FTM_SEND_PASSWORD  = 0x7,  /*!> Send password, required before the FW upgrade command */
- FTM_READ_PICTURE_NO_ERROR_RECOVERY = 0x08,  /*!> Read data from the FW, not using Error recovery */
- FTM_READ_DATA_NO_ERROR_RECOVERY = 0x09,  /*!> Read a picture from the FW, not using Error recovery */
- FTM_ECHO           = 0x0F,  /*!> Send and read data to/from teh FW, response data are the same than command. Error recovery is decided by 1st command byte */
- FTM_NO_COMMAND     = 0xFF,  /*!> Default value when no command is on-going */
+typedef enum
+{
+  FTM_READ_ID        = 0x0,  /*!> Get FW and board version */
+  FTM_SEND_PICTURE   = 0x1,  /*!> Send a picture to the FW */
+  FTM_READ_PICTURE   = 0x2,  /*!> Read a picture from the FW */
+  FTM_STOPWATCH      = 0x3,  /*!> Send timestamp */
+  FTM_FW_UPGRADE     = 0x4,  /*!> Send a new FW */
+  FTM_SEND_DATA      = 0x5,  /*!> Send data to the FW */
+  FTM_READ_DATA      = 0x6,  /*!> Read data from the FW */
+  FTM_SEND_PASSWORD  = 0x7,  /*!> Send password, required before the FW upgrade command */
+  FTM_READ_PICTURE_NO_ERROR_RECOVERY = 0x08,  /*!> Read data from the FW, not using Error recovery */
+  FTM_READ_DATA_NO_ERROR_RECOVERY = 0x09,  /*!> Read a picture from the FW, not using Error recovery */
+  FTM_ECHO           = 0x0F,  /*!> Send and read data to/from the FW, response data are the same than command.
+                                   Error recovery is decided by 1st command byte */
+  FTM_NO_COMMAND     = 0xFF,  /*!> Default value when no command is on-going */
 } ftm_cmd_t;
 
 /* Static variables ***********************************************************/
@@ -81,16 +82,16 @@ static uint32_t flash_erased = 0;
 /* Static functions ***********************************************************/
 static void FTM_ProcessFirstPacket(uint8_t cmdCode, uint32_t dataLen);
 static void FTM_FlushToFlash(uint8_t isLast);
-static uint32_t FTM_ProcessCommand(uint8_t* data, uint32_t dataLen);
-static ftm_status_t FTM_ReadId(uint8_t* response, uint32_t *length);
-static ftm_status_t FTM_SendPassword(uint8_t* rxBuf, uint32_t rxLength);
+static uint32_t FTM_ProcessCommand(uint8_t *data, uint32_t dataLen);
+static ftm_status_t FTM_ReadId(uint8_t *response, uint32_t *length);
+static ftm_status_t FTM_SendPassword(uint8_t *rxBuf, uint32_t rxLength);
 
 /**
   * @brief  Command to initialize the FTM process.
   * @param  None
   * @retval None
   */
-void FTMManagementInit( void )
+void FTMManagementInit(void)
 {
   STBOX1_PRINTF("Starting FTM\r\n");
   allowfwupg = false;
@@ -98,7 +99,7 @@ void FTMManagementInit( void )
   time_elapse_ms = 0;
 
   /* Erase Flash for Data save */
-  if( COMMAND_EraseFlash( USER_DATA_ADDRESS ) )
+  if (COMMAND_EraseFlash(USER_DATA_ADDRESS))
   {
     STBOX1_PRINTF("FTM Failure!\r\nFlash cannot be erased!\r\n");
     return;
@@ -113,7 +114,7 @@ void FTMManagementInit( void )
   /* Set maximum reception length (in flash) */
   cmdLength = FIRMWARE_FLASH_LAST_PAGE_ADDRESS - FIRMWARE_ADDRESS;
   /* Prepare reception of a command */
-  ST25FTM_ReceiveCommand(cmdBuffer,&cmdLength,NULL);
+  ST25FTM_ReceiveCommand(cmdBuffer, &cmdLength, NULL);
 
   STBOX1_PRINTF("Started FTM\r\n");
 }
@@ -128,7 +129,7 @@ void FTMManagementDeInit(void)
   ST25FTM_Reset();
   current_command = FTM_NO_COMMAND;
   cmdLength = FIRMWARE_FLASH_LAST_PAGE_ADDRESS - FIRMWARE_ADDRESS;
-  ST25FTM_ReceiveCommand(cmdBuffer,&cmdLength,NULL);
+  ST25FTM_ReceiveCommand(cmdBuffer, &cmdLength, NULL);
   DeInitMailbox();
 }
 
@@ -137,70 +138,72 @@ void FTMManagementDeInit(void)
   * @param  None
   * @retval None
   */
-void FTMManagement( void )
+void FTMManagement(void)
 {
   ST25FTM_Runner();
-  if(ST25FTM_IsNewFrame())
+  if (ST25FTM_IsNewFrame())
   {
     /* A new command has started */
     time_elapse_ms = HAL_GetTick();
     /* Save command code */
     current_command = (ftm_cmd_t)cmdBuffer[0];
-    FTM_ProcessFirstPacket(current_command,cmdLength);
+    FTM_ProcessFirstPacket(current_command, cmdLength);
   }
 
   /* In case of big data transfer, flush the buffer to flash when data is validated */
   FTM_FlushToFlash(ST25FTM_IsReceptionComplete());
 
-  if(ST25FTM_IsReceptionComplete())
+  if (ST25FTM_IsReceptionComplete())
   {
     /* Check command content and prepare response */
-    FTM_ProcessCommand(cmdBuffer,cmdLength);
+    FTM_ProcessCommand(cmdBuffer, cmdLength);
   }
-  if(ST25FTM_IsTransmissionComplete() || ST25FTM_IsIdle())
-  {      /* The response has been completed */
-      if((current_command == FTM_SEND_DATA)
-         || (current_command == FTM_SEND_PICTURE)
-         || (current_command == FTM_FW_UPGRADE))
+  if (ST25FTM_IsTransmissionComplete() || ST25FTM_IsIdle())
+  {
+    /* The response has been completed */
+    if ((current_command == FTM_SEND_DATA)
+        || (current_command == FTM_SEND_PICTURE)
+        || (current_command == FTM_FW_UPGRADE))
+    {
+      /* Display command time for longer commands */
+      time_elapse_ms = (int)HAL_GetTick() - (int)time_elapse_ms;
+      STBOX1_PRINTF("File transfer done!\n\nDuration: %ld ms", time_elapse_ms);
+      if ((current_command == FTM_SEND_PICTURE) || (current_command == FTM_SEND_DATA))
       {
-        /* Display command time for longer commands */
-        time_elapse_ms = (int)HAL_GetTick() - (int)time_elapse_ms;
-        STBOX1_PRINTF("File transfer done!\n\nDuration: %ld ms", time_elapse_ms );
-        if((current_command == FTM_SEND_PICTURE) || (current_command == FTM_SEND_DATA))
+        if (current_command == FTM_SEND_PICTURE)
         {
-          if(current_command == FTM_SEND_PICTURE)
-          {
-            STBOX1_PRINTF("Not Implemented FTM_SEND_PICTURE\r\n");
-          }
-          STBOX1_PRINTF( "Erasing flash: Please wait...\r\n");
-          COMMAND_EraseFlash( USER_DATA_ADDRESS );
-          flash_erased = 1;
-        } else if (current_command == FTM_FW_UPGRADE)
-        {
-          allowfwupg = false;
-          /* Jump to received Firmware */
-          COMMAND_Jump();
+          STBOX1_PRINTF("Not Implemented FTM_SEND_PICTURE\r\n");
         }
+        STBOX1_PRINTF("Erasing flash: Please wait...\r\n");
+        COMMAND_EraseFlash(USER_DATA_ADDRESS);
+        flash_erased = 1;
       }
+      else if (current_command == FTM_FW_UPGRADE)
+      {
+        allowfwupg = false;
+        /* Jump to received Firmware */
+        COMMAND_Jump();
+      }
+    }
 
     /* Prepare reception of next command */
     current_command = FTM_NO_COMMAND;
     cmdLength = FIRMWARE_FLASH_LAST_PAGE_ADDRESS - FIRMWARE_ADDRESS;
-    ST25FTM_ReceiveCommand(cmdBuffer,&cmdLength,NULL);
+    ST25FTM_ReceiveCommand(cmdBuffer, &cmdLength, NULL);
   }
-  if(ST25FTM_CheckError())
+  if (ST25FTM_CheckError())
   {
-    /* an Error occured */
+    /* an Error occurred */
     ST25FTM_Reset();
     current_command = FTM_NO_COMMAND;
     cmdLength = FIRMWARE_FLASH_LAST_PAGE_ADDRESS - FIRMWARE_ADDRESS;
-    ST25FTM_ReceiveCommand(cmdBuffer,&cmdLength,NULL);
+    ST25FTM_ReceiveCommand(cmdBuffer, &cmdLength, NULL);
   }
 
   /* Check FW upgrade password timeout */
-  if( (allowfwupg == true) && (current_command != FTM_FW_UPGRADE) )
+  if ((allowfwupg == true) && (current_command != FTM_FW_UPGRADE))
   {
-    if( (HAL_GetTick( ) - fwpasswordtimeout) > FTM_FWUPGDPWDTIMEOUT )
+    if ((HAL_GetTick() - fwpasswordtimeout) > FTM_FWUPGDPWDTIMEOUT)
     {
       fwpasswordtimeout = 0;
       allowfwupg = false;
@@ -214,28 +217,28 @@ void FTMManagement( void )
  */
 static void FTM_ProcessFirstPacket(uint8_t cmdCode, uint32_t dataLen)
 {
-  if((cmdCode == FTM_FW_UPGRADE) || (cmdCode == FTM_SEND_DATA) || (cmdCode == FTM_SEND_PICTURE ))
+  if ((cmdCode == FTM_FW_UPGRADE) || (cmdCode == FTM_SEND_DATA) || (cmdCode == FTM_SEND_PICTURE))
   {
     /* In case of FW upgrade, let's check if password has been presented */
-    if( (cmdCode == FTM_FW_UPGRADE) && (allowfwupg == false) )
+    if ((cmdCode == FTM_FW_UPGRADE) && (allowfwupg == false))
     {
       STBOX1_PRINTF("Fw Upgrade Demo: Need password for firmware upgrade!\r\n");
       ST25FTM_Reset();
     }
 
-    if(((cmdCode == FTM_FW_UPGRADE) && (dataLen > FIRMWARE_FLASH_SIZE) )
-        || ((cmdCode == FTM_SEND_PICTURE ) && (dataLen > USER_DATA_FLASH_SIZE) ))
+    if (((cmdCode == FTM_FW_UPGRADE) && (dataLen > FIRMWARE_FLASH_SIZE))
+        || ((cmdCode == FTM_SEND_PICTURE) && (dataLen > USER_DATA_FLASH_SIZE)))
     {
-      STBOX1_PRINTF( "FTM Demo: Transfer size is bigger than receive buffer!\r\n");
+      STBOX1_PRINTF("FTM Demo: Transfer size is bigger than receive buffer!\r\n");
       ST25FTM_Reset();
     }
 
     /* Erase flash if the previous command was not completed */
-    if(!flash_erased)
+    if (!flash_erased)
     {
-        STBOX1_PRINTF( "Erasing flash: Please wait...\r\n" );
-        COMMAND_EraseFlash( USER_DATA_ADDRESS );
-        flash_erased = 1;
+      STBOX1_PRINTF("Erasing flash: Please wait...\r\n");
+      COMMAND_EraseFlash(USER_DATA_ADDRESS);
+      flash_erased = 1;
     }
   }
 }
@@ -245,16 +248,16 @@ static void FTM_ProcessFirstPacket(uint8_t cmdCode, uint32_t dataLen)
  * @param dataLen Length of the command (bytes)
  * @return number of bytes in the response
  */
-static uint32_t FTM_ProcessCommand(uint8_t* data, uint32_t dataLen)
+static uint32_t FTM_ProcessCommand(uint8_t *data, uint32_t dataLen)
 {
   /* by default, responds using the command buffer */
-  uint8_t* response_p = data;
+  uint8_t *response_p = data;
   uint32_t rspLen = 0;
   /* By default use error recovery for the response */
   ST25FTM_Send_Ack_t send_ack = ST25FTM_SEND_WITH_ACK;
   uint8_t cmdCode = current_command;
   ftm_status_t status = FTM_ERROR;
-  /* For many commands the default repsonse is fine: command code with MSB set + VALID byte */
+  /* For many commands the default response is fine: command code with MSB set + VALID byte */
   uint8_t basic_response = 1;
 
   dataLen--;
@@ -264,15 +267,15 @@ static uint32_t FTM_ProcessCommand(uint8_t* data, uint32_t dataLen)
   switch (current_command)
   {
     case FTM_READ_ID:
-      status = FTM_ReadId(response_p,&rspLen);
+      status = FTM_ReadId(response_p, &rspLen);
       send_ack = ST25FTM_SEND_WITHOUT_ACK;
-    break;
+      break;
     case FTM_SEND_PASSWORD:
-      status = FTM_SendPassword(&data[1],dataLen);
-    break;
+      status = FTM_SendPassword(&data[1], dataLen);
+      break;
     case FTM_FW_UPGRADE:
       status = FTM_VALID;
-    break;
+      break;
     case FTM_SEND_PICTURE:
       STBOX1_PRINTF("FTM_SEND_PICTURE not Implemented\r\n");
       status = FTM_ERROR;
@@ -280,8 +283,8 @@ static uint32_t FTM_ProcessCommand(uint8_t* data, uint32_t dataLen)
       /* Set maximum reception length (in flash) */
       cmdLength = FIRMWARE_FLASH_LAST_PAGE_ADDRESS - FIRMWARE_ADDRESS;
       /* Prepare reception of a command */
-      ST25FTM_ReceiveCommand(cmdBuffer,&cmdLength,NULL);
-    break;
+      ST25FTM_ReceiveCommand(cmdBuffer, &cmdLength, NULL);
+      break;
     case FTM_SEND_DATA:
       STBOX1_PRINTF("FTM_SEND_DATA not Implemented\r\n");
       status = FTM_ERROR;
@@ -289,8 +292,8 @@ static uint32_t FTM_ProcessCommand(uint8_t* data, uint32_t dataLen)
       /* Set maximum reception length (in flash) */
       cmdLength = FIRMWARE_FLASH_LAST_PAGE_ADDRESS - FIRMWARE_ADDRESS;
       /* Prepare reception of a command */
-      ST25FTM_ReceiveCommand(cmdBuffer,&cmdLength,NULL);
-    break;
+      ST25FTM_ReceiveCommand(cmdBuffer, &cmdLength, NULL);
+      break;
     case FTM_STOPWATCH:
       STBOX1_PRINTF("FTM_STOPWATCH not Implemented\r\n");
       status = FTM_ERROR;
@@ -298,8 +301,8 @@ static uint32_t FTM_ProcessCommand(uint8_t* data, uint32_t dataLen)
       /* Set maximum reception length (in flash) */
       cmdLength = FIRMWARE_FLASH_LAST_PAGE_ADDRESS - FIRMWARE_ADDRESS;
       /* Prepare reception of a command */
-      ST25FTM_ReceiveCommand(cmdBuffer,&cmdLength,NULL);
-    break;
+      ST25FTM_ReceiveCommand(cmdBuffer, &cmdLength, NULL);
+      break;
     case FTM_READ_PICTURE_NO_ERROR_RECOVERY:
     case FTM_READ_PICTURE:
       STBOX1_PRINTF("FTM_READ_PICTURE not Implemented\r\n");
@@ -308,8 +311,8 @@ static uint32_t FTM_ProcessCommand(uint8_t* data, uint32_t dataLen)
       /* Set maximum reception length (in flash) */
       cmdLength = FIRMWARE_FLASH_LAST_PAGE_ADDRESS - FIRMWARE_ADDRESS;
       /* Prepare reception of a command */
-      ST25FTM_ReceiveCommand(cmdBuffer,&cmdLength,NULL);
-    break;
+      ST25FTM_ReceiveCommand(cmdBuffer, &cmdLength, NULL);
+      break;
     case FTM_READ_DATA:
     case FTM_READ_DATA_NO_ERROR_RECOVERY:
       STBOX1_PRINTF("FTM_READ_DATA not Implemented\r\n");
@@ -318,25 +321,26 @@ static uint32_t FTM_ProcessCommand(uint8_t* data, uint32_t dataLen)
       /* Set maximum reception length (in flash) */
       cmdLength = FIRMWARE_FLASH_LAST_PAGE_ADDRESS - FIRMWARE_ADDRESS;
       /* Prepare reception of a command */
-      ST25FTM_ReceiveCommand(cmdBuffer,&cmdLength,NULL);
-    break;
+      ST25FTM_ReceiveCommand(cmdBuffer, &cmdLength, NULL);
+      break;
     case FTM_ECHO:
       basic_response = 0;
-        /* Select Ack/NoAck response depending on the on the first byte of data */
-      if(data[1] == 0) {
+      /* Select Ack/NoAck response depending on the on the first byte of data */
+      if (data[1] == 0)
+      {
         send_ack = ST25FTM_SEND_WITHOUT_ACK;
       }
       rspLen = dataLen + 1;
       status = FTM_VALID;
       ST25FTM_SetTxSegmentMaxLength(600);
       ST25FTM_SendCommand(response_p, rspLen, send_ack, NULL);
-    break;
+      break;
     default:
-      STBOX1_PRINTF("Unknown command %X\r\n", cmdCode );
-    break;
+      STBOX1_PRINTF("Unknown command %X\r\n", cmdCode);
+      break;
   }
 
-  if(basic_response)
+  if (basic_response)
   {
     /* generic response bytes: command code with MSB bit set and status OK byte */
     response_p[0] = (FTM_RESP_CMD | cmdCode);
@@ -352,9 +356,9 @@ static uint32_t FTM_ProcessCommand(uint8_t* data, uint32_t dataLen)
  * @param length    pointer to the length of the command in bytes, also used for the response
  * @retval FTM_VALID Command processing success
  */
-static ftm_status_t FTM_ReadId(uint8_t* response, uint32_t *length)
+static ftm_status_t FTM_ReadId(uint8_t *response, uint32_t *length)
 {
-  response[2] = 0x04; //STWIN.box FTM Code
+  response[2] = 0x04; /* STWIN.box FTM Code */
   response[3] = STBOX1_VERSION_MAJOR;
   response[4] = STBOX1_VERSION_MINOR;
   response[5] = STBOX1_VERSION_PATCH;
@@ -368,26 +372,26 @@ static ftm_status_t FTM_ReadId(uint8_t* response, uint32_t *length)
  * @retval FTM_VALID Correct password has been provided
  * @retval FTM_ERROR Wrong password
  */
-static ftm_status_t FTM_SendPassword(uint8_t* rxBuf, uint32_t rxLength)
+static ftm_status_t FTM_SendPassword(uint8_t *rxBuf, uint32_t rxLength)
 {
-  const uint8_t fwpassword[] = {18,52,86,120};
-  if( (sizeof(fwpassword) == rxLength)
-      && !memcmp(fwpassword,rxBuf,rxLength))
+  const uint8_t fwpassword[] = {18, 52, 86, 120};
+  if ((sizeof(fwpassword) == rxLength)
+      && !memcmp(fwpassword, rxBuf, rxLength))
   {
     allowfwupg = true;
-    fwpasswordtimeout = HAL_GetTick( );
-    STBOX1_PRINTF("Init Fw Flash...\r\n" );
+    fwpasswordtimeout = HAL_GetTick();
+    STBOX1_PRINTF("Init Fw Flash...\r\n");
     /* Erase Flash for Data save */
-    COMMAND_EraseFlash( FIRMWARE_ADDRESS );
+    COMMAND_EraseFlash(FIRMWARE_ADDRESS);
 
-    STBOX1_PRINTF("Password OK!\r\n" );
+    STBOX1_PRINTF("Password OK!\r\n");
     return FTM_VALID;
   }
   else
   {
     allowfwupg = false;
-    STBOX1_PRINTF( "Wrong Password\r\n" );
-    STBOX1_PRINTF( "Fw upgrade denied!!!\r\n" );
+    STBOX1_PRINTF("Wrong Password\r\n");
+    STBOX1_PRINTF("Fw upgrade denied!!!\r\n");
     return FTM_ERROR;
   }
 }
@@ -401,38 +405,37 @@ void FTM_FlushToFlash(uint8_t isLast)
   uint32_t read_length = sizeof(page_buffer);
   uint32_t write_length = read_length;
   uint32_t flash_index;
-  if((current_command == FTM_FW_UPGRADE)
-       || (current_command == FTM_SEND_PICTURE)
-       || (current_command == FTM_SEND_DATA))
+  if ((current_command == FTM_FW_UPGRADE)
+      || (current_command == FTM_SEND_PICTURE)
+      || (current_command == FTM_SEND_DATA))
   {
 
     /* Get the offset of read data */
     flash_index = ST25FTM_GetReadBufferOffset();
-    if(flash_index == 0)
+    if (flash_index == 0)
     {
       /* If this is the first frame, removes command bytes */
       uint8_t cmd;
-      ST25FTM_ReadBuffer(&cmd,1);
+      ST25FTM_ReadBuffer(&cmd, 1);
       flash_index = ST25FTM_GetReadBufferOffset();
     }
 
-    while(ST25FTM_ReadBuffer(page_buffer,read_length) == 0)
+    while (ST25FTM_ReadBuffer(page_buffer, read_length) == 0)
     {
       /* Flush as many data as possible  */
-      Command_WriteBufferToFlash( USER_DATA_ADDRESS, flash_index-1, page_buffer, write_length );
+      Command_WriteBufferToFlash(USER_DATA_ADDRESS, flash_index - 1, page_buffer, write_length);
       flash_index = ST25FTM_GetReadBufferOffset();
       flash_erased = 0;
     }
     /* write the last incomplete page if the command ended */
-    if(isLast)
+    if (isLast)
     {
       read_length = ST25FTM_GetAvailableDataLength();
-      write_length = read_length + ( (read_length % 8) ? 8 - (read_length % 8) : 0 );
+      write_length = read_length + ((read_length % 8) ? 8 - (read_length % 8) : 0);
       memset(page_buffer, 0xFF, write_length);
-      ST25FTM_ReadBuffer(page_buffer,read_length);
-      Command_WriteBufferToFlash( USER_DATA_ADDRESS, flash_index-1, page_buffer, write_length );
+      ST25FTM_ReadBuffer(page_buffer, read_length);
+      Command_WriteBufferToFlash(USER_DATA_ADDRESS, flash_index - 1, page_buffer, write_length);
       flash_erased = 0;
     }
   }
 }
-

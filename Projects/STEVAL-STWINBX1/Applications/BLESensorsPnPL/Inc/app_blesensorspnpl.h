@@ -1,14 +1,14 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    BLESensorsPnPL\Inc\app_blesensorspnpl.h
-  * @author  System Research & Applications Team - Agrate/Catania Lab.
-  * @brief   Header for app_blesensorspnpl.c file.
-  *          This file contains the common defines of the application.
+  * @file   app_blesensorspnpl.h
+  * @author System Research & Applications Team - Agrate/Catania Lab.
+  * @brief  Header for app_blesensorspnpl.c file.
+  *         This file contains the common defines of the application.
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -33,48 +33,7 @@ extern "C" {
 #include "steval_stwinbx1.h"
 #include "STWIN.box_conf.h"
 
-/* Exported types ------------------------------------------------------------*/
-typedef enum
-{
-  STBOX1_ACC_ISM330DHCX = 0,
-  STBOX1_ACC_IIS2DLPC = 1
-} STBOX1_Acc_t;
-/* Exported macro ------------------------------------------------------------*/
-#define MCR_HEART_BIT()   \
-{                         \
-  BSP_LED_On(LED_GREEN);  \
-  HAL_Delay(200);         \
-  BSP_LED_Off(LED_GREEN); \
-  HAL_Delay(400);         \
-  BSP_LED_On(LED_GREEN);  \
-  HAL_Delay(200);         \
-  BSP_LED_Off(LED_GREEN); \
-  HAL_Delay(1000);        \
-}
-
-#define MCR_HEART_BIT2()   \
-{                          \
-  BSP_LED_On(LED_ORANGE);  \
-  HAL_Delay(200);          \
-  BSP_LED_Off(LED_ORANGE); \
-  HAL_Delay(400);          \
-  BSP_LED_On(LED_ORANGE);  \
-  HAL_Delay(200);          \
-  BSP_LED_Off(LED_ORANGE); \
-  HAL_Delay(1000);         \
-}
-
-/* Exported Variables --------------------------------------------------------*/
-
-extern int32_t CurrentActiveBank;
-extern STBOX1_Acc_t CurrentAccType;
-
-/* Exported Functions Prototypes ---------------------------------------------*/
-extern void STBOX1_Error_Handler(int32_t ErrorCode,char *File,int32_t Line);
-void MX_BLESensorsPnPL_Init(void);
-void MX_BLESensorsPnPL_Process(void);
-void BSP_Enable_LDO(void);
-void BSP_Disable_LDO(void);
+#include "ble_manager.h"
 
 /* Exported defines -----------------------------------------------------------*/
 #define STBOX1_ERROR_INIT_BLE 1
@@ -90,9 +49,53 @@ void BSP_Disable_LDO(void);
 /* STM32 MCU_ID */
 #define STM32_MCU_ID ((uint32_t *)0xE0044000)
 
+/* Exported macro ------------------------------------------------------------*/
+#define MCR_HEART_BIT()   \
+  {                         \
+    BSP_LED_On(LED_GREEN);  \
+    HAL_Delay(200);         \
+    BSP_LED_Off(LED_GREEN); \
+    HAL_Delay(400);         \
+    BSP_LED_On(LED_GREEN);  \
+    HAL_Delay(200);         \
+    BSP_LED_Off(LED_GREEN); \
+    HAL_Delay(1000);        \
+  }
+
+#define MCR_HEART_BIT2()   \
+  {                          \
+    BSP_LED_On(LED_ORANGE);  \
+    HAL_Delay(200);          \
+    BSP_LED_Off(LED_ORANGE); \
+    HAL_Delay(400);          \
+    BSP_LED_On(LED_ORANGE);  \
+    HAL_Delay(200);          \
+    BSP_LED_Off(LED_ORANGE); \
+    HAL_Delay(1000);         \
+  }
+
+/* Exported types ------------------------------------------------------------*/
+typedef enum
+{
+  STBOX1_ACC_ISM330DHCX = 0,
+  STBOX1_ACC_IIS2DLPC = 1
+} STBOX1_Acc_t;
+
+/* Exported Variables --------------------------------------------------------*/
+extern int32_t CurrentActiveBank;
+
+extern STBOX1_Acc_t CurrentAccType;
+
+/* Exported Functions Prototypes ---------------------------------------------*/
+void MX_BLESensorsPnPL_Init(void);
+void MX_BLESensorsPnPL_Process(void);
+
+extern void STBOX1_Error_Handler(int32_t ErrorCode, char *File, int32_t Line);
+
+extern void BSP_Disable_LDO(void);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif /*__APP_BLESENSORSPNPL_H__ */
-

@@ -1,13 +1,13 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    BLEDefaultFw\Src\lib_NDEF_config.c
+  * @file    lib_NDEF_config.c
   * @author  System Research & Applications Team - Agrate/Catania Lab.
   * @brief   Lib NDEF configuration file.
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -28,10 +28,12 @@
   * @param  Size : Size in bytes of the value to be read
   * @retval NDEF_OK if success, NDEF_ERROR in case of failure
   */
-int32_t NDEF_Wrapper_ReadData(uint8_t* pData, uint32_t offset, uint32_t length )
+int32_t NDEF_Wrapper_ReadData(uint8_t *pData, uint32_t offset, uint32_t length)
 {
-  if(BSP_NFCTAG_ReadData(BSP_NFCTAG_INSTANCE, pData, offset, length ) != NFCTAG_OK)
+  if (BSP_NFCTAG_ReadData(BSP_NFCTAG_INSTANCE, pData, offset, length) != NFCTAG_OK)
+  {
     return NDEF_ERROR;
+  }
   return NDEF_OK;
 }
 
@@ -42,10 +44,12 @@ int32_t NDEF_Wrapper_ReadData(uint8_t* pData, uint32_t offset, uint32_t length )
   * @param  Size : Number of bytes to be written
   * @retval NDEF_OK if success, NDEF_ERROR in case of failure
   */
-int32_t NDEF_Wrapper_WriteData(const uint8_t* pData, uint32_t offset, uint32_t length )
+int32_t NDEF_Wrapper_WriteData(const uint8_t *pData, uint32_t offset, uint32_t length)
 {
-  if(BSP_NFCTAG_WriteData(BSP_NFCTAG_INSTANCE, pData, offset, length ) != NFCTAG_OK)
+  if (BSP_NFCTAG_WriteData(BSP_NFCTAG_INSTANCE, pData, offset, length) != NFCTAG_OK)
+  {
     return NDEF_ERROR;
+  }
   return NDEF_OK;
 }
 

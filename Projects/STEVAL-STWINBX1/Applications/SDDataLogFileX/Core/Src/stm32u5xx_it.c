@@ -1,14 +1,14 @@
 /**
   ******************************************************************************
-  * @file    SDDataLogFileX\Core\Src\stm32u5xx_it.c
+  * @file    stm32u5xx_it.c
   * @author  MCD Application Team
-  * @version V2.0.0
-  * @date    10-Jun-2024
+  * @version V2.1.0
+  * @date    20-May-2025
   * @brief   Interrupt Service Routines
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file

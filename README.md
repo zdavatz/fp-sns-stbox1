@@ -21,7 +21,7 @@ This firmware package includes Components Device Drivers, Board Support Package 
 
 - STMicroelectronics STEVAL-MKBOXPRO (SensorTile.box-Pro)  evaluation board that contains the following components:
   - MEMS sensor devices: STTS22H, LPS22DF, LSM6DSV16X, LIS2DU12, LIS2MDL
-  - Dynamic NFC tag: ST25DV04K
+  - Dynamic NFC tag: ST25DV04K (board rev. A) - ST25DV64KC (board rev. B and board rev. C)
   - Digital Microphone: MP23db01HP
   
 - STMicroelectronics STEVAL-STWINBX1 (STWIN.BOX) evaluation board that contains the following components:
@@ -41,7 +41,7 @@ Here is the list of references to user documents:
 ## Supported Devices and Boards
 
 - STEVAL-MKBOXPRO (SensorTile.box PRO) discovery box with multi-sensors and wireless connectivity for any intelligent IoT node\[[STEVAL-MKBOXPRO](https://www.st.com/en/evaluation-tools/steval-mkboxpro.html)\]
-- STEVAL-STWINBX1 (STWIN.box) SensorTile Wireless Industrial Node Development Kit \[[STEVAL-STWINBX1](https://www.st.com/en/evaluation-tools/steval-mksbox1v1.html)\]
+- STEVAL-STWINBX1 (STWIN.box) SensorTile Wireless Industrial Node Development Kit \[[STEVAL-STWINBX1](https://www.st.com/en/evaluation-tools/steval-stwinbx1.html)\]
 
 ## Known Limitations
 
@@ -51,13 +51,13 @@ With some Android phones there are some compatibility issues for:
 
 - for forcing a full BLE rescan (BLEMLC). In this case disable the BLE_FORCE_RESCAN on their Inc/STBOX1_config.h files
 
-In all these situations, before to connect to the SensorTile.box, each time you change the running application, clean the Device Cache for forcing a rescan of BLE services:
+In all these situations, before to connect to the SensorTile.box PRO, each time you change the running application, clean the Device Cache for forcing a rescan of BLE services.
 
 ## Development Toolchains and Compilers
 
--   IAR Embedded Workbench for ARM (EWARM) toolchain V9.20.1 + STLink/V2 or STLink/V3
+-   IAR Embedded Workbench for ARM (EWARM) toolchain V9.60.3 + STLink/V2 or STLink/V3
 -   RealView Microcontroller Development Kit (MDK-ARM) toolchain V5.38.0 + ST-LINK/V2 or STLink/V3
--   Integrated Development Environment for STM32 (STM32CubeIDE) V1.15.1 + ST-LINK or STLink/V3
+-   Integrated Development Environment for STM32 (STM32CubeIDE) V1.18.1 + ST-LINK or STLink/V3
 	
 ## Dependencies 
 

@@ -7,7 +7,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -22,6 +22,10 @@
 #ifndef __COMMON_H
 #define __COMMON_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Includes ------------------------------------------------------------------*/
 
 #include "STWIN.box_nfctag.h"
@@ -32,8 +36,8 @@
 typedef uint8_t boolean;
 
 /**
- * @brief  GPO status information structure definition
- */
+  * @brief  GPO status information structure definition
+  */
 typedef struct
 {
   uint8_t WritenEEPROM;
@@ -44,12 +48,12 @@ typedef struct
   uint8_t MailboxMsgRead;
   uint8_t RfInterrupt;
   uint8_t Rfuser;
-} IT_GPO_STATUS;
+} IT_GPO_STATUS_t;
 
 /* Exported macro ------------------------------------------------------------*/
 #ifndef MIN
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
-#endif
+#endif /* MIN */
 
 #undef FAIL
 #define FAIL 0
@@ -70,6 +74,8 @@ typedef struct
 #define TOSTRING(s) #s
 #define STRINGIZE(s) TOSTRING(s)
 
-/* Exported functions ------------------------------------------------------- */
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __COMMON_H */

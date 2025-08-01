@@ -1,16 +1,13 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    main.h
-  * @author  System Research & Applications Team - Agrate/Catania Lab.
-  * @version V2.0.0
-  * @date    10-Jun-2024
-  * @brief   Header for main.c file.
-  *          This file contains the common defines of the application.
+  * @file           : main.h
+  * @brief          : Header for main.c file.
+  *                   This file contains the common defines of the application.
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -144,6 +141,8 @@ void MX_TIM1_Init(void);
 #define BUTTON_PWR_Pin GPIO_PIN_10
 #define BUTTON_PWR_GPIO_Port GPIOD
 #define BUTTON_PWR_EXTI_IRQn EXTI10_IRQn
+#define BLE_RST_Pin GPIO_PIN_13
+#define BLE_RST_GPIO_Port GPIOD
 #define BLE_INT_Pin GPIO_PIN_14
 #define BLE_INT_GPIO_Port GPIOF
 #define BLE_INT_EXTI_IRQn EXTI14_IRQn

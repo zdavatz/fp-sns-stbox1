@@ -1,15 +1,12 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    steval_stwinbx1.c
-  * @author  System Research & Applications Team - Catania Lab.
-  * @version V2.0.0
-  * @date    10-Jun-2024
-  * @brief   Source file for the BSP Common driver
+  * @file  : steval_stwinbx1.c
+  * @brief : Source file for the BSP Common driver
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file

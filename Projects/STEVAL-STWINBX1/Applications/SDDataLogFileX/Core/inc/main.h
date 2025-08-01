@@ -1,14 +1,14 @@
 /**
   ******************************************************************************
-  * @file    SDDataLogFileX\Core\Inc\main.h
+  * @file    main.h
   * @author  System Research & Applications Team - Catania Lab.
-  * @version V2.0.0
-  * @date    10-Jun-2024
+  * @version V2.1.0
+  * @date    20-May-2025
   * @brief   Header for main.c file.
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -34,7 +34,7 @@ extern "C" {
 #include "STWIN.box.h"
 #include "STWIN.box_sd.h"
 #include "fx_stm32_sd_driver.h"
-#include "STBOX1_config.h"
+#include "stbox1_config.h"
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/

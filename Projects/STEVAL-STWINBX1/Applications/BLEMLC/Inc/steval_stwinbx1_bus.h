@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -173,9 +173,6 @@ int32_t BSP_SPI2_RegisterDefaultMspCallbacks (void);
 int32_t BSP_SPI2_RegisterMspCallbacks (BSP_SPI_Cb_t *Callbacks);
 #endif /* (USE_HAL_SPI_REGISTER_CALLBACKS == 1U) */
 
-int32_t BSP_SPI2_Send_DMA(uint8_t *pData, uint16_t Length);
-int32_t BSP_SPI2_Recv_DMA(uint8_t *pData, uint16_t Length);
-int32_t BSP_SPI2_SendRecv_DMA(uint8_t *pTxData, uint8_t *pRxData, uint16_t Length);
 /* BUS IO driver over I2C Peripheral */
 HAL_StatusTypeDef MX_I2C2_Init(I2C_HandleTypeDef* hi2c);
 int32_t BSP_I2C2_Init(void);
@@ -192,8 +189,6 @@ int32_t BSP_I2C2_SendRecv(uint16_t DevAddr, uint8_t *pTxdata, uint8_t *pRxdata, 
 int32_t BSP_I2C2_RegisterDefaultMspCallbacks (void);
 int32_t BSP_I2C2_RegisterMspCallbacks (BSP_I2C_Cb_t *Callbacks);
 #endif /* (USE_HAL_I2C_REGISTER_CALLBACKS == 1U) */
-int32_t BSP_I2C2_Send_DMA(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
-int32_t BSP_I2C2_Recv_DMA(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
 HAL_StatusTypeDef MX_SPI3_Init(SPI_HandleTypeDef* hspi);
 int32_t BSP_SPI3_Init(void);
 int32_t BSP_SPI3_DeInit(void);

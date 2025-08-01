@@ -16,9 +16,9 @@
         <TargetCommonOption>
           <Device>STM32U585AIIx</Device>
           <Vendor>STMicroelectronics</Vendor>
-          <PackID>Keil.STM32U5xx_DFP.2.2.1</PackID>
+          <PackID>Keil.STM32U5xx_DFP.2.2.4</PackID>
           <PackURL>https://www.keil.com/pack/</PackURL>
-          <Cpu>IRAM(0x20000000-0x200BFFFF) IROM(0x08000000-0x81FFFFF)  CLOCK(8000000) FPU3(SFPU) CPUTYPE("Cortex-M33") ELITTLE TZ DSP</Cpu>
+          <Cpu>IRAM(0x20000000-0x200BFFFF) IROM(0x08000000-0x81FFFFF) CLOCK(8000000) FPU3(SFPU) CPUTYPE("Cortex-M33") ELITTLE TZ DSP</Cpu>
           <FlashUtilSpec></FlashUtilSpec>
           <StartupFile></StartupFile>
           <FlashDriverDll></FlashDriverDll>
@@ -81,7 +81,7 @@
           </BeforeMake>
           <AfterMake>
             <RunUserProg1>1</RunUserProg1>
-            <RunUserProg2>1</RunUserProg2>
+            <RunUserProg2>0</RunUserProg2>
             <UserProg1Name>fromelf #L --bin --output=@L.bin !L</UserProg1Name>
             <UserProg2Name></UserProg2Name>
             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
@@ -314,7 +314,7 @@
           </ArmAdsMisc>
           <Cads>
             <interw>1</interw>
-            <Optim>4</Optim>
+            <Optim>7</Optim>
             <oTime>0</oTime>
             <SplitLS>0</SplitLS>
             <OneElfS>1</OneElfS>
@@ -340,7 +340,7 @@
               <MiscControls>-Wno-format</MiscControls>
               <Define>USE_HAL_DRIVER,STM32U585xx</Define>
               <Undefine></Undefine>
-              <IncludePath>../Inc;../../../../../Drivers/STM32U5xx_HAL_Driver/Inc;../../../../../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy;../../../../../Drivers/CMSIS/Device/ST/STM32U5xx/Include;../../../../../Drivers/CMSIS/Include;../../../../../Drivers/BSP/Components/Common;../../../../../Drivers/BSP/STWIN.box;../../../../../Middlewares/Third_Party/parson;../../../../../Middlewares/ST/STM32_BLE_Manager/Inc;../../../../../Drivers/BSP/Components/ism330dhcx;../../../../../Drivers/BSP/Components/iis2mdc;../../../../../Drivers/BSP/Components/iis2dlpc;../../../../../Drivers/BSP/Components/iis2iclx;../../../../../Drivers/BSP/Components/iis3dwb;../../../../../Drivers/BSP/Components/stts22h;../../../../../Drivers/BSP/Components/ilps22qs;../../../../../Middlewares/ST/BlueNRG-2/hci/hci_tl_patterns/Basic;../../../../../Middlewares/ST/BlueNRG-2/utils;../../../../../Middlewares/ST/BlueNRG-2/includes;../../../../../Drivers/BSP/Components/ST25DV;../../../../../Middlewares/ST/lib_nfc/lib_NDEF/Core/inc;../../../../../Middlewares/ST/lib_nfc/Common/inc</IncludePath>
+              <IncludePath>../Inc;../../../../../Drivers/STM32U5xx_HAL_Driver/Inc;../../../../../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy;../../../../../Drivers/CMSIS/Device/ST/STM32U5xx/Include;../../../../../Drivers/CMSIS/Include;../../../../../Middlewares/Third_Party/parson;../../../../../Middlewares/ST/STM32_BLE_Manager/Inc;../../../../../Drivers/BSP/STWIN.box;../../../../../Drivers/BSP/Components/Common;../../../../../Middlewares/ST/BlueNRG-2/hci/hci_tl_patterns/Basic;../../../../../Middlewares/ST/BlueNRG-2/utils;../../../../../Middlewares/ST/BlueNRG-2/includes;../../../../../Drivers/BSP/Components/ism330dhcx;../../../../../Drivers/BSP/Components/iis2mdc;../../../../../Drivers/BSP/Components/iis2dlpc;../../../../../Drivers/BSP/Components/iis2iclx;../../../../../Drivers/BSP/Components/iis3dwb;../../../../../Drivers/BSP/Components/stts22h;../../../../../Drivers/BSP/Components/ilps22qs;../../../../../Drivers/BSP/Components/ST25DV;../../../../../Middlewares/ST/lib_nfc/lib_NDEF/Core/inc;../../../../../Middlewares/ST/lib_nfc/Common/inc</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -400,14 +400,14 @@
               <FilePath>../Src/main.c</FilePath>
             </File>
             <File>
-              <FileName>OTA.c</FileName>
+              <FileName>ota.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../Src/OTA.c</FilePath>
+              <FilePath>../Src/ota.c</FilePath>
             </File>
             <File>
-              <FileName>BLE_Function.c</FileName>
+              <FileName>ble_function.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../Src/BLE_Function.c</FilePath>
+              <FilePath>../Src/ble_function.c</FilePath>
             </File>
             <File>
               <FileName>lib_NDEF_config.c</FileName>
@@ -425,9 +425,9 @@
               <FilePath>../Src/hci_tl_interface.c</FilePath>
             </File>
             <File>
-              <FileName>BLE_Implementation.c</FileName>
+              <FileName>ble_implementation.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../Src/BLE_Implementation.c</FilePath>
+              <FilePath>../Src/ble_implementation.c</FilePath>
             </File>
             <File>
               <FileName>steval_stwinbx1_bus.c</FileName>
@@ -590,14 +590,14 @@
           <GroupName>Drivers/STM32U5xx_HAL_Driver</GroupName>
           <Files>
             <File>
-              <FileName>stm32u5xx_hal_i2c.c</FileName>
+              <FileName>stm32u5xx_hal_spi.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_i2c.c</FilePath>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_spi.c</FilePath>
             </File>
             <File>
-              <FileName>stm32u5xx_hal_i2c_ex.c</FileName>
+              <FileName>stm32u5xx_hal_spi_ex.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_i2c_ex.c</FilePath>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_spi_ex.c</FilePath>
             </File>
             <File>
               <FileName>stm32u5xx_hal_dma.c</FileName>
@@ -613,6 +613,16 @@
               <FileName>stm32u5xx_hal.c</FileName>
               <FileType>1</FileType>
               <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32u5xx_hal_i2c.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_i2c.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32u5xx_hal_i2c_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_i2c_ex.c</FilePath>
             </File>
             <File>
               <FileName>stm32u5xx_hal_rcc.c</FileName>
@@ -668,16 +678,6 @@
               <FileName>stm32u5xx_hal_icache.c</FileName>
               <FileType>1</FileType>
               <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_icache.c</FilePath>
-            </File>
-            <File>
-              <FileName>stm32u5xx_hal_spi.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_spi.c</FilePath>
-            </File>
-            <File>
-              <FileName>stm32u5xx_hal_spi_ex.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_spi_ex.c</FilePath>
             </File>
             <File>
               <FileName>stm32u5xx_hal_uart.c</FileName>
@@ -765,6 +765,21 @@
               <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sd_ex.c</FilePath>
             </File>
             <File>
+              <FileName>stm32u5xx_hal_mmc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mmc.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32u5xx_hal_mmc_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mmc_ex.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32u5xx_hal_sdio.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sdio.c</FilePath>
+            </File>
+            <File>
               <FileName>stm32u5xx_hal_tim.c</FileName>
               <FileType>1</FileType>
               <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_tim.c</FilePath>
@@ -815,9 +830,9 @@
           <GroupName>Middlewares/STM32_BLE_Manager/BLE_Features/HardwareSensors/Environmental</GroupName>
           <Files>
             <File>
-              <FileName>BLE_Environmental.c</FileName>
+              <FileName>ble_environmental.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../../../../../Middlewares/ST/STM32_BLE_Manager/Src/BLE_Environmental.c</FilePath>
+              <FilePath>../../../../../Middlewares/ST/STM32_BLE_Manager/Src/ble_environmental.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -825,9 +840,9 @@
           <GroupName>Middlewares/STM32_BLE_Manager/BLE_Features/HardwareSensors/Inertial</GroupName>
           <Files>
             <File>
-              <FileName>BLE_Inertial.c</FileName>
+              <FileName>ble_inertial.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../../../../../Middlewares/ST/STM32_BLE_Manager/Src/BLE_Inertial.c</FilePath>
+              <FilePath>../../../../../Middlewares/ST/STM32_BLE_Manager/Src/ble_inertial.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -835,19 +850,29 @@
           <GroupName>Middlewares/STM32_BLE_Manager/BLE_Features/HardwareSensors/Battery</GroupName>
           <Files>
             <File>
-              <FileName>BLE_Battery.c</FileName>
+              <FileName>ble_battery.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../../../../../Middlewares/ST/STM32_BLE_Manager/Src/BLE_Battery.c</FilePath>
+              <FilePath>../../../../../Middlewares/ST/STM32_BLE_Manager/Src/ble_battery.c</FilePath>
             </File>
           </Files>
         </Group>
         <Group>
-          <GroupName>Middlewares/STM32_BLE_Manager/BLE_Manager/BLE_Manager</GroupName>
+          <GroupName>Middlewares/STM32_BLE_Manager/BLE_Features/BLE_Manager</GroupName>
           <Files>
             <File>
-              <FileName>BLE_Manager.c</FileName>
+              <FileName>ble_manager.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../../../../../Middlewares/ST/STM32_BLE_Manager/Src/BLE_Manager.c</FilePath>
+              <FilePath>../../../../../Middlewares/ST/STM32_BLE_Manager/Src/ble_manager.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Middlewares/STEVAL-STWINBX1/Documentation</GroupName>
+          <Files>
+            <File>
+              <FileName>LICENSE.txt</FileName>
+              <FileType>5</FileType>
+              <FilePath>../../../../../Drivers/BSP/Components/Common/LICENSE.txt</FilePath>
             </File>
           </Files>
         </Group>

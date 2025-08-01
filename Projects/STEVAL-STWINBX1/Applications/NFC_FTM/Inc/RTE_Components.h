@@ -7,7 +7,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -22,10 +22,10 @@
 #define  __RTE_COMPONENTS_H__
 
 /* Defines ------------------------------------------------------------------*/
-/* STMicroelectronics.FP-SNS-STBOX1.2.0.0 */
-#define NFC_FTM_STWINBOX 1
-#define USE_STWINBX1 1
-/* STMicroelectronics.X-CUBE-MEMS1.10.0.0 */
+/* STMicroelectronics.FP-SNS-STBOX1.2.1.0 */
+#define NFC_FTM_STWINBOX
+#define USE_STWINBX1
+/* STMicroelectronics.X-CUBE-MEMS1.11.2.0 */
 #define ILPS22QS_PRESSTEMPQVAR_I2C
 #define STTS22H_TEMP_I2C
 #define ISM330DHCX_ACCGYR_SPI

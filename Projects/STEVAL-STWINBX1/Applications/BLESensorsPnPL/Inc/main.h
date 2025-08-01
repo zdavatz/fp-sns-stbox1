@@ -7,7 +7,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -96,6 +96,7 @@ void MX_TIM1_Init(void);
 #define GPIO2_EX_GPIO_Port GPIOF
 #define INT1_DLPC_Pin GPIO_PIN_1
 #define INT1_DLPC_GPIO_Port GPIOF
+#define INT1_DLPC_EXTI_IRQn EXTI1_IRQn
 #define INT2_DLPC_Pin GPIO_PIN_2
 #define INT2_DLPC_GPIO_Port GPIOF
 #define INT2_DLPC_EXTI_IRQn EXTI2_IRQn

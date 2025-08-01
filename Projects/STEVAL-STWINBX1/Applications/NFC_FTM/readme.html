@@ -38,7 +38,7 @@ following components:
 <li>MEMS sensor devices: IIS2DLPC, IIS2MDC, IIS3DWB, ISM330DHCX,
 IIS2ICLX, ILPS22QS, STTS22H</li>
 <li>Dynamic NFC tag: ST25DV64K</li>
-<li>On-board Bluetooth® low energy v5.0 wireless technology:
+<li>On-board Bluetooth® low energy wireless technology:
 BlueNRG-M2</li>
 <li>Analog MEMS microphone: IMP23ABSU</li>
 <li>Industrial grade digital MEMS microphone: IMP34DT05</li>
@@ -46,11 +46,28 @@ BlueNRG-M2</li>
 </ul>
 <p>The Example application provides one example on how to use the Fast
 Memory Transfer protocol for making a firmware update using the NFC and
-using the STMicroelectronics “ST25 NFC Tap” available for Android and
-iOS: https://play.google.com/store/apps/details?id=com.st.st25nfc</p>
-<p>https://apps.apple.com/be/app/nfc-tap/id1278913597</p>
+using the STMicroelectronics “ST25 NFC Tap” available for:</p>
+<ul>
+<p>- <a href="https://play.google.com/store/apps/details?id=com.st.st25nfc">Android</a></p>
+<p>- <a href="https://apps.apple.com/be/app/nfc-tap/id1278913597">iOS</a></p>
+</ul>
 <p>Pressing the user button is possibile to enable/disable the Fast
 Transfer Memory process</p>
+<h3 id="required-stm32cubemx-settings"><b>Required STM32CubeMX settings</b></h3>
+<p>Before code generation in Project Manager:</p>
+<ul>
+<li>for toolchain/IDE EWARM set Min Version to 8.50 (default is 9.20).</li>
+<li>for toolchain/IDE MKD-ARM set Min Version to 5.32 (default is 5.39).</li>
+</ul>
+<p>Without this setting the code will be building but the flashing on board will fail.</p>
+<h3 id="required-ide-settings"><b>Required IDE settings</b></h3>
+<p>For Keil IDE:</p>
+<ul>
+<li>set the “Micro LIB” option from within the “Project/Option for
+Target” menu (Target tab).</li>
+<li>set the “Misc Controls” option with the “-Wno-format” string, from
+within the “Project/Option for Target” menu (C/C++ (AC6) tab).</li>
+</ul>
 <h3 id="keywords"><b>Keywords</b></h3>
 <p>NFC, SPI, I2C, UART, MEMS, BLE, BLE_Manager, BlueNRG-2</p>
 <h3 id="hardware-and-software-environment"><b>Hardware and Software
@@ -78,14 +95,12 @@ protocol</li>
 <h3 id="dependencies"><b>Dependencies</b></h3>
 <p>STM32Cube packages:</p>
 <ul>
-<li>STM32U5xx drivers from STM32CubeU5 V1.5.0</li>
+<li>STM32U5xx drivers from STM32CubeU5 V1.7.0</li>
 </ul>
 <p>X-CUBE packages:</p>
 <ul>
-<li>X-CUBE-BLEMGR V3.1.0</li>
-<li>X-CUBE-MEMS1 V10.0.0</li>
+<li>X-CUBE-MEMS1 V11.2.0</li>
 <li>X-CUBE-NFC4 V3.0.0</li>
-<li>X-CUBE-NFC7 V1.0.1</li>
 </ul>
 <p>STEVAL-MKSBOX1V1:</p>
 <ul>
@@ -103,7 +118,7 @@ report errors after building.</li>
 <p>For IAR:</p>
 <ul>
 <li>Open IAR toolchain (this firmware has been successfully tested with
-Embedded Workbench V9.20.1).</li>
+Embedded Workbench V9.60.3).</li>
 <li>Open the IAR project file EWARM.eww</li>
 <li>Rebuild all files and Flash the binary on STEVAL-STWINBX1</li>
 </ul>
@@ -117,7 +132,7 @@ tested with MDK-ARM Professional Version: 5.38.0).</li>
 <p>For Integrated Development Environment for STM32:</p>
 <ul>
 <li>Open STM32CubeIDE (this firmware has been successfully tested with
-Version 1.15.1)</li>
+Version 1.18.1)</li>
 <li>Set the default workspace proposed by the IDE (please be sure that
 there are not spaces in the workspace path).</li>
 <li>Press “File” -&gt; “Import” -&gt; “Existing Projects into
@@ -129,7 +144,7 @@ STM32CubeIDE).</li>
 <h3 id="author"><b>Author</b></h3>
 <p>SRA Application Team</p>
 <h3 id="license"><b>License</b></h3>
-<p>Copyright (c) 2024 STMicroelectronics. All rights reserved.</p>
+<p>Copyright (c) 2025 STMicroelectronics. All rights reserved.</p>
 <p>This software is licensed under terms that can be found in the
 LICENSE file in the root directory of this software component. If no
 LICENSE file comes with this software, it is provided AS-IS.</p>

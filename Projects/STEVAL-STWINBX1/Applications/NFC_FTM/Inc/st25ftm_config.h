@@ -1,15 +1,13 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    NFC_FTM\Inc\st25ftm_config.h
+  * @file    st25ftm_config.h
   * @author  System Research & Applications Team - Catania Lab.
-  * @version V2.0.0
-  * @date    10-Jun-2024
   * @brief   FTM Configuration APIs
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -28,31 +26,34 @@
 extern "C" {
 #endif
 
+#include "stdio.h"
 #include "stm32u5xx_hal.h"
-#include "STBOX1_config.h"
+#include "stbox1_config.h"
 #include "steval_stwinbx1.h"
 #include "STWIN.box_nfctag.h"
 /* Uncomment only one of the following 2 defines in function of the ST25 component Type */
-//#define ST25FTM_INTERNALSTATE_FIELD_STATUS  ST25DVxxKC_FIELD_STATUS_E;
 #define ST25FTM_INTERNALSTATE_FIELD_STATUS ST25DV_FIELD_STATUS
 
 /* Exported types ----------------------------------------------------------- */
 /*! Fast Transfer Mode buffer access status */
-typedef enum {
-  ST25FTM_MSG_OK =0,        /*!< Message read/write ok */
+typedef enum
+{
+  ST25FTM_MSG_OK = 0,       /*!< Message read/write ok */
   ST25FTM_MSG_ERROR,        /*!< The peer device doesn't respond */
   ST25FTM_MSG_BUSY          /*!< The buffer is not empty while writing */
 } ST25FTM_MessageStatus_t;
 
 /*! Fast Transfer Mode current message owner */
-typedef enum {
+typedef enum
+{
   ST25FTM_MESSAGE_EMPTY = 0,        /*!< There is no message */
   ST25FTM_MESSAGE_ME = 1,           /*!< Current message has been written by this device */
   ST25FTM_MESSAGE_PEER = 2,         /*!< Current message has been written by the peer device */
-  ST25FTM_MESSAGE_OWNER_ERROR = 3   /*!< An error occured while getting the message owner */
+  ST25FTM_MESSAGE_OWNER_ERROR = 3   /*!< An error occurred while getting the message owner */
 } ST25FTM_MessageOwner_t;
 
-typedef enum {
+typedef enum
+{
   ST25FTM_CRC_START,
   ST25FTM_CRC_END,
   ST25FTM_CRC_ACCUMULATE,
@@ -102,16 +103,16 @@ extern ST25FTM_MessageOwner_t ST25FTM_GetMessageOwner(void);
   * @retval ST25FTM_MSG_OK      Message successfully read.
   * @retval ST25FTM_MSG_ERROR   Unable to read the message.
 */
-extern ST25FTM_MessageStatus_t ST25FTM_ReadMessage(uint8_t *msg, uint32_t* msg_len);
+extern ST25FTM_MessageStatus_t ST25FTM_ReadMessage(uint8_t *msg, uint32_t *msg_len);
 
 /*! Write the FTM buffer.
   * @param msg      The buffer containing the data to written.
   * @param msg_len  Number of bytes to write.
   * @retval ST25FTM_MSG_OK      Message successfully written.
   * @retval ST25FTM_MSG_ERROR   Unable to write the message (eg: tag has been removed).
-  * @retval ST25FTM_MSG_BUSY    FTM buffer contains a meesage that has not been read yet.
+  * @retval ST25FTM_MSG_BUSY    FTM buffer contains a message that has not been read yet.
 */
-extern ST25FTM_MessageStatus_t ST25FTM_WriteMessage(uint8_t* msg, uint32_t msg_len);
+extern ST25FTM_MessageStatus_t ST25FTM_WriteMessage(uint8_t *msg, uint32_t msg_len);
 
 /*! Initialize the NFC device (dynamic tag or reader) for the FTM.
 */
@@ -137,19 +138,19 @@ extern ST25FTM_Crc_t ST25FTM_GetCrc(uint8_t *data, uint32_t length, ST25FTM_crc_
 #if defined ( __GNUC__ ) && !defined (__CC_ARM)
 /* GNU Compiler: packed attribute must be placed after the type keyword */
 #define ST25FTM_PACKED(type) type __attribute__((packed,aligned(1)))
-#else
+#else /* defined ( __GNUC__ ) && !defined (__CC_ARM) */
 /* ARM Compiler: packed attribute must be placed before the type keyword */
 #define ST25FTM_PACKED(type) __packed type
-#endif
+#endif /* defined ( __GNUC__ ) && !defined (__CC_ARM) */
 
 #if (ST25FTM_ENABLE_LOG != 0)
 #include "logger.h"
 #define ST25FTM_LOG(...)  STBOX1_PRINTF(__VA_ARGS__)
 #define ST25FTM_HEX2STR(buf,len) hex2Str(buf,len)
-#else
+#else /* (ST25FTM_ENABLE_LOG != 0) */
 #define ST25FTM_LOG(...)
 #define ST25FTM_HEX2STR(buf,len)
-#endif
+#endif /* (ST25FTM_ENABLE_LOG != 0) */
 
 #ifdef __cplusplus
 }

@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -14,7 +14,7 @@
   * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
-  */
+*/
 /* USER CODE END Header */
 
 /* Define to prevent recursive inclusion -------------------------------------*/
@@ -192,8 +192,6 @@ int32_t BSP_I2C2_SendRecv(uint16_t DevAddr, uint8_t *pTxdata, uint8_t *pRxdata, 
 int32_t BSP_I2C2_RegisterDefaultMspCallbacks (void);
 int32_t BSP_I2C2_RegisterMspCallbacks (BSP_I2C_Cb_t *Callbacks);
 #endif /* (USE_HAL_I2C_REGISTER_CALLBACKS == 1U) */
-int32_t BSP_I2C2_Send_DMA(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
-int32_t BSP_I2C2_Recv_DMA(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
 HAL_StatusTypeDef MX_SPI3_Init(SPI_HandleTypeDef* hspi);
 int32_t BSP_SPI3_Init(void);
 int32_t BSP_SPI3_DeInit(void);

@@ -16,7 +16,7 @@
         <TargetCommonOption>
           <Device>STM32U585AIIx</Device>
           <Vendor>STMicroelectronics</Vendor>
-          <PackID>Keil.STM32U5xx_DFP.2.2.1</PackID>
+          <PackID>Keil.STM32U5xx_DFP.2.2.4</PackID>
           <PackURL>https://www.keil.com/pack/</PackURL>
           <Cpu>IRAM(0x20000000-0x200BFFFF) IROM(0x08000000-0x81FFFFF) CLOCK(8000000) FPU3(SFPU) CPUTYPE("Cortex-M33") ELITTLE TZ DSP</Cpu>
           <FlashUtilSpec></FlashUtilSpec>
@@ -340,7 +340,7 @@
               <MiscControls>-Wno-format -Wno-enum-conversion</MiscControls>
               <Define>USE_HAL_DRIVER,STM32U585xx</Define>
               <Undefine></Undefine>
-              <IncludePath>../Inc;../../../../../Drivers/STM32U5xx_HAL_Driver/Inc;../../../../../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy;../../../../../Drivers/CMSIS/Device/ST/STM32U5xx/Include;../../../../../Drivers/CMSIS/Include;../../../../../Drivers/BSP/Components/Common;../../../../../Drivers/BSP/STWIN.box;../../../../../Middlewares/ST/ST25FTM/Inc;../../../../../Drivers/BSP/Components/ism330dhcx;../../../../../Drivers/BSP/Components/iis2mdc;../../../../../Drivers/BSP/Components/iis2dlpc;../../../../../Drivers/BSP/Components/iis2iclx;../../../../../Drivers/BSP/Components/iis3dwb;../../../../../Drivers/BSP/Components/stts22h;../../../../../Drivers/BSP/Components/ilps22qs;../../../../../Drivers/BSP/Components/ST25DV</IncludePath>
+              <IncludePath>../Inc;../../../../../Drivers/STM32U5xx_HAL_Driver/Inc;../../../../../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy;../../../../../Drivers/CMSIS/Device/ST/STM32U5xx/Include;../../../../../Drivers/CMSIS/Include;../../../../../Drivers/BSP/STWIN.box;../../../../../Drivers/BSP/Components/Common;../../../../../Middlewares/ST/ST25FTM/Inc;../../../../../Drivers/BSP/Components/ism330dhcx;../../../../../Drivers/BSP/Components/iis2mdc;../../../../../Drivers/BSP/Components/iis2dlpc;../../../../../Drivers/BSP/Components/iis2iclx;../../../../../Drivers/BSP/Components/iis3dwb;../../../../../Drivers/BSP/Components/stts22h;../../../../../Drivers/BSP/Components/ilps22qs;../../../../../Drivers/BSP/Components/ST25DV</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -765,6 +765,21 @@
               <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sd_ex.c</FilePath>
             </File>
             <File>
+              <FileName>stm32u5xx_hal_mmc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mmc.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32u5xx_hal_mmc_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mmc_ex.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32u5xx_hal_sdio.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sdio.c</FilePath>
+            </File>
+            <File>
               <FileName>stm32u5xx_hal_tim.c</FileName>
               <FileType>1</FileType>
               <FilePath>../../../../../Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_tim.c</FilePath>
@@ -798,6 +813,16 @@
               <FileName>system_stm32u5xx.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Src/system_stm32u5xx.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Middlewares/STEVAL-STWINBX1/Documentation</GroupName>
+          <Files>
+            <File>
+              <FileName>LICENSE.txt</FileName>
+              <FileType>5</FileType>
+              <FilePath>../../../../../Drivers/BSP/Components/Common/LICENSE.txt</FilePath>
             </File>
           </Files>
         </Group>

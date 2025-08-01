@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -45,26 +45,6 @@
   * @{
   */
 
-#define BUS_I2C2_INSTANCE I2C2
-#define BUS_I2C2_SDA_GPIO_CLK_DISABLE() __HAL_RCC_GPIOF_CLK_DISABLE()
-#define BUS_I2C2_SDA_GPIO_CLK_ENABLE() __HAL_RCC_GPIOF_CLK_ENABLE()
-#define BUS_I2C2_SDA_GPIO_PORT GPIOF
-#define BUS_I2C2_SDA_GPIO_PIN GPIO_PIN_0
-#define BUS_I2C2_SDA_GPIO_AF GPIO_AF4_I2C2
-#define BUS_I2C2_SCL_GPIO_AF GPIO_AF4_I2C2
-#define BUS_I2C2_SCL_GPIO_PORT GPIOH
-#define BUS_I2C2_SCL_GPIO_CLK_DISABLE() __HAL_RCC_GPIOH_CLK_DISABLE()
-#define BUS_I2C2_SCL_GPIO_PIN GPIO_PIN_4
-#define BUS_I2C2_SCL_GPIO_CLK_ENABLE() __HAL_RCC_GPIOH_CLK_ENABLE()
-
-#ifndef BUS_I2C2_POLL_TIMEOUT
-   #define BUS_I2C2_POLL_TIMEOUT                0x1000U
-#endif
-/* I2C2 Frequency in Hz  */
-#ifndef BUS_I2C2_FREQUENCY
-   #define BUS_I2C2_FREQUENCY  1000000U /* Frequency of I2Cn = 100 KHz*/
-#endif
-
 #define BUS_SPI2_INSTANCE SPI2
 #define BUS_SPI2_SCK_GPIO_PORT GPIOI
 #define BUS_SPI2_SCK_GPIO_PIN GPIO_PIN_1
@@ -88,6 +68,26 @@
 /* SPI2 Baud rate in bps  */
 #ifndef BUS_SPI2_BAUDRATE
    #define BUS_SPI2_BAUDRATE   10000000U /* baud rate of SPIn = 10 Mbps*/
+#endif
+
+#define BUS_I2C2_INSTANCE I2C2
+#define BUS_I2C2_SDA_GPIO_CLK_DISABLE() __HAL_RCC_GPIOF_CLK_DISABLE()
+#define BUS_I2C2_SDA_GPIO_CLK_ENABLE() __HAL_RCC_GPIOF_CLK_ENABLE()
+#define BUS_I2C2_SDA_GPIO_PORT GPIOF
+#define BUS_I2C2_SDA_GPIO_PIN GPIO_PIN_0
+#define BUS_I2C2_SDA_GPIO_AF GPIO_AF4_I2C2
+#define BUS_I2C2_SCL_GPIO_AF GPIO_AF4_I2C2
+#define BUS_I2C2_SCL_GPIO_PORT GPIOH
+#define BUS_I2C2_SCL_GPIO_CLK_DISABLE() __HAL_RCC_GPIOH_CLK_DISABLE()
+#define BUS_I2C2_SCL_GPIO_PIN GPIO_PIN_4
+#define BUS_I2C2_SCL_GPIO_CLK_ENABLE() __HAL_RCC_GPIOH_CLK_ENABLE()
+
+#ifndef BUS_I2C2_POLL_TIMEOUT
+   #define BUS_I2C2_POLL_TIMEOUT                0x1000U
+#endif
+/* I2C2 Frequency in Hz  */
+#ifndef BUS_I2C2_FREQUENCY
+   #define BUS_I2C2_FREQUENCY  1000000U /* Frequency of I2Cn = 100 KHz*/
 #endif
 
 #define BUS_SPI3_INSTANCE SPI3
@@ -149,8 +149,8 @@ typedef struct
   * @{
   */
 
-extern I2C_HandleTypeDef hi2c2;
 extern SPI_HandleTypeDef hspi2;
+extern I2C_HandleTypeDef hi2c2;
 extern SPI_HandleTypeDef hspi3;
 
 /**
@@ -160,6 +160,18 @@ extern SPI_HandleTypeDef hspi3;
 /** @addtogroup STEVAL_STWINBX1_BUS_Exported_Functions
   * @{
   */
+
+/* BUS IO driver over SPI Peripheral */
+HAL_StatusTypeDef MX_SPI2_Init(SPI_HandleTypeDef* hspi);
+int32_t BSP_SPI2_Init(void);
+int32_t BSP_SPI2_DeInit(void);
+int32_t BSP_SPI2_Send(uint8_t *pData, uint16_t Length);
+int32_t BSP_SPI2_Recv(uint8_t *pData, uint16_t Length);
+int32_t BSP_SPI2_SendRecv(uint8_t *pTxData, uint8_t *pRxData, uint16_t Length);
+#if (USE_HAL_SPI_REGISTER_CALLBACKS == 1U)
+int32_t BSP_SPI2_RegisterDefaultMspCallbacks (void);
+int32_t BSP_SPI2_RegisterMspCallbacks (BSP_SPI_Cb_t *Callbacks);
+#endif /* (USE_HAL_SPI_REGISTER_CALLBACKS == 1U) */
 
 /* BUS IO driver over I2C Peripheral */
 HAL_StatusTypeDef MX_I2C2_Init(I2C_HandleTypeDef* hi2c);
@@ -177,23 +189,6 @@ int32_t BSP_I2C2_SendRecv(uint16_t DevAddr, uint8_t *pTxdata, uint8_t *pRxdata, 
 int32_t BSP_I2C2_RegisterDefaultMspCallbacks (void);
 int32_t BSP_I2C2_RegisterMspCallbacks (BSP_I2C_Cb_t *Callbacks);
 #endif /* (USE_HAL_I2C_REGISTER_CALLBACKS == 1U) */
-int32_t BSP_I2C2_Send_DMA(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
-int32_t BSP_I2C2_Recv_DMA(uint16_t DevAddr, uint8_t *pData, uint16_t Length);
-/* BUS IO driver over SPI Peripheral */
-HAL_StatusTypeDef MX_SPI2_Init(SPI_HandleTypeDef* hspi);
-int32_t BSP_SPI2_Init(void);
-int32_t BSP_SPI2_DeInit(void);
-int32_t BSP_SPI2_Send(uint8_t *pData, uint16_t Length);
-int32_t BSP_SPI2_Recv(uint8_t *pData, uint16_t Length);
-int32_t BSP_SPI2_SendRecv(uint8_t *pTxData, uint8_t *pRxData, uint16_t Length);
-#if (USE_HAL_SPI_REGISTER_CALLBACKS == 1U)
-int32_t BSP_SPI2_RegisterDefaultMspCallbacks (void);
-int32_t BSP_SPI2_RegisterMspCallbacks (BSP_SPI_Cb_t *Callbacks);
-#endif /* (USE_HAL_SPI_REGISTER_CALLBACKS == 1U) */
-
-int32_t BSP_SPI2_Send_DMA(uint8_t *pData, uint16_t Length);
-int32_t BSP_SPI2_Recv_DMA(uint8_t *pData, uint16_t Length);
-int32_t BSP_SPI2_SendRecv_DMA(uint8_t *pTxData, uint8_t *pRxData, uint16_t Length);
 HAL_StatusTypeDef MX_SPI3_Init(SPI_HandleTypeDef* hspi);
 int32_t BSP_SPI3_Init(void);
 int32_t BSP_SPI3_DeInit(void);

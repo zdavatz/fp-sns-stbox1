@@ -9,6 +9,7 @@
 | BSP STWIN.box                          				| STMicroelectronics   | BSD-3-Clause |
 | BlueNRG-2 Middleware                     				| STMicroelectronics   | SLA0055 |
 | BlueNRG-LP Middleware                     			| STMicroelectronics   | SLA0077 |
+| STM32WB07_06 Middleware								| STMicroelectronics   | SLA0094 |
 | STM32_BLE_Manager Middleware             				| STMicroelectronics   | SLA0094 |
 | cmsis_rtos_threadx Middleware			  				| STMicroelectronics   | SLA0044 |
 | filex Middleware				         				| Microsoft Corporation| Microsoft Azure RTOS |

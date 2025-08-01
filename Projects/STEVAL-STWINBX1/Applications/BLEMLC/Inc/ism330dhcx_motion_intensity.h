@@ -1,13 +1,13 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    BLEMLC\Inc\ism330dhcx_motion_intensity.h
+  * @file    ism330dhcx_motion_intensity.h
   * @author  Sensors Software Solution Team
   * @brief   This file contains the configuration for ism330dhcx_motion_intensity
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -23,7 +23,7 @@
 #define ISM330DHCX_MOTION_INTENSITY_H
 
 #ifdef __cplusplus
-  extern "C" {
+extern "C" {
 #endif
 
 /* Includes ------------------------------------------------------------------*/
@@ -32,7 +32,8 @@
 #define MEMS_UCF_SHARED_TYPES
 
 /** Common data block definition **/
-typedef struct {
+typedef struct
+{
   uint8_t address;
   uint8_t data;
 } ucf_line_t;
@@ -40,7 +41,8 @@ typedef struct {
 #endif /* MEMS_UCF_SHARED_TYPES */
 
 /** Configuration array generated from Unico Tool **/
-const ucf_line_t ism330dhcx_motion_intensity[] = {
+const ucf_line_t ism330dhcx_motion_intensity[] =
+{
   {.address = 0x10, .data = 0x00,},
   {.address = 0x11, .data = 0x00,},
   {.address = 0x01, .data = 0x80,},

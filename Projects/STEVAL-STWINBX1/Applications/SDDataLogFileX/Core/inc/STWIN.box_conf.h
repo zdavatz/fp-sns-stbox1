@@ -2,13 +2,13 @@
   ******************************************************************************
   * @file    STWIN.box_conf.h
   * @author  System Research & Applications Team - Catania Lab.
-  * @version V2.0.0
-  * @date    10-Jun-2024
+  * @version V2.1.0
+  * @date    20-May-2025
   * @brief   Template for STWIN.box_conf.h (to be placed in user space)
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2024 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -17,7 +17,7 @@
   *
   ******************************************************************************
   */
- 
+
 /* Define to prevent recursive inclusion -------------------------------------*/
 #ifndef STWIN_BOX_CONF_TEMPLATE_H__
 #define STWIN_BOX_CONF_TEMPLATE_H__
@@ -48,10 +48,10 @@ extern EXTI_HandleTypeDef hexti5;
 #define BSP_STTS22H_INT_EXTI_IRQn               EXTI5_IRQn
 #ifndef BSP_STTS22H_INT_EXTI_IRQ_PP
 #define BSP_STTS22H_INT_EXTI_IRQ_PP             7
-#endif
+#endif /* H_EXTI_INT_STTS22H */
 #ifndef BSP_STTS22H_INT_EXTI_IRQ_SP
 #define BSP_STTS22H_INT_EXTI_IRQ_SP             0
-#endif
+#endif /* BSP_STTS22H_INT_EXTI_IRQ_SP */
 #define BSP_STTS22H_0_I2C_INIT                  BSP_I2C2_Init
 #define BSP_STTS22H_0_I2C_DEINIT                BSP_I2C2_DeInit
 #define BSP_STTS22H_0_I2C_READ_REG              BSP_I2C2_ReadReg
@@ -74,10 +74,10 @@ extern EXTI_HandleTypeDef hexti1;
 #define BSP_IIS2DLPC_INT1_EXTI_IRQn               EXTI1_IRQn
 #ifndef BSP_IIS2DLPC_INT1_EXTI_IRQ_PP
 #define BSP_IIS2DLPC_INT1_EXTI_IRQ_PP             7
-#endif
+#endif /* BSP_IIS2DLPC_INT1_EXTI_IRQ_PP */
 #ifndef BSP_IIS2DLPC_INT1_EXTI_IRQ_SP
 #define BSP_IIS2DLPC_INT1_EXTI_IRQ_SP             0
-#endif
+#endif /* BSP_IIS2DLPC_INT1_EXTI_IRQ_SP */
 extern EXTI_HandleTypeDef hexti2;
 #define H_EXTI_2         hexti2
 #define H_EXTI_INT2_IIS2DLPC                      hexti2
@@ -88,10 +88,10 @@ extern EXTI_HandleTypeDef hexti2;
 #define BSP_IIS2DLPC_INT2_EXTI_IRQn               EXTI2_IRQn
 #ifndef BSP_IIS2DLPC_INT2_EXTI_IRQ_PP
 #define BSP_IIS2DLPC_INT2_EXTI_IRQ_PP             7
-#endif
+#endif /* BSP_IIS2DLPC_INT2_EXTI_IRQ_PP */
 #ifndef BSP_IIS2DLPC_INT2_EXTI_IRQ_SP
 #define BSP_IIS2DLPC_INT2_EXTI_IRQ_SP             0
-#endif
+#endif /* BSP_IIS2DLPC_INT2_EXTI_IRQ_SP */
 #define BSP_IIS2DLPC_0_SPI_INIT                  BSP_SPI2_Init
 #define BSP_IIS2DLPC_0_SPI_DEINIT                BSP_SPI2_DeInit
 #define BSP_IIS2DLPC_0_SPI_SEND                  BSP_SPI2_Send
@@ -110,10 +110,10 @@ extern EXTI_HandleTypeDef hexti15;
 #define BSP_IIS3DWB_INT1_EXTI_IRQn                EXTI15_IRQn
 #ifndef BSP_IIS3DWB_INT1_EXTI_IRQ_PP
 #define BSP_IIS3DWB_INT1_EXTI_IRQ_PP              7
-#endif
+#endif /* BSP_IIS3DWB_INT1_EXTI_IRQ_PP */
 #ifndef BSP_IIS3DWB_INT1_EXTI_IRQ_SP
 #define BSP_IIS3DWB_INT1_EXTI_IRQ_SP              0
-#endif
+#endif /* BSP_IIS3DWB_INT1_EXTI_IRQ_SP */
 #define BSP_IIS3DWB_0_SPI_INIT                   BSP_SPI2_Init
 #define BSP_IIS3DWB_0_SPI_DEINIT                 BSP_SPI2_DeInit
 #define BSP_IIS3DWB_0_SPI_SEND                   BSP_SPI2_Send
@@ -132,10 +132,10 @@ extern EXTI_HandleTypeDef hexti8;
 #define BSP_ISM330DHCX_INT1_EXTI_IRQn               EXTI8_IRQn
 #ifndef BSP_ISM330DHCX_INT1_EXTI_IRQ_PP
 #define BSP_ISM330DHCX_INT1_EXTI_IRQ_PP             7
-#endif
+#endif /* BSP_ISM330DHCX_INT1_EXTI_IRQ_PP */
 #ifndef BSP_ISM330DHCX_INT1_EXTI_IRQ_SP
 #define BSP_ISM330DHCX_INT1_EXTI_IRQ_SP             0
-#endif
+#endif /* BSP_ISM330DHCX_INT1_EXTI_IRQ_SP */
 extern EXTI_HandleTypeDef hexti4;
 #define H_EXTI_4         hexti4
 #define H_EXTI_INT2_ISM330DHCX                      hexti4
@@ -146,10 +146,10 @@ extern EXTI_HandleTypeDef hexti4;
 #define BSP_ISM330DHCX_INT2_EXTI_IRQn               EXTI4_IRQn
 #ifndef BSP_ISM330DHCX_INT2_EXTI_IRQ_PP
 #define BSP_ISM330DHCX_INT2_EXTI_IRQ_PP             7
-#endif
+#endif /* BSP_ISM330DHCX_INT2_EXTI_IRQ_PP */
 #ifndef BSP_ISM330DHCX_INT2_EXTI_IRQ_SP
 #define BSP_ISM330DHCX_INT2_EXTI_IRQ_SP             0
-#endif
+#endif /* BSP_ISM330DHCX_INT2_EXTI_IRQ_SP */
 #define BSP_ISM330DHCX_0_SPI_INIT                  BSP_SPI2_Init
 #define BSP_ISM330DHCX_0_SPI_DEINIT                BSP_SPI2_DeInit
 #define BSP_ISM330DHCX_0_SPI_SEND                  BSP_SPI2_Send
@@ -168,10 +168,10 @@ extern EXTI_HandleTypeDef hexti3;
 #define BSP_IIS2ICLX_INT1_EXTI_IRQn                 EXTI3_IRQn
 #ifndef BSP_IIS2ICLX_INT1_EXTI_IRQ_PP
 #define BSP_IIS2ICLX_INT1_EXTI_IRQ_PP               7
-#endif
+#endif /* BSP_IIS2ICLX_INT1_EXTI_IRQ_PP */
 #ifndef BSP_IIS2ICLX_INT1_EXTI_IRQ_SP
 #define BSP_IIS2ICLX_INT1_EXTI_IRQ_SP               0
-#endif
+#endif /* BSP_IIS2ICLX_INT1_EXTI_IRQ_SP */
 extern EXTI_HandleTypeDef hexti11;
 #define H_EXTI_11           hexti11
 #define H_EXTI_INT2_IIS2ICLX                        hexti11
@@ -182,10 +182,10 @@ extern EXTI_HandleTypeDef hexti11;
 #define BSP_IIS2ICLX_INT2_EXTI_IRQn                 EXTI11_IRQn
 #ifndef BSP_IIS2ICLX_INT2_EXTI_IRQ_PP
 #define BSP_IIS2ICLX_INT2_EXTI_IRQ_PP               7
-#endif
+#endif /* BSP_IIS2ICLX_INT2_EXTI_IRQ_PP */
 #ifndef BSP_IIS2ICLX_INT2_EXTI_IRQ_SP
 #define BSP_IIS2ICLX_INT2_EXTI_IRQ_SP               0
-#endif
+#endif /* BSP_IIS2ICLX_INT2_EXTI_IRQ_SP */
 #define BSP_IIS2ICLX_0_SPI_INIT                    BSP_SPI2_Init
 #define BSP_IIS2ICLX_0_SPI_DEINIT                  BSP_SPI2_DeInit
 #define BSP_IIS2ICLX_0_SPI_SEND                    BSP_SPI2_Send
@@ -231,7 +231,7 @@ extern EXTI_HandleTypeDef                       hexti13;
 
 #if (AUDIO_IN_CHANNELS==0)
 #error "Please enable at least one of the microphones"
-#endif
+#endif /* (AUDIO_IN_CHANNELS==0) */
 
 
 /* The default value of the N_MS_PER_INTERRUPT directive in the driver is set to 1,
@@ -292,15 +292,16 @@ modification in the application layer developed with older versions of the drive
 
 #define BSP_NFCTAG_INSTANCE             1U
 
-#if (USE_MOTION_SENSOR_IIS2DLPC_0 + USE_MOTION_SENSOR_ISM330DHCX_0 + USE_MOTION_SENSOR_IIS2MDC_0 + USE_MOTION_SENSOR_IIS3DWB_0 + USE_MOTION_SENSOR_IIS2ICLX_0 == 0)
+#if (USE_MOTION_SENSOR_IIS2DLPC_0 + USE_MOTION_SENSOR_ISM330DHCX_0 + USE_MOTION_SENSOR_IIS2MDC_0 + \
+     USE_MOTION_SENSOR_IIS3DWB_0 + USE_MOTION_SENSOR_IIS2ICLX_0 == 0)
 #undef USE_MOTION_SENSOR_ISM330DHCX_0
 #define USE_MOTION_SENSOR_ISM330DHCX_0     1U
-#endif
+#endif /* for USE_MOTION_SENSOR_ISM330DHCX_0 */
 
 #if (USE_ENV_SENSOR_STTS22H_0 + USE_ENV_SENSOR_ILPS22QS_0 == 0)
 #undef USE_ENV_SENSOR_STTS22H_0
 #define USE_ENV_SENSOR_STTS22H_0     1U
-#endif
+#endif /* (USE_ENV_SENSOR_STTS22H_0 + USE_ENV_SENSOR_ILPS22QS_0 == 0) */
 
 #ifdef __cplusplus
 }

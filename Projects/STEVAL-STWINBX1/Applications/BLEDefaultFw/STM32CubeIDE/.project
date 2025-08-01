@@ -38,24 +38,19 @@
 			<locationURI>PARENT-1-PROJECT_LOC/BLEDefaultFw.ioc</locationURI>
 		</link>
 		<link>
-			<name>Application/User/BLE_Function.c</name>
-			<type>1</type>
-			<locationURI>PARENT-1-PROJECT_LOC/Src/BLE_Function.c</locationURI>
-		</link>
-		<link>
-			<name>Application/User/BLE_Implementation.c</name>
-			<type>1</type>
-			<locationURI>PARENT-1-PROJECT_LOC/Src/BLE_Implementation.c</locationURI>
-		</link>
-		<link>
-			<name>Application/User/OTA.c</name>
-			<type>1</type>
-			<locationURI>PARENT-1-PROJECT_LOC/Src/OTA.c</locationURI>
-		</link>
-		<link>
 			<name>Application/User/app_bledefaultfw.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Src/app_bledefaultfw.c</locationURI>
+		</link>
+		<link>
+			<name>Application/User/ble_function.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Src/ble_function.c</locationURI>
+		</link>
+		<link>
+			<name>Application/User/ble_implementation.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Src/ble_implementation.c</locationURI>
 		</link>
 		<link>
 			<name>Application/User/hci_tl_interface.c</name>
@@ -71,6 +66,11 @@
 			<name>Application/User/main.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Src/main.c</locationURI>
+		</link>
+		<link>
+			<name>Application/User/ota.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Src/ota.c</locationURI>
 		</link>
 		<link>
 			<name>Application/User/steval_stwinbx1.c</name>
@@ -193,6 +193,16 @@
 			<locationURI>PARENT-5-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mdf.c</locationURI>
 		</link>
 		<link>
+			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_mmc.c</name>
+			<type>1</type>
+			<locationURI>PARENT-5-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mmc.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_mmc_ex.c</name>
+			<type>1</type>
+			<locationURI>PARENT-5-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mmc_ex.c</locationURI>
+		</link>
+		<link>
 			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_pcd.c</name>
 			<type>1</type>
 			<locationURI>PARENT-5-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_pcd.c</locationURI>
@@ -251,6 +261,11 @@
 			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_sd_ex.c</name>
 			<type>1</type>
 			<locationURI>PARENT-5-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sd_ex.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_sdio.c</name>
+			<type>1</type>
+			<locationURI>PARENT-5-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sdio.c</locationURI>
 		</link>
 		<link>
 			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_spi.c</name>
@@ -423,9 +438,14 @@
 			<locationURI>PARENT-5-PROJECT_LOC/Drivers/BSP/STWIN.box/STWIN.box_sd.c</locationURI>
 		</link>
 		<link>
-			<name>Middlewares/STM32_BLE_Manager/BLE_Manager/BLE_Manager/BLE_Manager.c</name>
+			<name>Middlewares/STEVAL-STWINBX1/Documentation/LICENSE.txt</name>
 			<type>1</type>
-			<locationURI>PARENT-5-PROJECT_LOC/Middlewares/ST/STM32_BLE_Manager/Src/BLE_Manager.c</locationURI>
+			<locationURI>PARENT-5-PROJECT_LOC/Drivers/BSP/Components/Common/LICENSE.txt</locationURI>
+		</link>
+		<link>
+			<name>Middlewares/STM32_BLE_Manager/BLE_Features/BLE_Manager/ble_manager.c</name>
+			<type>1</type>
+			<locationURI>PARENT-5-PROJECT_LOC/Middlewares/ST/STM32_BLE_Manager/Src/ble_manager.c</locationURI>
 		</link>
 		<link>
 			<name>Middlewares/parson/Data Exchange/parson/parson.c</name>
@@ -458,19 +478,19 @@
 			<locationURI>PARENT-5-PROJECT_LOC/Middlewares/ST/BlueNRG-2/utils/ble_list.c</locationURI>
 		</link>
 		<link>
-			<name>Middlewares/STM32_BLE_Manager/BLE_Features/HardwareSensors/Battery/BLE_Battery.c</name>
+			<name>Middlewares/STM32_BLE_Manager/BLE_Features/HardwareSensors/Battery/ble_battery.c</name>
 			<type>1</type>
-			<locationURI>PARENT-5-PROJECT_LOC/Middlewares/ST/STM32_BLE_Manager/Src/BLE_Battery.c</locationURI>
+			<locationURI>PARENT-5-PROJECT_LOC/Middlewares/ST/STM32_BLE_Manager/Src/ble_battery.c</locationURI>
 		</link>
 		<link>
-			<name>Middlewares/STM32_BLE_Manager/BLE_Features/HardwareSensors/Environmental/BLE_Environmental.c</name>
+			<name>Middlewares/STM32_BLE_Manager/BLE_Features/HardwareSensors/Environmental/ble_environmental.c</name>
 			<type>1</type>
-			<locationURI>PARENT-5-PROJECT_LOC/Middlewares/ST/STM32_BLE_Manager/Src/BLE_Environmental.c</locationURI>
+			<locationURI>PARENT-5-PROJECT_LOC/Middlewares/ST/STM32_BLE_Manager/Src/ble_environmental.c</locationURI>
 		</link>
 		<link>
-			<name>Middlewares/STM32_BLE_Manager/BLE_Features/HardwareSensors/Inertial/BLE_Inertial.c</name>
+			<name>Middlewares/STM32_BLE_Manager/BLE_Features/HardwareSensors/Inertial/ble_inertial.c</name>
 			<type>1</type>
-			<locationURI>PARENT-5-PROJECT_LOC/Middlewares/ST/STM32_BLE_Manager/Src/BLE_Inertial.c</locationURI>
+			<locationURI>PARENT-5-PROJECT_LOC/Middlewares/ST/STM32_BLE_Manager/Src/ble_inertial.c</locationURI>
 		</link>
 		<link>
 			<name>Middlewares/lib_nfc/Wireless/lib_nfc/Core/lib_NDEF.c</name>
