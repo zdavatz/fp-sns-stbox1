@@ -43,6 +43,31 @@ Here is the list of references to user documents:
 - STEVAL-MKBOXPRO (SensorTile.box PRO) discovery box with multi-sensors and wireless connectivity for any intelligent IoT node\[[STEVAL-MKBOXPRO](https://www.st.com/en/evaluation-tools/steval-mkboxpro.html)\]
 - STEVAL-STWINBX1 (STWIN.box) SensorTile Wireless Industrial Node Development Kit \[[STEVAL-STWINBX1](https://www.st.com/en/evaluation-tools/steval-stwinbx1.html)\]
 
+## SD Card Data Format (SDDataLogFileX)
+
+Each logging session (started/stopped via the user button) creates two files on the SD card:
+
+### Sensor CSV: `SensNNN.csv`
+
+CSV at ~100 Hz with header:
+
+```
+Time [mS], AccX [mg], AccY [mg], AccZ [mg], GyroX [mdps], GyroY [mdps], GyroZ [mdps],MagX [mgauss],MagY [mgauss],MagZ [mgauss],P [mB],T ['C]
+```
+
+| Column | Unit | Sensor |
+|--------|------|--------|
+| Time | milliseconds (ThreadX tick) | System |
+| AccX/Y/Z | milli-g | LSM6DSV16X (MKBOXPRO) / ISM330DHCX (STWINBX1) |
+| GyroX/Y/Z | milli-degrees/sec | LSM6DSV16X / ISM330DHCX |
+| MagX/Y/Z | milli-gauss | LIS2MDL (MKBOXPRO) / IIS2MDC (STWINBX1) |
+| P | millibar (hPa) | LPS22DF (MKBOXPRO) / ILPS22QS (STWINBX1) |
+| T | degrees Celsius | STTS22H |
+
+### Audio WAV: `MicNNN.wav`
+
+Standard RIFF WAV — mono, 16-bit PCM, 16 kHz sample rate (MP23DB01HP microphone). The file number `NNN` matches the corresponding sensor CSV.
+
 ## Known Limitations
 
 With some Android phones there are some compatibility issues for:
