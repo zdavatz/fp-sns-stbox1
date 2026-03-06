@@ -52,13 +52,12 @@ def plot_pump_cadence(t_sec, acc_x, acc_y, acc_z, fs, output_dir):
 
     fig, (ax_top, ax_spec, ax_cad) = plt.subplots(3, 1, figsize=(16, 12),
         gridspec_kw={'height_ratios': [1, 2, 1]}, sharex=True)
-    fig.suptitle('Pump-Kadenz-Analyse — Pumpfoil Session', fontsize=15, fontweight='bold')
 
     ax_top.plot(t_sec, acc_dynamic, color='steelblue', alpha=0.5, linewidth=0.3)
     env = pd.Series(np.abs(acc_dynamic)).rolling(500, center=True, min_periods=1).mean().values
     ax_top.plot(t_sec, env, color='navy', linewidth=1.5, label='Envelope')
     ax_top.set_ylabel('Dyn. Acc [mg]')
-    ax_top.set_title('Dynamische Beschleunigung (Gravitation entfernt)')
+    ax_top.set_title('Pump-Kadenz-Analyse - Pumpfoil Session\nDynamische Beschleunigung (Gravitation entfernt)', fontsize=13)
     ax_top.legend(loc='upper right')
     ax_top.grid(True, alpha=0.3)
 
@@ -137,7 +136,6 @@ def plot_pump_phases(t_sec, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, press, 
 
     fig, axes = plt.subplots(4, 1, figsize=(16, 13),
         gridspec_kw={'height_ratios': [2, 1, 1, 1]}, sharex=True)
-    fig.suptitle('Bewegungsphasen & Intensität — Pumpfoil Session', fontsize=15, fontweight='bold')
 
     ax = axes[0]
     ax.fill_between(t_sec, 0, gyro_rms, alpha=0.3, color='gray')
@@ -145,8 +143,8 @@ def plot_pump_phases(t_sec, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, press, 
         mask = phase_smooth == p_val
         ax.fill_between(t_sec, 0, np.where(mask, gyro_rms, 0), alpha=0.6,
                          color=color, label=labels_phase[p_val])
-    ax.set_ylabel('Rotations-\nintensität [dps]')
-    ax.set_title('Bewegungsintensität (Gyro RMS)')
+    ax.set_ylabel('Rotations-\nintensitaet [dps]')
+    ax.set_title('Bewegungsphasen & Intensitaet - Pumpfoil Session\nBewegungsintensitaet (Gyro RMS)', fontsize=13)
     ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3)
 

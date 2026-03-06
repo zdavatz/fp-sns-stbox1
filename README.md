@@ -68,6 +68,23 @@ Time [mS], AccX [mg], AccY [mg], AccZ [mg], GyroX [mdps], GyroY [mdps], GyroZ [m
 
 Standard RIFF WAV — mono, 16-bit PCM, 16 kHz sample rate (MP23DB01HP microphone). The file number `NNN` matches the corresponding sensor CSV.
 
+## Visualization Scripts
+
+Python scripts for plotting sensor and quaternion data are in `Utilities/scripts/`:
+
+- **`visualize_sensors.py`** — Plot sensor CSV data (accelerometer, gyroscope, magnetometer, temperature, pressure) and optionally quaternion orientation data.
+  ```
+  python Utilities/scripts/visualize_sensors.py sensor_data.csv [quaternion_data.csv] [-o OUTPUT_DIR]
+  ```
+- **`visualize_pumpfoil.py`** — Pumpfoil session analysis: pump cadence spectrogram and movement phase detection.
+  ```
+  python Utilities/scripts/visualize_pumpfoil.py sensor_data.csv [-o OUTPUT_DIR]
+  ```
+
+Generated plots are saved to the `png/` directory with timestamped filenames (e.g. `plot_quaternions_06.02.2026.png`).
+
+Requires: `pandas`, `numpy`, `matplotlib`, `scipy` (pumpfoil only).
+
 ## Known Limitations
 
 With some Android phones there are some compatibility issues for:

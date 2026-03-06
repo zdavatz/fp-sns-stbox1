@@ -32,14 +32,13 @@ def plot_sensors(csv_path, output_dir):
     t_sec = (t - t.iloc[0]).dt.total_seconds()
 
     fig, axes = plt.subplots(5, 1, figsize=(14, 16), sharex=True)
-    fig.suptitle(f'{os.path.basename(csv_path)} — Sensordaten (STEVAL-MKBOXPRO)',
-                 fontsize=14, fontweight='bold')
+    title = os.path.basename(csv_path).replace('.csv', '')
 
     axes[0].plot(t_sec, df['IMU accX[mg]'], label='X', alpha=0.8)
     axes[0].plot(t_sec, df['IMU accY[mg]'], label='Y', alpha=0.8)
     axes[0].plot(t_sec, df['accZ[mg]'], label='Z', alpha=0.8)
     axes[0].set_ylabel('Acc [mg]')
-    axes[0].set_title('Beschleunigung')
+    axes[0].set_title(f'Sensordaten (STEVAL-MKBOXPRO) - {title}\nBeschleunigung', fontsize=13)
     axes[0].legend(loc='upper right')
     axes[0].grid(True, alpha=0.3)
 
@@ -78,20 +77,19 @@ def plot_sensors(csv_path, output_dir):
 
 
 def plot_quaternions(csv_path, output_dir):
-    quat_data = pd.read_csv(csv_path, skiprows=1, header=None)
+    quat_data = pd.read_csv(csv_path, skiprows=1, header=None, usecols=[0, 1, 2, 3])
     quat_data.columns = ['Qi', 'Qj', 'Qk', 'Qs']
     samples = np.arange(len(quat_data))
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8))
-    fig.suptitle(f'{os.path.basename(csv_path)} — Quaternion / Orientierung',
-                 fontsize=14, fontweight='bold')
 
+    title = os.path.basename(csv_path).replace('.csv', '')
     ax1.plot(samples, quat_data['Qi'], label='Qi', alpha=0.8)
     ax1.plot(samples, quat_data['Qj'], label='Qj', alpha=0.8)
     ax1.plot(samples, quat_data['Qk'], label='Qk', alpha=0.8)
     ax1.plot(samples, quat_data['Qs'], label='Qs', alpha=0.8)
     ax1.set_ylabel('Quaternion-Komponenten')
-    ax1.set_title('Quaternion-Verlauf')
+    ax1.set_title(f'Quaternion / Orientierung - {title}\nQuaternion-Verlauf', fontsize=13)
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
     ax1.set_xlabel('Sample')

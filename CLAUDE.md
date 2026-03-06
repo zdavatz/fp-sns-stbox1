@@ -100,6 +100,17 @@ Logging is toggled by the user button. File counter auto-increments to avoid ove
 
 Data collected via the ST BLE Sensor app uses a slightly different format (date/time columns instead of raw ms timestamp).
 
+## Visualization Scripts
+
+Python scripts in `Utilities/scripts/` for plotting sensor data:
+- `visualize_sensors.py` — sensor CSV + optional quaternion CSV plotting
+- `visualize_pumpfoil.py` — pumpfoil session analysis (cadence spectrogram, movement phases)
+
+Generated plots go to `png/` with timestamped filenames (e.g. `plot_quaternions_06.02.2026.png`).
+Raw CSV data lives in `csv/`.
+
+Note: matplotlib `fig.suptitle()` has a font rendering bug with German characters (umlauts garbled in bold). Workaround: use `ax.set_title()` on the first axes with a two-line title instead.
+
 ## Known Limitations
 
 - Some Android devices have issues with BLE secure PIN connections — disable `STBOX1_BLE_SECURE_CONNECTION` as workaround
