@@ -113,7 +113,7 @@ Each session gets a zoomed plot with quaternions, Euler angles, and nose angle t
 Nose angle uses rotated sensor Y-axis (Breitachse mounting), 1s median filter (removes magnetometer spikes),
 60s rolling median baseline (crash-masked). Drop-in (green dashed line) and end crash (red shaded area) are marked.
 Combined nose angle plot includes FFT frequency analysis per session (pump frequency ~1 Hz vs magnetometer drift ~0.1 Hz).
-Mast is carbon (non-magnetic). Data quality degradation in later sessions is likely sensor fusion drift (gyro bias, stale mag calibration) without restart between runs.
+Mast is carbon (non-magnetic), but small metal screws next to sensor box cause hard/soft iron magnetometer interference. Use plastic screws instead. Session drift caused by gyro bias + stale mag calibration without restart.
 Raw CSV data lives in `csv/`.
 
 Note: matplotlib `fig.suptitle()` has a font rendering bug with German characters (umlauts garbled in bold). Workaround: use `ax.set_title()` on the first axes with a two-line title instead.
