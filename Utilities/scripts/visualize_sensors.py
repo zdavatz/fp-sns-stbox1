@@ -243,16 +243,37 @@ def plot_quaternions(csv_path, output_dir):
         baseline = baseline.interpolate(method='linear').bfill().ffill().values
         nose_angle = nose_smooth - baseline
 
-        # Store nose angle for combined plot (session range without last 5s crash)
-        pump_end = e - 5 * sample_rate_hz
-        pump_std = np.std(nose_angle[s:pump_end])
-        pump_range = np.max(nose_angle[s:pump_end]) - np.min(nose_angle[s:pump_end])
-        all_nose_angles.append((t_sec[sl], nose_angle[s_padded:e_padded],
-                                s, e, i, pump_std, pump_range, drop_in_idx))
+        # Detect crash start: scan backwards from end to find where angle
+        # first stays within ±25° for at least 2 seconds (= clean pumping)
+        crash_threshold = 25
+        stable_needed = 2 * sample_rate_hz
+        crash_start = e - 5 * sample_rate_hz  # fallback: last 5 seconds
+        for scan_idx in range(e - 1, s, -1):
+            # Check if the window [scan_idx - stable_needed : scan_idx] is clean
+            window_start = max(s, scan_idx - stable_needed)
+            window_data = nose_angle[window_start:scan_idx]
+            if len(window_data) >= stable_needed and np.all(np.abs(window_data) < crash_threshold):
+                crash_start = scan_idx
+                break
 
-        # Mark end-of-session crash: last 5 seconds of the session
-        crash_start = e - 5 * sample_rate_hz
-        crash_count = 1
+        # Detect clean pump start: after drop-in, find where angle settles < ±25°
+        pump_start = s
+        if drop_in_idx is not None:
+            for scan_idx in range(drop_in_idx, min(crash_start, e)):
+                window_end = min(scan_idx + stable_needed, e)
+                window_data = nose_angle[scan_idx:window_end]
+                if len(window_data) >= stable_needed and np.all(np.abs(window_data) < crash_threshold):
+                    pump_start = scan_idx
+                    break
+
+        # Store nose angle for combined plot with clean pump zone
+        pump_std = np.std(nose_angle[pump_start:crash_start])
+        pump_range = np.max(nose_angle[pump_start:crash_start]) - np.min(nose_angle[pump_start:crash_start])
+        all_nose_angles.append((t_sec[sl], nose_angle[s_padded:e_padded],
+                                s, e, i, pump_std, pump_range, drop_in_idx,
+                                pump_start, crash_start))
+
+        # Mark crash zone
         for ax in (az1, az2, az3):
             ax.axvspan(t_sec[crash_start], t_sec[e], alpha=0.15, color='red', zorder=0)
 
@@ -323,6 +344,11 @@ def plot_quaternions(csv_path, output_dir):
         time_fmt_c = FuncFormatter(fmt_min_sec_c)
 
         colors = ['tab:blue', 'tab:orange', 'tab:green']
+        # Compute global y-axis limit across all sessions for uniform scaling
+        global_y_max = 10
+        for _, sess_nose, *_ in all_nose_angles:
+            ym = max(abs(np.nanmin(sess_nose)), abs(np.nanmax(sess_nose))) * 1.1
+            global_y_max = max(global_y_max, ym)
         # Also collect raw nose elevation for FFT
         qi_a = quat_data['Qi'].values
         qj_a = quat_data['Qj'].values
@@ -331,7 +357,8 @@ def plot_quaternions(csv_path, output_dir):
         nose_z_all = 2 * (qj_a * qk_a - qs_a * qi_a)
         nose_elev_all = np.degrees(np.arcsin(np.clip(nose_z_all, -1, 1)))
 
-        for idx, (sess_t, sess_nose, sess_s, sess_e, sess_i, p_std, p_range, sess_drop_in) in enumerate(all_nose_angles):
+        for idx, (sess_t, sess_nose, sess_s, sess_e, sess_i, p_std, p_range,
+                  sess_drop_in, sess_pump_start, sess_crash_start) in enumerate(all_nose_angles):
             ax_t = axes_c[idx][0]  # time domain (left)
             ax_f = axes_c[idx][1]  # frequency domain (right)
             c = colors[idx % len(colors)]
@@ -345,17 +372,23 @@ def plot_quaternions(csv_path, output_dir):
             if sess_drop_in is not None:
                 drop_t = t_sec[sess_drop_in]
                 ax_t.axvline(drop_t, color='green', linestyle='--', linewidth=2, alpha=0.8)
-            # Mark end crash (last 5 seconds)
-            crash_start_t = t_sec[sess_e - 5 * sample_rate_hz]
+            # Mark crash zone (from detected crash start to session end)
+            crash_start_t = t_sec[sess_crash_start]
             crash_end_t = t_sec[sess_e]
             ax_t.axvspan(crash_start_t, crash_end_t, alpha=0.15, color='red', zorder=0)
+            # Show clean pump zone with light green background
+            pump_start_t = t_sec[sess_pump_start]
+            ax_t.axvspan(pump_start_t, crash_start_t, alpha=0.05, color='green', zorder=0)
             dur = (sess_e - sess_s) / sample_rate_hz
             dm, ds_val = divmod(int(dur), 60)
+            clean_dur = (sess_crash_start - sess_pump_start) / sample_rate_hz
+            cm, cs_val = divmod(int(clean_dur), 60)
             factor = f' ({p_std/all_nose_angles[0][5]:.1f}x)' if idx > 0 else ''
-            ax_t.set_title(f'Session {sess_i} (Dauer: {dm}:{ds_val:02d}) | '
+            ax_t.set_title(f'Session {sess_i} (Dauer: {dm}:{ds_val:02d}, '
+                         f'sauber: {cm}:{cs_val:02d}) | '
                          f'Pump-Abweichung: ±{p_std:.1f}°{factor}, '
                          f'Bereich={p_range:.0f}°',
-                         fontsize=13)
+                         fontsize=12)
             ax_t.set_ylabel('Winkel [°]')
             ax_t.grid(True, alpha=0.3)
             ax_t.xaxis.set_major_formatter(time_fmt_c)
@@ -365,19 +398,18 @@ def plot_quaternions(csv_path, output_dir):
             h, l = ax_t.get_legend_handles_labels()
             h.append(Line2D([0], [0], color='green', linestyle='--', linewidth=2))
             l.append('Drop-in')
+            h.append(Patch(facecolor='green', alpha=0.1))
+            l.append('Sauberer Bereich')
             h.append(Patch(facecolor='red', alpha=0.15))
             l.append('Sturz')
             ax_t.legend(handles=h, labels=l, loc='upper right', fontsize=8)
-            # Auto-scale
-            y_max = max(abs(np.nanmin(sess_nose)), abs(np.nanmax(sess_nose))) * 1.1
-            y_max = max(y_max, 10)
-            ax_t.set_ylim(-y_max, y_max)
+            # Uniform y-axis across all sessions
+            ax_t.set_ylim(-global_y_max, global_y_max)
 
-            # FFT analysis (right column)
+            # FFT analysis (right column) — only over clean pump zone
             from scipy.fft import rfft, rfftfreq
-            # Use median-filtered nose elevation for FFT
             smooth_window = sample_rate_hz
-            nose_sess = nose_elev_all[sess_s:sess_e]
+            nose_sess = nose_elev_all[sess_pump_start:sess_crash_start]
             nose_fft_data = pd.Series(nose_sess).rolling(
                 smooth_window, center=True, min_periods=1).median().values
             nose_fft_data = nose_fft_data - np.mean(nose_fft_data)  # remove DC
@@ -404,6 +436,10 @@ def plot_quaternions(csv_path, output_dir):
 
         axes_c[-1][0].set_xlabel('Zeit [min:sek]')
         axes_c[-1][1].set_xlabel('Frequenz [Hz]')
+        # Uniform FFT y-axis across all sessions
+        fft_y_max = max(ax_row[1].get_ylim()[1] for ax_row in axes_c)
+        for ax_row in axes_c:
+            ax_row[1].set_ylim(0, fft_y_max)
         fig_c.suptitle(f'Nasenwinkel zur Wasseroberflaeche - {title}', fontsize=15, y=1.0)
         fig_c.tight_layout()
         out_c = os.path.join(output_dir, f'plot_nose_angle_{base}.png')
