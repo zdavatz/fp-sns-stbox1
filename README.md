@@ -87,7 +87,7 @@ Pumpfoil sessions are auto-detected (rhythmic pitch oscillation > 0.3 Hz filters
 Each session plot includes quaternion components, Euler angles, and board nose angle relative to the water surface. The nose angle is computed from the rotated sensor Y-axis (sensor mounted in Breitachse = X across board), with a 1-second median filter to remove magnetometer correction spikes and a 60-second baseline removal. Drop-in (green dashed line) and end-of-session crash (red shaded area) are marked.
 The combined nose angle comparison plot (`plot_nose_angle_*.png`) includes FFT frequency analysis per session to distinguish pump frequency (~1 Hz) from magnetometer drift (~0.1 Hz).
 
-**Sensor mounting note:** Mount the sensor as far as possible from the metal mast/foil to minimize magnetometer interference. Mounting near metal causes sensor fusion correction jumps that degrade data quality in longer sessions.
+**Sensor mounting note:** The carbon mast does not affect the magnetometer. Data quality degradation in later sessions (without sensor restart) is likely caused by sensor fusion algorithm drift (gyroscope bias accumulation, stale magnetometer calibration). Restarting the sensor between runs may help. Check for nearby metal parts (screws, aluminium fuselage/foil wing) that could affect the magnetometer.
 
 Requires: `pandas`, `numpy`, `matplotlib`, `scipy`.
 
