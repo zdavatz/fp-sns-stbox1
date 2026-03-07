@@ -111,7 +111,8 @@ Quaternion plots use a min:sek time axis based on 120 Hz sample rate.
 Pumpfoil sessions are auto-detected by pitch oscillation frequency (>0.3 Hz = pumping, <0.3 Hz = walking).
 Each session gets a zoomed plot with quaternions, Euler angles, and nose angle to water.
 Nose angle uses rotated sensor Y-axis (Breitachse mounting), 1s median filter (removes magnetometer spikes),
-60s rolling median baseline (crash-masked). Drop-in and end crash are marked.
+60s rolling median baseline (crash-masked). Drop-in (green dashed line) and end crash (red shaded area) are marked.
+Combined nose angle plot includes FFT frequency analysis per session (pump frequency ~1 Hz vs magnetometer drift ~0.1 Hz).
 Mounting sensor near metal mast causes magnetometer interference → sensor fusion correction jumps in later sessions.
 Raw CSV data lives in `csv/`.
 

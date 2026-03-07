@@ -243,8 +243,12 @@ def plot_quaternions(csv_path, output_dir):
         baseline = baseline.interpolate(method='linear').bfill().ffill().values
         nose_angle = nose_smooth - baseline
 
-        # Store nose angle for combined plot
-        all_nose_angles.append((t_sec[sl], nose_angle[s_padded:e_padded], s, e, i))
+        # Store nose angle for combined plot (session range without last 5s crash)
+        pump_end = e - 5 * sample_rate_hz
+        pump_std = np.std(nose_angle[s:pump_end])
+        pump_range = np.max(nose_angle[s:pump_end]) - np.min(nose_angle[s:pump_end])
+        all_nose_angles.append((t_sec[sl], nose_angle[s_padded:e_padded],
+                                s, e, i, pump_std, pump_range, drop_in_idx))
 
         # Mark end-of-session crash: last 5 seconds of the session
         crash_start = e - 5 * sample_rate_hz
@@ -303,12 +307,13 @@ def plot_quaternions(csv_path, output_dir):
         print(f"Saved {out_z}")
 
 
-    # Combined nose angle comparison plot: one subplot per session
+    # Combined nose angle comparison plot: nose angle + FFT per session
     if len(all_nose_angles) > 0:
-        fig_c, axes_c = plt.subplots(len(all_nose_angles), 1,
-                                     figsize=(14, 4 * len(all_nose_angles)),
-                                     sharex=False)
-        if len(all_nose_angles) == 1:
+        n_sess = len(all_nose_angles)
+        fig_c, axes_c = plt.subplots(n_sess, 2,
+                                     figsize=(14, 4 * n_sess),
+                                     gridspec_kw={'width_ratios': [3, 1]})
+        if n_sess == 1:
             axes_c = [axes_c]
 
         def fmt_min_sec_c(x, pos):
@@ -318,28 +323,87 @@ def plot_quaternions(csv_path, output_dir):
         time_fmt_c = FuncFormatter(fmt_min_sec_c)
 
         colors = ['tab:blue', 'tab:orange', 'tab:green']
-        for idx, (sess_t, sess_nose, sess_s, sess_e, sess_i) in enumerate(all_nose_angles):
-            ax = axes_c[idx]
+        # Also collect raw nose elevation for FFT
+        qi_a = quat_data['Qi'].values
+        qj_a = quat_data['Qj'].values
+        qk_a = quat_data['Qk'].values
+        qs_a = quat_data['Qs'].values
+        nose_z_all = 2 * (qj_a * qk_a - qs_a * qi_a)
+        nose_elev_all = np.degrees(np.arcsin(np.clip(nose_z_all, -1, 1)))
+
+        for idx, (sess_t, sess_nose, sess_s, sess_e, sess_i, p_std, p_range, sess_drop_in) in enumerate(all_nose_angles):
+            ax_t = axes_c[idx][0]  # time domain (left)
+            ax_f = axes_c[idx][1]  # frequency domain (right)
             c = colors[idx % len(colors)]
-            ax.plot(sess_t, sess_nose, color=c, alpha=0.8, label=f'Session {sess_i}')
-            ax.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
-            ax.fill_between(sess_t, 0, sess_nose,
+            ax_t.plot(sess_t, sess_nose, color=c, alpha=0.8, label=f'Session {sess_i}')
+            ax_t.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
+            ax_t.fill_between(sess_t, 0, sess_nose,
                             where=sess_nose >= 0, alpha=0.2, color='tab:orange')
-            ax.fill_between(sess_t, 0, sess_nose,
+            ax_t.fill_between(sess_t, 0, sess_nose,
                             where=sess_nose < 0, alpha=0.2, color='tab:blue')
+            # Mark drop-in
+            if sess_drop_in is not None:
+                drop_t = t_sec[sess_drop_in]
+                ax_t.axvline(drop_t, color='green', linestyle='--', linewidth=2, alpha=0.8)
+            # Mark end crash (last 5 seconds)
+            crash_start_t = t_sec[sess_e - 5 * sample_rate_hz]
+            crash_end_t = t_sec[sess_e]
+            ax_t.axvspan(crash_start_t, crash_end_t, alpha=0.15, color='red', zorder=0)
             dur = (sess_e - sess_s) / sample_rate_hz
             dm, ds_val = divmod(int(dur), 60)
-            ax.set_title(f'Session {sess_i} (Dauer: {dm}:{ds_val:02d})', fontsize=13)
-            ax.set_ylabel('Winkel [°]')
-            ax.grid(True, alpha=0.3)
-            ax.xaxis.set_major_formatter(time_fmt_c)
-            ax.legend(loc='upper right')
+            factor = f' ({p_std/all_nose_angles[0][5]:.1f}x)' if idx > 0 else ''
+            ax_t.set_title(f'Session {sess_i} (Dauer: {dm}:{ds_val:02d}) | '
+                         f'Pump-Abweichung: ±{p_std:.1f}°{factor}, '
+                         f'Bereich={p_range:.0f}°',
+                         fontsize=13)
+            ax_t.set_ylabel('Winkel [°]')
+            ax_t.grid(True, alpha=0.3)
+            ax_t.xaxis.set_major_formatter(time_fmt_c)
+            # Legend with drop-in and crash entries
+            from matplotlib.patches import Patch
+            from matplotlib.lines import Line2D
+            h, l = ax_t.get_legend_handles_labels()
+            h.append(Line2D([0], [0], color='green', linestyle='--', linewidth=2))
+            l.append('Drop-in')
+            h.append(Patch(facecolor='red', alpha=0.15))
+            l.append('Sturz')
+            ax_t.legend(handles=h, labels=l, loc='upper right', fontsize=8)
             # Auto-scale
             y_max = max(abs(np.nanmin(sess_nose)), abs(np.nanmax(sess_nose))) * 1.1
             y_max = max(y_max, 10)
-            ax.set_ylim(-y_max, y_max)
+            ax_t.set_ylim(-y_max, y_max)
 
-        axes_c[-1].set_xlabel('Zeit [min:sek]')
+            # FFT analysis (right column)
+            from scipy.fft import rfft, rfftfreq
+            # Use median-filtered nose elevation for FFT
+            smooth_window = sample_rate_hz
+            nose_sess = nose_elev_all[sess_s:sess_e]
+            nose_fft_data = pd.Series(nose_sess).rolling(
+                smooth_window, center=True, min_periods=1).median().values
+            nose_fft_data = nose_fft_data - np.mean(nose_fft_data)  # remove DC
+            N = len(nose_fft_data)
+            yf = np.abs(rfft(nose_fft_data)) / N
+            xf = rfftfreq(N, 1.0 / sample_rate_hz)
+            # Only show 0.05 - 5 Hz range
+            freq_mask = (xf >= 0.05) & (xf <= 5.0)
+            ax_f.plot(xf[freq_mask], yf[freq_mask], color=c, alpha=0.8)
+            ax_f.set_title('FFT Frequenzanalyse', fontsize=11)
+            ax_f.set_ylabel('Amplitude [°]')
+            ax_f.grid(True, alpha=0.3)
+            ax_f.axvline(1.0, color='green', linestyle='--', alpha=0.4, label='~1 Hz Pumpen')
+            ax_f.legend(loc='upper right', fontsize=8)
+            # Mark dominant frequency
+            peak_idx = np.argmax(yf[freq_mask])
+            peak_freq = xf[freq_mask][peak_idx]
+            peak_amp = yf[freq_mask][peak_idx]
+            ax_f.annotate(f'{peak_freq:.2f} Hz',
+                         xy=(peak_freq, peak_amp),
+                         xytext=(peak_freq + 0.5, peak_amp * 0.9),
+                         fontsize=9, color=c,
+                         arrowprops=dict(arrowstyle='->', color=c))
+
+        axes_c[-1][0].set_xlabel('Zeit [min:sek]')
+        axes_c[-1][1].set_xlabel('Frequenz [Hz]')
         fig_c.suptitle(f'Nasenwinkel zur Wasseroberflaeche - {title}', fontsize=15, y=1.0)
         fig_c.tight_layout()
         out_c = os.path.join(output_dir, f'plot_nose_angle_{base}.png')
@@ -358,7 +422,10 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    plot_sensors(args.sensor_csv, args.output_dir)
+    try:
+        plot_sensors(args.sensor_csv, args.output_dir)
+    except KeyError:
+        print(f"Skipping sensor plot (no sensor columns in {args.sensor_csv})")
     if args.quaternion_csv:
         plot_quaternions(args.quaternion_csv, args.output_dir)
 
