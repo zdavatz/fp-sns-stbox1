@@ -176,6 +176,9 @@ def plot_quaternions(csv_path, output_dir):
     if not sessions:
         return
 
+    # Collect nose angle data for combined comparison plot
+    all_nose_angles = []
+
     # Add 5-second padding around each session
     pad = 5 * sample_rate_hz
     for i, (s, e) in enumerate(sessions, 1):
@@ -240,6 +243,9 @@ def plot_quaternions(csv_path, output_dir):
         baseline = baseline.interpolate(method='linear').bfill().ffill().values
         nose_angle = nose_smooth - baseline
 
+        # Store nose angle for combined plot
+        all_nose_angles.append((t_sec[sl], nose_angle[s_padded:e_padded], s, e, i))
+
         # Mark end-of-session crash: last 5 seconds of the session
         crash_start = e - 5 * sample_rate_hz
         crash_count = 1
@@ -295,6 +301,51 @@ def plot_quaternions(csv_path, output_dir):
         fig_z.savefig(out_z, dpi=150)
         plt.close(fig_z)
         print(f"Saved {out_z}")
+
+
+    # Combined nose angle comparison plot: one subplot per session
+    if len(all_nose_angles) > 0:
+        fig_c, axes_c = plt.subplots(len(all_nose_angles), 1,
+                                     figsize=(14, 4 * len(all_nose_angles)),
+                                     sharex=False)
+        if len(all_nose_angles) == 1:
+            axes_c = [axes_c]
+
+        def fmt_min_sec_c(x, pos):
+            m, s_val = divmod(int(x), 60)
+            return f'{m:d}:{s_val:02d}'
+        from matplotlib.ticker import FuncFormatter
+        time_fmt_c = FuncFormatter(fmt_min_sec_c)
+
+        colors = ['tab:blue', 'tab:orange', 'tab:green']
+        for idx, (sess_t, sess_nose, sess_s, sess_e, sess_i) in enumerate(all_nose_angles):
+            ax = axes_c[idx]
+            c = colors[idx % len(colors)]
+            ax.plot(sess_t, sess_nose, color=c, alpha=0.8, label=f'Session {sess_i}')
+            ax.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
+            ax.fill_between(sess_t, 0, sess_nose,
+                            where=sess_nose >= 0, alpha=0.2, color='tab:orange')
+            ax.fill_between(sess_t, 0, sess_nose,
+                            where=sess_nose < 0, alpha=0.2, color='tab:blue')
+            dur = (sess_e - sess_s) / sample_rate_hz
+            dm, ds_val = divmod(int(dur), 60)
+            ax.set_title(f'Session {sess_i} (Dauer: {dm}:{ds_val:02d})', fontsize=13)
+            ax.set_ylabel('Winkel [°]')
+            ax.grid(True, alpha=0.3)
+            ax.xaxis.set_major_formatter(time_fmt_c)
+            ax.legend(loc='upper right')
+            # Auto-scale
+            y_max = max(abs(np.nanmin(sess_nose)), abs(np.nanmax(sess_nose))) * 1.1
+            y_max = max(y_max, 10)
+            ax.set_ylim(-y_max, y_max)
+
+        axes_c[-1].set_xlabel('Zeit [min:sek]')
+        fig_c.suptitle(f'Nasenwinkel zur Wasseroberflaeche - {title}', fontsize=15, y=1.0)
+        fig_c.tight_layout()
+        out_c = os.path.join(output_dir, f'plot_nose_angle_{base}.png')
+        fig_c.savefig(out_c, dpi=150)
+        plt.close(fig_c)
+        print(f"Saved {out_c}")
 
 
 def main():
