@@ -211,8 +211,62 @@ def plot_quaternions(csv_path, output_dir):
             dm2, ds2 = divmod(int(drop_t), 60)
             session_label += f' | Drop-in: {dm2}:{ds2:02d}'
 
+        # Board nose angle to water: rotate sensor Y-axis (nose direction,
+        # sensor mounted in Breitachse = X across board) by quaternion,
+        # then compute elevation angle from horizontal.
+        qi_a = quat_data['Qi'].values
+        qj_a = quat_data['Qj'].values
+        qk_a = quat_data['Qk'].values
+        qs_a = quat_data['Qs'].values
+        # Rotated Y-axis [0,1,0] z-component: nose elevation
+        nose_z = 2 * (qj_a * qk_a - qs_a * qi_a)
+        nose_elev = np.degrees(np.arcsin(np.clip(nose_z, -1, 1)))
+        # High-pass filter: remove slow baseline drift, keep pump oscillation
+        # Use rolling median (robust to crash spikes) over 15 seconds as baseline
+        baseline = pd.Series(nose_elev).rolling(
+            15 * sample_rate_hz, center=True, min_periods=1).median().values
+        nose_angle = nose_elev - baseline
+
+        # Detect crashes: nose angle exceeds ±15° within the session
+        crash_threshold = 15
+        session_nose = np.abs(nose_angle[s:e])
+        in_crash = session_nose > crash_threshold
+        crash_changes = np.diff(in_crash.astype(int), prepend=0)
+        c_starts = s + np.where(crash_changes == 1)[0]
+        c_ends = s + np.where(crash_changes == -1)[0]
+        if len(c_ends) < len(c_starts):
+            c_ends = np.append(c_ends, e)
+        # Merge crash regions within 3 seconds of each other
+        merge_gap = 3 * sample_rate_hz
+        crashes = []
+        for cs, ce in zip(c_starts, c_ends):
+            if crashes and (cs - crashes[-1][1]) < merge_gap:
+                crashes[-1] = (crashes[-1][0], ce)
+            else:
+                crashes.append((cs, ce))
+        crash_count = len(crashes)
+        for cs, ce in crashes:
+            for ax in (az1, az2, az3):
+                ax.axvspan(t_sec[cs], t_sec[ce], alpha=0.15, color='red', zorder=0)
+
+        az3.plot(t_sec[sl], nose_angle[s_padded:e_padded], color='tab:blue', alpha=0.8, label='Nasenwinkel')
+        az3.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
+        az3.fill_between(t_sec[sl], 0, nose_angle[s_padded:e_padded],
+                         where=nose_angle[s_padded:e_padded] >= 0,
+                         alpha=0.2, color='tab:orange', label='Nase hoch')
+        az3.fill_between(t_sec[sl], 0, nose_angle[s_padded:e_padded],
+                         where=nose_angle[s_padded:e_padded] < 0,
+                         alpha=0.2, color='tab:blue', label='Nase runter')
+        az3.set_ylabel('Winkel [°]')
+        az3.set_ylim(-30, 30)
+        az3.set_title('Nasenwinkel zur Wasseroberflaeche (Nase hoch = +, runter = -)')
+        az3.grid(True, alpha=0.3)
+        az3.xaxis.set_major_formatter(time_fmt)
+        az3.set_xlabel('Zeit [min:sek]')
+
+        session_label += f' | Stuerze: {crash_count}'
+
         az1.set_title(f'{session_label}\nQuaternion-Verlauf', fontsize=13)
-        az1.legend(loc='upper right')
         az1.grid(True, alpha=0.3)
         az1.xaxis.set_major_formatter(time_fmt)
         az1.set_xlabel('Zeit [min:sek]')
@@ -222,36 +276,23 @@ def plot_quaternions(csv_path, output_dir):
         az2.plot(t_sec[sl], yaw[s_padded:e_padded], label='Yaw', alpha=0.8)
         az2.set_ylabel('Winkel [°]')
         az2.set_title('Euler-Winkel (aus Quaternionen berechnet)')
-        az2.legend(loc='upper right')
         az2.grid(True, alpha=0.3)
         az2.xaxis.set_major_formatter(time_fmt)
         az2.set_xlabel('Zeit [min:sek]')
 
-        # Board angle to water: compute tilt from quaternion directly
-        # Rotate the board normal [0,0,1] by the quaternion to get the
-        # board's up-vector in the world frame, then measure angle from vertical.
-        qi_a = quat_data['Qi'].values
-        qj_a = quat_data['Qj'].values
-        qk_a = quat_data['Qk'].values
-        qs_a = quat_data['Qs'].values
-        # z-component of rotated [0,0,1]: 1 - 2*(qi^2 + qj^2)
-        z_up = 1.0 - 2.0 * (qi_a**2 + qj_a**2)
-        # tilt = angle from vertical: 0° when board normal points straight up
-        tilt_raw = np.degrees(np.arccos(np.clip(z_up, -1, 1)))
-        # Calibrate: quiet period before session = board resting on water = reference
-        cal_len = sample_rate_hz
-        cal_start = max(0, s - cal_len)
-        tilt_ref = np.mean(tilt_raw[cal_start:s])
-        tilt = tilt_raw - tilt_ref
-        az3.plot(t_sec[sl], tilt[s_padded:e_padded], color='tab:blue', alpha=0.8, label='Neigung')
-        az3.axhline(0, color='gray', linestyle='-', alpha=0.3)
-        az3.fill_between(t_sec[sl], 0, tilt[s_padded:e_padded], alpha=0.15, color='tab:blue')
-        az3.set_ylabel('Neigung [°]')
-        az3.set_title('Boardwinkel zur Wasseroberflaeche (kalibriert)')
-        az3.legend(loc='upper right')
-        az3.grid(True, alpha=0.3)
-        az3.xaxis.set_major_formatter(time_fmt)
-        az3.set_xlabel('Zeit [min:sek]')
+        # Add legends with crash patch
+        if crash_count > 0:
+            from matplotlib.patches import Patch
+            crash_patch = Patch(facecolor='red', alpha=0.15,
+                                label=f'Sturz ({crash_count}x)')
+            for ax in (az1, az2, az3):
+                h, l = ax.get_legend_handles_labels()
+                h.append(crash_patch)
+                l.append(f'Sturz ({crash_count}x)')
+                ax.legend(handles=h, labels=l, loc='upper right')
+        else:
+            for ax in (az1, az2, az3):
+                ax.legend(loc='upper right')
 
         plt.tight_layout()
         out_z = os.path.join(output_dir, f'plot_quaternions_{base}_session{i}.png')
