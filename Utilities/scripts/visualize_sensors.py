@@ -80,20 +80,30 @@ def plot_sensors(csv_path, output_dir):
 def plot_quaternions(csv_path, output_dir):
     quat_data = pd.read_csv(csv_path, skiprows=1, header=None, usecols=[0, 1, 2, 3])
     quat_data.columns = ['Qi', 'Qj', 'Qk', 'Qs']
-    samples = np.arange(len(quat_data))
+    # Quaternion sample rate: 120 Hz
+    sample_rate_hz = 120
+    t_sec = np.arange(len(quat_data)) / sample_rate_hz
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8))
 
+    def fmt_min_sec(x, pos):
+        m, s = divmod(int(x), 60)
+        return f'{m:d}:{s:02d}'
+
+    from matplotlib.ticker import FuncFormatter
+    time_fmt = FuncFormatter(fmt_min_sec)
+
     title = os.path.basename(csv_path).replace('.csv', '')
-    ax1.plot(samples, quat_data['Qi'], label='Qi', alpha=0.8)
-    ax1.plot(samples, quat_data['Qj'], label='Qj', alpha=0.8)
-    ax1.plot(samples, quat_data['Qk'], label='Qk', alpha=0.8)
-    ax1.plot(samples, quat_data['Qs'], label='Qs', alpha=0.8)
+    ax1.plot(t_sec, quat_data['Qi'], label='Qi', alpha=0.8)
+    ax1.plot(t_sec, quat_data['Qj'], label='Qj', alpha=0.8)
+    ax1.plot(t_sec, quat_data['Qk'], label='Qk', alpha=0.8)
+    ax1.plot(t_sec, quat_data['Qs'], label='Qs', alpha=0.8)
     ax1.set_ylabel('Quaternion-Komponenten')
     ax1.set_title(f'Quaternion / Orientierung - {title}\nQuaternion-Verlauf', fontsize=13)
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
-    ax1.set_xlabel('Sample')
+    ax1.xaxis.set_major_formatter(time_fmt)
+    ax1.set_xlabel('Zeit [min:sek]')
 
     qi, qj, qk, qs = quat_data['Qi'], quat_data['Qj'], quat_data['Qk'], quat_data['Qs']
 
@@ -108,14 +118,15 @@ def plot_quaternions(csv_path, output_dir):
     cosy_cosp = 1.0 - 2.0 * (qj * qj + qk * qk)
     yaw = np.degrees(np.arctan2(siny_cosp, cosy_cosp))
 
-    ax2.plot(samples, roll, label='Roll', alpha=0.8)
-    ax2.plot(samples, pitch, label='Pitch', alpha=0.8)
-    ax2.plot(samples, yaw, label='Yaw', alpha=0.8)
+    ax2.plot(t_sec, roll, label='Roll', alpha=0.8)
+    ax2.plot(t_sec, pitch, label='Pitch', alpha=0.8)
+    ax2.plot(t_sec, yaw, label='Yaw', alpha=0.8)
     ax2.set_ylabel('Winkel [°]')
     ax2.set_title('Euler-Winkel (aus Quaternionen berechnet)')
     ax2.legend(loc='upper right')
     ax2.grid(True, alpha=0.3)
-    ax2.set_xlabel('Sample')
+    ax2.xaxis.set_major_formatter(time_fmt)
+    ax2.set_xlabel('Zeit [min:sek]')
 
     plt.tight_layout()
     base = os.path.basename(csv_path).replace('.csv', '')

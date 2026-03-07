@@ -82,6 +82,7 @@ Python scripts for plotting sensor and quaternion data are in `Utilities/scripts
   ```
 
 Generated plots are saved to the `png/` directory with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
+Quaternion plots display time in min:sek format based on a 120 Hz sample rate.
 
 Requires: `pandas`, `numpy`, `matplotlib`, `scipy` (pumpfoil only).
 
