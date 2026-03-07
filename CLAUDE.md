@@ -106,7 +106,7 @@ Python scripts in `Utilities/scripts/` for plotting sensor data:
 - `visualize_sensors.py` — sensor CSV + optional quaternion CSV plotting
 - `visualize_pumpfoil.py` — pumpfoil session analysis (cadence spectrogram, movement phases)
 
-Generated plots go to `png/` with timestamped filenames (e.g. `plot_quaternions_06.02.2026.png`).
+Generated plots go to `png/` with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
 Raw CSV data lives in `csv/`.
 
 Note: matplotlib `fig.suptitle()` has a font rendering bug with German characters (umlauts garbled in bold). Workaround: use `ax.set_title()` on the first axes with a two-line title instead.

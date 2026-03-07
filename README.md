@@ -81,7 +81,7 @@ Python scripts for plotting sensor and quaternion data are in `Utilities/scripts
   python Utilities/scripts/visualize_pumpfoil.py sensor_data.csv [-o OUTPUT_DIR]
   ```
 
-Generated plots are saved to the `png/` directory with timestamped filenames (e.g. `plot_quaternions_06.02.2026.png`).
+Generated plots are saved to the `png/` directory with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
 
 Requires: `pandas`, `numpy`, `matplotlib`, `scipy` (pumpfoil only).
 

@@ -70,7 +70,8 @@ def plot_sensors(csv_path, output_dir):
     axes[4].grid(True, alpha=0.3)
 
     plt.tight_layout()
-    out_path = os.path.join(output_dir, 'plot_sensors.png')
+    base = os.path.basename(csv_path).replace('.csv', '')
+    out_path = os.path.join(output_dir, f'plot_sensors_{base}.png')
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"Saved {out_path}")
@@ -117,7 +118,8 @@ def plot_quaternions(csv_path, output_dir):
     ax2.set_xlabel('Sample')
 
     plt.tight_layout()
-    out_path = os.path.join(output_dir, 'plot_quaternions.png')
+    base = os.path.basename(csv_path).replace('.csv', '')
+    out_path = os.path.join(output_dir, f'plot_quaternions_{base}.png')
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"Saved {out_path}")
