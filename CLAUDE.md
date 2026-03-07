@@ -108,6 +108,8 @@ Python scripts in `Utilities/scripts/` for plotting sensor data:
 
 Generated plots go to `png/` with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
 Quaternion plots use a min:sek time axis based on 120 Hz sample rate.
+Pumpfoil sessions are auto-detected by pitch oscillation frequency (>0.3 Hz = pumping, <0.3 Hz = walking).
+Each session gets a zoomed plot with quaternions, Euler angles, and calibrated board tilt angle to water.
 Raw CSV data lives in `csv/`.
 
 Note: matplotlib `fig.suptitle()` has a font rendering bug with German characters (umlauts garbled in bold). Workaround: use `ax.set_title()` on the first axes with a two-line title instead.

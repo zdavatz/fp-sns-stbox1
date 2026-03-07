@@ -83,6 +83,8 @@ Python scripts for plotting sensor and quaternion data are in `Utilities/scripts
 
 Generated plots are saved to the `png/` directory with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
 Quaternion plots display time in min:sek format based on a 120 Hz sample rate.
+Pumpfoil sessions are auto-detected (rhythmic pitch oscillation > 0.3 Hz filters out walking).
+Each session plot includes quaternion components, Euler angles, and board tilt angle relative to the water surface (calibrated from the quiet period before each session).
 
 Requires: `pandas`, `numpy`, `matplotlib`, `scipy` (pumpfoil only).
 

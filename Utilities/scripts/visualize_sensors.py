@@ -135,6 +135,130 @@ def plot_quaternions(csv_path, output_dir):
     plt.close(fig)
     print(f"Saved {out_path}")
 
+    # Detect pumpfoil sessions using Euler angle activity
+    # During pumping the board oscillates in pitch/roll; idle periods are flat
+    euler_change = (np.abs(np.diff(pitch, prepend=pitch[0]))
+                    + np.abs(np.diff(roll, prepend=roll[0])))
+    activity = pd.Series(euler_change).rolling(sample_rate_hz).mean().fillna(0)
+    threshold = activity.median() + activity.std()
+    active = (activity > threshold).astype(int)
+    changes = active.diff().fillna(0)
+    starts = changes[changes == 1].index.tolist()
+    ends = changes[changes == -1].index.tolist()
+    if active.iloc[-1] == 1:
+        ends.append(len(active) - 1)
+
+    # Merge segments with gaps < 60 seconds into sessions
+    merge_gap = 60 * sample_rate_hz
+    sessions = []
+    for s, e in zip(starts, ends):
+        if sessions and (s - sessions[-1][1]) < merge_gap:
+            sessions[-1] = (sessions[-1][0], e)
+        else:
+            sessions.append((s, e))
+
+    # Filter out short bursts (< 30 seconds) — real sessions are minutes long
+    min_duration = 30 * sample_rate_hz
+    sessions = [(s, e) for s, e in sessions if (e - s) >= min_duration]
+
+    # Filter out walking: pumping has rhythmic pitch oscillation > 0.3 Hz
+    pumping_sessions = []
+    for s, e in sessions:
+        p = pitch[s:e]
+        p_centered = p - np.median(p)
+        crossings = np.sum(np.diff(np.sign(p_centered)) != 0)
+        duration = (e - s) / sample_rate_hz
+        osc_freq = crossings / duration / 2
+        if osc_freq >= 0.3:
+            pumping_sessions.append((s, e))
+    sessions = pumping_sessions
+
+    if not sessions:
+        return
+
+    # Add 5-second padding around each session
+    pad = 5 * sample_rate_hz
+    for i, (s, e) in enumerate(sessions, 1):
+        s_padded = max(0, s - pad)
+        e_padded = min(len(quat_data) - 1, e + pad)
+        t_start = s_padded / sample_rate_hz
+        t_end = e_padded / sample_rate_hz
+
+        fig_z, (az1, az2, az3) = plt.subplots(3, 1, figsize=(14, 12))
+        sl = slice(s_padded, e_padded)
+        az1.plot(t_sec[sl], quat_data['Qi'].iloc[s_padded:e_padded], label='Qi', alpha=0.8)
+        az1.plot(t_sec[sl], quat_data['Qj'].iloc[s_padded:e_padded], label='Qj', alpha=0.8)
+        az1.plot(t_sec[sl], quat_data['Qk'].iloc[s_padded:e_padded], label='Qk', alpha=0.8)
+        az1.plot(t_sec[sl], quat_data['Qs'].iloc[s_padded:e_padded], label='Qs', alpha=0.8)
+        az1.set_ylabel('Quaternion-Komponenten')
+
+        # Detect drop-in: first rapid pitch change > 10° within 0.5s in the session
+        drop_in_idx = None
+        window = int(0.5 * sample_rate_hz)
+        for idx in range(s, min(e - window, len(pitch) - window)):
+            delta = abs(pitch[idx + window] - pitch[idx])
+            if delta >= 10:
+                drop_in_idx = idx
+                break
+
+        duration_s = (e - s) / sample_rate_hz
+        dm, ds = divmod(int(duration_s), 60)
+        session_label = f'Session {i} - {title} (Dauer: {dm}:{ds:02d})'
+        if drop_in_idx is not None:
+            drop_t = t_sec[drop_in_idx]
+            for ax in (az1, az2, az3):
+                ax.axvline(drop_t, color='red', linestyle='--', alpha=0.7, label='Drop-in')
+            dm2, ds2 = divmod(int(drop_t), 60)
+            session_label += f' | Drop-in: {dm2}:{ds2:02d}'
+
+        az1.set_title(f'{session_label}\nQuaternion-Verlauf', fontsize=13)
+        az1.legend(loc='upper right')
+        az1.grid(True, alpha=0.3)
+        az1.xaxis.set_major_formatter(time_fmt)
+        az1.set_xlabel('Zeit [min:sek]')
+
+        az2.plot(t_sec[sl], roll[s_padded:e_padded], label='Roll', alpha=0.8)
+        az2.plot(t_sec[sl], pitch[s_padded:e_padded], label='Pitch', alpha=0.8)
+        az2.plot(t_sec[sl], yaw[s_padded:e_padded], label='Yaw', alpha=0.8)
+        az2.set_ylabel('Winkel [°]')
+        az2.set_title('Euler-Winkel (aus Quaternionen berechnet)')
+        az2.legend(loc='upper right')
+        az2.grid(True, alpha=0.3)
+        az2.xaxis.set_major_formatter(time_fmt)
+        az2.set_xlabel('Zeit [min:sek]')
+
+        # Board angle to water: compute tilt from quaternion directly
+        # Rotate the board normal [0,0,1] by the quaternion to get the
+        # board's up-vector in the world frame, then measure angle from vertical.
+        qi_a = quat_data['Qi'].values
+        qj_a = quat_data['Qj'].values
+        qk_a = quat_data['Qk'].values
+        qs_a = quat_data['Qs'].values
+        # z-component of rotated [0,0,1]: 1 - 2*(qi^2 + qj^2)
+        z_up = 1.0 - 2.0 * (qi_a**2 + qj_a**2)
+        # tilt = angle from vertical: 0° when board normal points straight up
+        tilt_raw = np.degrees(np.arccos(np.clip(z_up, -1, 1)))
+        # Calibrate: quiet period before session = board resting on water = reference
+        cal_len = sample_rate_hz
+        cal_start = max(0, s - cal_len)
+        tilt_ref = np.mean(tilt_raw[cal_start:s])
+        tilt = tilt_raw - tilt_ref
+        az3.plot(t_sec[sl], tilt[s_padded:e_padded], color='tab:blue', alpha=0.8, label='Neigung')
+        az3.axhline(0, color='gray', linestyle='-', alpha=0.3)
+        az3.fill_between(t_sec[sl], 0, tilt[s_padded:e_padded], alpha=0.15, color='tab:blue')
+        az3.set_ylabel('Neigung [°]')
+        az3.set_title('Boardwinkel zur Wasseroberflaeche (kalibriert)')
+        az3.legend(loc='upper right')
+        az3.grid(True, alpha=0.3)
+        az3.xaxis.set_major_formatter(time_fmt)
+        az3.set_xlabel('Zeit [min:sek]')
+
+        plt.tight_layout()
+        out_z = os.path.join(output_dir, f'plot_quaternions_{base}_session{i}.png')
+        fig_z.savefig(out_z, dpi=150)
+        plt.close(fig_z)
+        print(f"Saved {out_z}")
+
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize STEVAL-MKBOXPRO sensor data')
