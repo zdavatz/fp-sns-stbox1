@@ -109,7 +109,10 @@ Python scripts in `Utilities/scripts/` for plotting sensor data:
 Generated plots go to `png/` with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
 Quaternion plots use a min:sek time axis based on 120 Hz sample rate.
 Pumpfoil sessions are auto-detected by pitch oscillation frequency (>0.3 Hz = pumping, <0.3 Hz = walking).
-Each session gets a zoomed plot with quaternions, Euler angles, and calibrated board tilt angle to water.
+Each session gets a zoomed plot with quaternions, Euler angles, and nose angle to water.
+Nose angle uses rotated sensor Y-axis (Breitachse mounting), 1s median filter (removes magnetometer spikes),
+60s rolling median baseline (crash-masked). Drop-in and end crash are marked.
+Mounting sensor near metal mast causes magnetometer interference → sensor fusion correction jumps in later sessions.
 Raw CSV data lives in `csv/`.
 
 Note: matplotlib `fig.suptitle()` has a font rendering bug with German characters (umlauts garbled in bold). Workaround: use `ax.set_title()` on the first axes with a two-line title instead.

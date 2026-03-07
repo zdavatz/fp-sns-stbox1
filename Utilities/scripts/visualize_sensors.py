@@ -221,33 +221,30 @@ def plot_quaternions(csv_path, output_dir):
         # Rotated Y-axis [0,1,0] z-component: nose elevation
         nose_z = 2 * (qj_a * qk_a - qs_a * qi_a)
         nose_elev = np.degrees(np.arcsin(np.clip(nose_z, -1, 1)))
-        # High-pass filter: remove slow baseline drift, keep pump oscillation
-        # Use rolling median (robust to crash spikes) over 15 seconds as baseline
-        baseline = pd.Series(nose_elev).rolling(
-            15 * sample_rate_hz, center=True, min_periods=1).median().values
-        nose_angle = nose_elev - baseline
+        # Median filter: remove magnetometer correction spikes in sensor fusion
+        # Use 1-second window to catch multi-sample correction bursts
+        smooth_window = sample_rate_hz
+        nose_smooth = pd.Series(nose_elev).rolling(
+            smooth_window, center=True, min_periods=1).median().values
 
-        # Detect crashes: nose angle exceeds ±15° within the session
-        crash_threshold = 15
-        session_nose = np.abs(nose_angle[s:e])
-        in_crash = session_nose > crash_threshold
-        crash_changes = np.diff(in_crash.astype(int), prepend=0)
-        c_starts = s + np.where(crash_changes == 1)[0]
-        c_ends = s + np.where(crash_changes == -1)[0]
-        if len(c_ends) < len(c_starts):
-            c_ends = np.append(c_ends, e)
-        # Merge crash regions within 3 seconds of each other
-        merge_gap = 3 * sample_rate_hz
-        crashes = []
-        for cs, ce in zip(c_starts, c_ends):
-            if crashes and (cs - crashes[-1][1]) < merge_gap:
-                crashes[-1] = (crashes[-1][0], ce)
-            else:
-                crashes.append((cs, ce))
-        crash_count = len(crashes)
-        for cs, ce in crashes:
-            for ax in (az1, az2, az3):
-                ax.axvspan(t_sec[cs], t_sec[ce], alpha=0.15, color='red', zorder=0)
+        # High-pass filter: remove baseline drift
+        # Mask crash values before computing baseline
+        nose_series = pd.Series(nose_smooth)
+        rough_baseline = nose_series.rolling(
+            10 * sample_rate_hz, center=True, min_periods=1).median()
+        stable_mask = (nose_smooth - rough_baseline).abs() < 20
+        nose_stable = nose_series.copy()
+        nose_stable[~stable_mask] = np.nan
+        baseline = nose_stable.rolling(
+            60 * sample_rate_hz, center=True, min_periods=1).median()
+        baseline = baseline.interpolate(method='linear').bfill().ffill().values
+        nose_angle = nose_smooth - baseline
+
+        # Mark end-of-session crash: last 5 seconds of the session
+        crash_start = e - 5 * sample_rate_hz
+        crash_count = 1
+        for ax in (az1, az2, az3):
+            ax.axvspan(t_sec[crash_start], t_sec[e], alpha=0.15, color='red', zorder=0)
 
         az3.plot(t_sec[sl], nose_angle[s_padded:e_padded], color='tab:blue', alpha=0.8, label='Nasenwinkel')
         az3.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
@@ -258,13 +255,17 @@ def plot_quaternions(csv_path, output_dir):
                          where=nose_angle[s_padded:e_padded] < 0,
                          alpha=0.2, color='tab:blue', label='Nase runter')
         az3.set_ylabel('Winkel [°]')
-        az3.set_ylim(-30, 30)
+        # Auto-scale y-axis to show full data range with some padding
+        session_data = nose_angle[s_padded:e_padded]
+        y_max = max(abs(np.nanmin(session_data)), abs(np.nanmax(session_data))) * 1.1
+        y_max = max(y_max, 10)  # minimum ±10°
+        az3.set_ylim(-y_max, y_max)
         az3.set_title('Nasenwinkel zur Wasseroberflaeche (Nase hoch = +, runter = -)')
         az3.grid(True, alpha=0.3)
         az3.xaxis.set_major_formatter(time_fmt)
         az3.set_xlabel('Zeit [min:sek]')
 
-        session_label += f' | Stuerze: {crash_count}'
+        session_label += ' | Sturz am Ende'
 
         az1.set_title(f'{session_label}\nQuaternion-Verlauf', fontsize=13)
         az1.grid(True, alpha=0.3)
@@ -281,18 +282,13 @@ def plot_quaternions(csv_path, output_dir):
         az2.set_xlabel('Zeit [min:sek]')
 
         # Add legends with crash patch
-        if crash_count > 0:
-            from matplotlib.patches import Patch
-            crash_patch = Patch(facecolor='red', alpha=0.15,
-                                label=f'Sturz ({crash_count}x)')
-            for ax in (az1, az2, az3):
-                h, l = ax.get_legend_handles_labels()
-                h.append(crash_patch)
-                l.append(f'Sturz ({crash_count}x)')
-                ax.legend(handles=h, labels=l, loc='upper right')
-        else:
-            for ax in (az1, az2, az3):
-                ax.legend(loc='upper right')
+        from matplotlib.patches import Patch
+        crash_patch = Patch(facecolor='red', alpha=0.15, label='Sturz')
+        for ax in (az1, az2, az3):
+            h, l = ax.get_legend_handles_labels()
+            h.append(crash_patch)
+            l.append('Sturz')
+            ax.legend(handles=h, labels=l, loc='upper right')
 
         plt.tight_layout()
         out_z = os.path.join(output_dir, f'plot_quaternions_{base}_session{i}.png')
