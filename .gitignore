@@ -1,0 +1,20 @@
+# Extracted ARM toolchain (installed locally, not part of repo)
+arm-none-eabi/
+bin/
+include/
+lib/
+libexec/
+share/
+15.2.rel1-darwin-arm64-arm-none-eabi-manifest.txt
+
+# Build output
+Projects/*/Applications/*/BLESensorsPnPL/STM32CubeIDE/build/
+
+# Python cache
+__pycache__/
+
+# macOS
+.DS_Store
+
+# Temp video frames
+png/video_frames/

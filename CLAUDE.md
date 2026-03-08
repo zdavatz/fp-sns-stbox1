@@ -131,6 +131,18 @@ Combined video+sensor outputs in `mov/` merge the board animation with synchroni
 
 Note: matplotlib `fig.suptitle()` has a font rendering bug with German characters (umlauts garbled in bold). Workaround: use `ax.set_title()` on the first axes with a two-line title instead.
 
+## Magnetometer Firmware Improvements
+
+The LIS2MDL driver (`Drivers/BSP/Components/lis2mdl/lis2mdl.c`) Init function has three added settings to reduce drift:
+- Offset cancellation every ODR cycle (`LIS2MDL_SENS_OFF_CANC_EVERY_ODR`) — continuous offset correction
+- Temperature compensation (`lis2mdl_offset_temp_comp_set`) — compensates for thermal drift
+- Low-pass filter at ODR/4 (`LIS2MDL_ODR_DIV_4`) — 25 Hz bandwidth at 100 Hz ODR
+
+### Command-Line Build
+
+A Makefile at `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLESensorsPnPL/STM32CubeIDE/Makefile` builds the firmware with `arm-none-eabi-gcc`. Output: `build/BLESensorsPnPL.bin`.
+The Makefile uses the full ARM GNU Toolchain at `~/arm-gnu-toolchain/bin/`.
+
 ## Known Limitations
 
 - Some Android devices have issues with BLE secure PIN connections — disable `STBOX1_BLE_SECURE_CONNECTION` as workaround

@@ -95,6 +95,25 @@ The combined nose angle comparison plot (`plot_nose_angle_*.png`) includes FFT f
 
 **Sensor mounting note:** The carbon mast does not affect the magnetometer, but small metal screws near the sensor box cause hard/soft iron interference. Use plastic screws or adhesive tape instead. Data quality degrades in later sessions without sensor restart (gyroscope bias drift, stale magnetometer calibration). Restart the sensor between runs for best results.
 
+## Magnetometer Firmware Improvements
+
+The LIS2MDL magnetometer driver (`Drivers/BSP/Components/lis2mdl/lis2mdl.c`) has been modified to reduce drift during long sessions:
+
+1. **Offset cancellation every ODR cycle** — `LIS2MDL_SENS_OFF_CANC_EVERY_ODR` continuously corrects sensor offsets instead of only at power-on
+2. **Temperature compensation** — compensates for magnetometer offset drift caused by temperature changes during operation
+3. **Low-pass filter at ODR/4** — 25 Hz bandwidth at 100 Hz ODR, filters high-frequency noise for cleaner signal
+
+### Command-Line Build
+
+A Makefile is provided for building the BLESensorsPnPL firmware without STM32CubeIDE:
+
+```
+cd Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLESensorsPnPL/STM32CubeIDE
+make
+```
+
+Requires ARM GNU Toolchain (`arm-none-eabi-gcc`). The output binary is `build/BLESensorsPnPL.bin`.
+
 Requires: `pandas`, `numpy`, `matplotlib`, `scipy`.
 
 ## Known Limitations

@@ -221,6 +221,24 @@ int32_t LIS2MDL_Init(LIS2MDL_Object_t *pObj)
     {
       return LIS2MDL_ERROR;
     }
+
+    /* Offset cancellation every ODR cycle (reduces magnetometer drift) */
+    if (lis2mdl_set_rst_mode_set(&(pObj->Ctx), LIS2MDL_SENS_OFF_CANC_EVERY_ODR) != LIS2MDL_OK)
+    {
+      return LIS2MDL_ERROR;
+    }
+
+    /* Enable temperature compensation for magnetometer offsets */
+    if (lis2mdl_offset_temp_comp_set(&(pObj->Ctx), PROPERTY_ENABLE) != LIS2MDL_OK)
+    {
+      return LIS2MDL_ERROR;
+    }
+
+    /* Low-pass filter at ODR/4 (25 Hz at 100 Hz ODR) for cleaner signal */
+    if (lis2mdl_low_pass_bandwidth_set(&(pObj->Ctx), LIS2MDL_ODR_DIV_4) != LIS2MDL_OK)
+    {
+      return LIS2MDL_ERROR;
+    }
   }
 
   pObj->is_initialized = 1;
