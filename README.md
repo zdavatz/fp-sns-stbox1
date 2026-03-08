@@ -80,8 +80,14 @@ Python scripts for plotting sensor and quaternion data are in `Utilities/scripts
   ```
   python Utilities/scripts/visualize_pumpfoil.py sensor_data.csv [-o OUTPUT_DIR]
   ```
+- **`animate_board_3d.py`** — Animated board side-view GIF per session from quaternion data. Shows board tilting in real time with three panels: board visualization (top), pump detail at ±5° (middle), and full-range nose angle (bottom). Graph lines build up progressively with a dynamic x-axis.
+  ```
+  python Utilities/scripts/animate_board_3d.py quaternion_data.csv [-o OUTPUT_DIR] [--fps 15]
+  ```
 
 Generated plots are saved to the `png/` directory with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
+Board animations are saved as `anim_board_*_sessionN.gif`.
+Combined video+sensor side-by-side outputs (synced camera footage with board animation) are in `mov/` as MOV files for pause/scrub playback.
 Quaternion plots display time in min:sek format based on a 120 Hz sample rate.
 Pumpfoil sessions are auto-detected (rhythmic pitch oscillation > 0.3 Hz filters out walking).
 Each session plot includes quaternion components, Euler angles, and board nose angle relative to the water surface. The nose angle is computed from the rotated sensor Y-axis (sensor mounted in Breitachse = X across board), with a 1-second median filter to remove magnetometer correction spikes and a 60-second baseline removal. Drop-in (green dashed line) and end-of-session crash (red shaded area) are marked.

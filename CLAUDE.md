@@ -105,6 +105,7 @@ Data collected via the ST BLE Sensor app uses a slightly different format (date/
 Python scripts in `Utilities/scripts/` for plotting sensor data:
 - `visualize_sensors.py` — sensor CSV + optional quaternion CSV plotting
 - `visualize_pumpfoil.py` — pumpfoil session analysis (cadence spectrogram, movement phases)
+- `animate_board_3d.py` — animated board side-view GIF per session from quaternion data
 
 Generated plots go to `png/` with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
 Quaternion plots use a min:sek time axis based on 120 Hz sample rate.
@@ -115,6 +116,17 @@ Nose angle uses rotated sensor Y-axis (Breitachse mounting), 1s median filter (r
 Combined nose angle plot includes FFT frequency analysis per session (pump frequency ~1 Hz vs magnetometer drift ~0.1 Hz).
 Mast is carbon (non-magnetic), but small metal screws next to sensor box cause hard/soft iron magnetometer interference. Use plastic screws instead. Session drift caused by gyro bias + stale mag calibration without restart.
 Raw CSV data lives in `csv/`.
+
+### Board Animation (`animate_board_3d.py`)
+
+Generates per-session animated GIFs showing board orientation in real time:
+- **Top panel**: Board side-view (Heck/Nase) tilting according to quaternion data, with water surface line
+- **Middle panel**: Pump detail at ±5° scale — shows fine pumping oscillations (~3-4°) invisible in the full-range plot
+- **Bottom panel**: Full-range nose angle timeline
+- All graph lines build up progressively (no future data shown), x-axis grows dynamically with the cursor
+- Nose angle uses the same baseline drift correction as `visualize_sensors.py` (crash-masked 60s rolling median)
+
+Combined video+sensor outputs in `mov/` merge the board animation with synchronized camera footage (side by side) using ffmpeg. The MOV format allows pause/scrub playback.
 
 Note: matplotlib `fig.suptitle()` has a font rendering bug with German characters (umlauts garbled in bold). Workaround: use `ax.set_title()` on the first axes with a two-line title instead.
 
