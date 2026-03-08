@@ -158,23 +158,15 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
                  fontsize=14)
 
     # Set up zoom axis (±5° scale) — no pre-drawn background, only history builds up
-    ax_zoom.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
-    ax_zoom.set_xlim(t_sess[0], t_sess[-1])
     zoom_lim = 5.0
-    ax_zoom.set_ylim(-zoom_lim, zoom_lim)
     ax_zoom.set_ylabel('Winkel [°]')
     ax_zoom.set_title('Pump-Detail (±5°)', fontsize=11)
-    ax_zoom.grid(True, alpha=0.3)
 
     # Set up full-range axis — no pre-drawn background, only history builds up
-    ax_graph.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
-    ax_graph.set_xlim(t_sess[0], t_sess[-1])
     y_lim = max(abs(np.nanmin(nose_smooth)), abs(np.nanmax(nose_smooth))) * 1.1
     y_lim = max(y_lim, 30)
-    ax_graph.set_ylim(-y_lim, y_lim)
     ax_graph.set_ylabel('Nasenwinkel [°]')
     ax_graph.set_xlabel('Zeit [sek]')
-    ax_graph.grid(True, alpha=0.3)
 
     # Animated elements — lines build up progressively
     cursor_line, = ax_graph.plot([], [], color='red', linewidth=2)
@@ -239,7 +231,13 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
                                    transform=ax_board.transAxes, fontsize=14,
                                    ha='right')
 
-        # --- Update cursors on graphs ---
+        # --- Update cursors on graphs with dynamic x-axis ---
+        x_right = t_now + 2  # small padding after cursor
+        for ax in (ax_zoom, ax_graph):
+            ax.set_xlim(t_sess[0], x_right)
+        ax_zoom.set_ylim(-zoom_lim, zoom_lim)
+        ax_graph.set_ylim(-y_lim, y_lim)
+
         cursor_line.set_data([t_now, t_now], [-y_lim, y_lim])
         history_line.set_data(t_sess[:fi + 1], nose_smooth[:fi + 1])
         cursor_zoom.set_data([t_now, t_now], [-zoom_lim, zoom_lim])
