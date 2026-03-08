@@ -120,14 +120,23 @@ Raw CSV data lives in `csv/`.
 ### Board Animation (`animate_board_3d.py`)
 
 Generates per-session animated GIFs showing board orientation in real time:
-- **Top panel**: Board side-view (Heck/Nase) tilting according to quaternion data, with water surface line
+- **Top panel**: Board side-view (Heck/Nase) tilting and translating vertically according to nose angle, with water surface line
 - **Middle panel**: Pump detail at ±5° scale — shows fine pumping oscillations (~3-4°) invisible in the full-range plot
 - **Bottom panel**: Full-range nose angle timeline
 - All graph lines build up progressively (no future data shown), x-axis grows dynamically with the cursor
-- Nose angle uses the same baseline drift correction as `visualize_sensors.py` (crash-masked 60s rolling median)
+- Nose angle uses Butterworth 2 Hz low-pass filter (preserves ~1 Hz pump, removes wobble) and 10s centered rolling median baseline (tracks rider position, removes sensor drift)
+- Board translates vertically proportional to angle (0.05m per degree) for visible pump movement
+
+CLI options for combined MOV output:
+```
+python animate_board_3d.py quaternion.csv -o mov/ \
+  --video camera.MOV --video-offset 56 --sensor-offset 1.5 \
+  --session 1 --title "PumpGraph Mirco" --subtitle "ONIX Albatross 1160"
+```
+Options: `--session N` (single session), `--video` (camera file), `--video-offset`/`--sensor-offset` (sync in seconds), `--title`/`--subtitle` (2s title card, green/lightblue bold text).
 
 Board animation GIFs are saved to `gif/` (e.g. `anim_board_mirco_7.3.2026_session1.gif`).
-Combined video+sensor outputs in `mov/` merge the board animation with synchronized camera footage (side by side) using ffmpeg. The MOV format allows pause/scrub playback.
+Combined video+sensor outputs in `mov/` merge the board animation with synchronized camera footage (side by side). The MOV format allows pause/scrub playback. Camera video frames are extracted to `frames/sessionN/` per session.
 
 Note: matplotlib `fig.suptitle()` has a font rendering bug with German characters (umlauts garbled in bold). Workaround: use `ax.set_title()` on the first axes with a two-line title instead.
 

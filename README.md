@@ -80,17 +80,37 @@ Python scripts for plotting sensor and quaternion data are in `Utilities/scripts
   ```
   python Utilities/scripts/visualize_pumpfoil.py sensor_data.csv [-o OUTPUT_DIR]
   ```
-- **`animate_board_3d.py`** — Animated board side-view GIF per session from quaternion data. Shows board tilting in real time with three panels: board visualization (top), pump detail at ±5° (middle), and full-range nose angle (bottom). Graph lines build up progressively with a dynamic x-axis.
+- **`animate_board_3d.py`** — Animated board side-view GIF per session from quaternion data, with optional combined side-by-side MOV output synchronized with camera footage.
   ```
-  python Utilities/scripts/animate_board_3d.py quaternion_data.csv [-o OUTPUT_DIR] [--fps 15]
+  # GIF only (all sessions)
+  python Utilities/scripts/animate_board_3d.py quaternion_data.csv -o gif/
+
+  # Single session GIF
+  python Utilities/scripts/animate_board_3d.py quaternion_data.csv -o gif/ --session 1
+
+  # Combined MOV with camera video and title card
+  python Utilities/scripts/animate_board_3d.py quaternion_data.csv -o mov/ \
+    --video camera.MOV --video-offset 56 --sensor-offset 1.5 \
+    --session 1 --title "PumpGraph Mirco" --subtitle "ONIX Albatross 1160"
   ```
+  Options:
+  | Flag | Description |
+  |------|-------------|
+  | `-o` | Output directory (default: `.`) |
+  | `--fps` | Frames per second (default: 15) |
+  | `--session N` | Generate only session N (default: all) |
+  | `--video FILE` | Camera video (MOV/MP4) for combined side-by-side MOV |
+  | `--video-offset SEC` | Start time in camera video in seconds |
+  | `--sensor-offset SEC` | Start time in sensor GIF in seconds |
+  | `--title TEXT` | Title card text (green, bold) |
+  | `--subtitle TEXT` | Subtitle card text (light blue, bold) |
 
 Generated plots are saved to the `png/` directory with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
 Board animations are saved to `gif/` as `anim_board_*_sessionN.gif`.
-Combined video+sensor side-by-side outputs (synced camera footage with board animation) are in `mov/` as MOV files for pause/scrub playback.
+Combined video+sensor side-by-side outputs (synced camera footage with board animation) are in `mov/` as MOV files for pause/scrub playback. When `--title`/`--subtitle` are provided, a 2-second title card is prepended.
 Quaternion plots display time in min:sek format based on a 120 Hz sample rate.
 Pumpfoil sessions are auto-detected (rhythmic pitch oscillation > 0.3 Hz filters out walking).
-Each session plot includes quaternion components, Euler angles, and board nose angle relative to the water surface. The nose angle is computed from the rotated sensor Y-axis (sensor mounted in Breitachse = X across board), with a 1-second median filter to remove magnetometer correction spikes and a 60-second baseline removal. Drop-in (green dashed line) and end-of-session crash (red shaded area) are marked.
+Each session plot includes quaternion components, Euler angles, and board nose angle relative to the water surface. The nose angle is computed from the rotated sensor Y-axis (sensor mounted in Breitachse = X across board), with a Butterworth 2 Hz low-pass filter (preserves ~1 Hz pump oscillation, removes high-frequency noise) and a 10-second centered rolling median baseline (tracks rider position, removes sensor drift). The board visualization shows both tilt and vertical translation proportional to the nose angle. Drop-in (green dashed line) and end-of-session crash (red shaded area) are marked.
 The combined nose angle comparison plot (`plot_nose_angle_*.png`) includes FFT frequency analysis per session to distinguish pump frequency (~1 Hz) from magnetometer drift (~0.1 Hz).
 
 **Sensor mounting note:** The carbon mast does not affect the magnetometer, but small metal screws near the sensor box cause hard/soft iron interference. Use plastic screws or adhesive tape instead. Data quality degrades in later sessions without sensor restart (gyroscope bias drift, stale magnetometer calibration). Restart the sensor between runs for best results.
