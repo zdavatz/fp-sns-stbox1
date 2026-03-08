@@ -86,7 +86,7 @@ Python scripts for plotting sensor and quaternion data are in `Utilities/scripts
   ```
 
 Generated plots are saved to the `png/` directory with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
-Board animations are saved as `anim_board_*_sessionN.gif`.
+Board animations are saved to `gif/` as `anim_board_*_sessionN.gif`.
 Combined video+sensor side-by-side outputs (synced camera footage with board animation) are in `mov/` as MOV files for pause/scrub playback.
 Quaternion plots display time in min:sek format based on a 120 Hz sample rate.
 Pumpfoil sessions are auto-detected (rhythmic pitch oscillation > 0.3 Hz filters out walking).

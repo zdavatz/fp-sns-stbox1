@@ -126,6 +126,7 @@ Generates per-session animated GIFs showing board orientation in real time:
 - All graph lines build up progressively (no future data shown), x-axis grows dynamically with the cursor
 - Nose angle uses the same baseline drift correction as `visualize_sensors.py` (crash-masked 60s rolling median)
 
+Board animation GIFs are saved to `gif/` (e.g. `anim_board_mirco_7.3.2026_session1.gif`).
 Combined video+sensor outputs in `mov/` merge the board animation with synchronized camera footage (side by side) using ffmpeg. The MOV format allows pause/scrub playback.
 
 Note: matplotlib `fig.suptitle()` has a font rendering bug with German characters (umlauts garbled in bold). Workaround: use `ax.set_title()` on the first axes with a two-line title instead.
