@@ -122,9 +122,22 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
     nose_z = 2 * (qj_all[session_start:session_end] * qk_all[session_start:session_end]
                   - qs_all[session_start:session_end] * qi_all[session_start:session_end])
     nose_deg = np.degrees(np.arcsin(np.clip(nose_z, -1, 1)))
-    # Smooth with 0.5s median filter for display
+    # Smooth with 1s median filter (matches visualize_sensors.py)
     nose_smooth = pd.Series(nose_deg).rolling(
-        SAMPLE_RATE_HZ // 2, center=True, min_periods=1).median().values
+        SAMPLE_RATE_HZ, center=True, min_periods=1).median().values
+
+    # Baseline drift correction (same as visualize_sensors.py):
+    # Remove magnetometer/gyro drift using crash-masked 60s rolling median
+    nose_series = pd.Series(nose_smooth)
+    rough_baseline = nose_series.rolling(
+        10 * SAMPLE_RATE_HZ, center=True, min_periods=1).median()
+    stable_mask = (nose_smooth - rough_baseline).abs() < 20
+    nose_stable = nose_series.copy()
+    nose_stable[~stable_mask] = np.nan
+    baseline = nose_stable.rolling(
+        60 * SAMPLE_RATE_HZ, center=True, min_periods=1).median()
+    baseline = baseline.interpolate(method='linear').bfill().ffill().values
+    nose_smooth = nose_smooth - baseline
     t_sess = np.arange(len(nose_deg)) / SAMPLE_RATE_HZ
 
     # Subsample for animation frames
