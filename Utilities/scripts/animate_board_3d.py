@@ -152,12 +152,26 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
     duration_s = (session_end - session_start) / SAMPLE_RATE_HZ
     dm, ds = divmod(int(duration_s), 60)
 
-    fig, (ax_board, ax_graph) = plt.subplots(2, 1, figsize=(12, 7),
-                                              gridspec_kw={'height_ratios': [2, 1]})
+    fig, (ax_board, ax_zoom, ax_graph) = plt.subplots(3, 1, figsize=(12, 9),
+                                              gridspec_kw={'height_ratios': [2, 1, 1]})
     fig.suptitle(f'Session {session_num} - {base_name} (Dauer: {dm}:{ds:02d})',
                  fontsize=14)
 
-    # Pre-draw the time series on ax_graph (static background)
+    # Pre-draw the zoomed time series on ax_zoom (±5° scale)
+    ax_zoom.plot(t_sess, nose_smooth, color='tab:green', alpha=0.6, linewidth=1.0)
+    ax_zoom.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
+    ax_zoom.set_xlim(t_sess[0], t_sess[-1])
+    zoom_lim = 5.0
+    ax_zoom.set_ylim(-zoom_lim, zoom_lim)
+    ax_zoom.set_ylabel('Winkel [°]')
+    ax_zoom.set_title('Pump-Detail (±5°)', fontsize=11)
+    ax_zoom.fill_between(t_sess, 0, np.clip(nose_smooth, 0, zoom_lim),
+                         alpha=0.2, color='tab:orange')
+    ax_zoom.fill_between(t_sess, np.clip(nose_smooth, -zoom_lim, 0), 0,
+                         alpha=0.2, color='tab:blue')
+    ax_zoom.grid(True, alpha=0.3)
+
+    # Pre-draw the full time series on ax_graph (static background)
     ax_graph.plot(t_sess, nose_smooth, color='tab:blue', alpha=0.6, linewidth=0.8)
     ax_graph.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
     ax_graph.set_xlim(t_sess[0], t_sess[-1])
@@ -171,6 +185,8 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
     # Animated elements
     cursor_line, = ax_graph.plot([], [], color='red', linewidth=2)
     history_line, = ax_graph.plot([], [], color='red', linewidth=1.5, alpha=0.8)
+    cursor_zoom, = ax_zoom.plot([], [], color='red', linewidth=2)
+    history_zoom, = ax_zoom.plot([], [], color='red', linewidth=1.5, alpha=0.8)
     angle_text = ax_board.text(0.02, 0.92, '', transform=ax_board.transAxes,
                                 fontsize=16, color='red', fontweight='bold')
     time_text = ax_board.text(0.98, 0.92, '', transform=ax_board.transAxes,
@@ -229,10 +245,12 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
                                    transform=ax_board.transAxes, fontsize=14,
                                    ha='right')
 
-        # --- Update cursor on graph ---
+        # --- Update cursors on graphs ---
         cursor_line.set_data([t_now, t_now], [-y_lim, y_lim])
-        # Highlight history in red
         history_line.set_data(t_sess[:fi + 1], nose_smooth[:fi + 1])
+        cursor_zoom.set_data([t_now, t_now], [-zoom_lim, zoom_lim])
+        history_zoom.set_data(t_sess[:fi + 1],
+                              np.clip(nose_smooth[:fi + 1], -zoom_lim, zoom_lim))
 
     print(f"  Generating {n_frames} frames for Session {session_num}...")
     anim = FuncAnimation(fig, draw_frame, frames=n_frames, interval=1000 // fps)
