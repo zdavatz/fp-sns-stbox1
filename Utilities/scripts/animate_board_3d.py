@@ -140,6 +140,14 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
     nose_smooth = nose_corrected_full[session_start:session_end]
     t_sess = np.arange(session_end - session_start) / SAMPLE_RATE_HZ
 
+    # Detect drop-in: steepest (most negative) angle in the first 10s
+    drop_search = nose_smooth[:min(10 * SAMPLE_RATE_HZ, len(nose_smooth))]
+    drop_sample_idx = int(np.argmin(drop_search))
+    drop_angle = drop_search[drop_sample_idx]
+    drop_time = drop_sample_idx / SAMPLE_RATE_HZ
+    # Flash duration: show text for 2 seconds after the steepest point
+    drop_flash_end = drop_time + 2.0
+
     # Subsample for animation frames
     step = max(1, SAMPLE_RATE_HZ // fps)
     frame_indices = np.arange(0, len(nose_smooth), step)
@@ -225,6 +233,15 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
         ax_board.text(0.98, 0.88, f'Zeit: {tm}:{ts_val:02d}',
                       transform=ax_board.transAxes, fontsize=14,
                       ha='right')
+
+        # Flash "Dropwinkel" text at the steepest drop-in moment
+        if drop_time <= t_now <= drop_flash_end:
+            # Fade out: alpha goes from 1.0 to 0.0 over 2 seconds
+            fade = max(0, 1.0 - (t_now - drop_time) / 2.0)
+            ax_board.text(0.5, 0.15, f'Dropwinkel: {drop_angle:.1f}°',
+                          transform=ax_board.transAxes, fontsize=22,
+                          color='red', fontweight='bold', ha='center',
+                          alpha=fade)
 
         # --- Update cursors on graphs with dynamic x-axis ---
         x_right = t_now + 2
