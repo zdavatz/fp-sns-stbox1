@@ -157,22 +157,16 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
     fig.suptitle(f'Session {session_num} - {base_name} (Dauer: {dm}:{ds:02d})',
                  fontsize=14)
 
-    # Pre-draw the zoomed time series on ax_zoom (±5° scale)
-    ax_zoom.plot(t_sess, nose_smooth, color='tab:green', alpha=0.6, linewidth=1.0)
+    # Set up zoom axis (±5° scale) — no pre-drawn background, only history builds up
     ax_zoom.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
     ax_zoom.set_xlim(t_sess[0], t_sess[-1])
     zoom_lim = 5.0
     ax_zoom.set_ylim(-zoom_lim, zoom_lim)
     ax_zoom.set_ylabel('Winkel [°]')
     ax_zoom.set_title('Pump-Detail (±5°)', fontsize=11)
-    ax_zoom.fill_between(t_sess, 0, np.clip(nose_smooth, 0, zoom_lim),
-                         alpha=0.2, color='tab:orange')
-    ax_zoom.fill_between(t_sess, np.clip(nose_smooth, -zoom_lim, 0), 0,
-                         alpha=0.2, color='tab:blue')
     ax_zoom.grid(True, alpha=0.3)
 
-    # Pre-draw the full time series on ax_graph (static background)
-    ax_graph.plot(t_sess, nose_smooth, color='tab:blue', alpha=0.6, linewidth=0.8)
+    # Set up full-range axis — no pre-drawn background, only history builds up
     ax_graph.axhline(0, color='gray', linestyle='-', linewidth=1, alpha=0.5)
     ax_graph.set_xlim(t_sess[0], t_sess[-1])
     y_lim = max(abs(np.nanmin(nose_smooth)), abs(np.nanmax(nose_smooth))) * 1.1
@@ -182,11 +176,11 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
     ax_graph.set_xlabel('Zeit [sek]')
     ax_graph.grid(True, alpha=0.3)
 
-    # Animated elements
+    # Animated elements — lines build up progressively
     cursor_line, = ax_graph.plot([], [], color='red', linewidth=2)
-    history_line, = ax_graph.plot([], [], color='red', linewidth=1.5, alpha=0.8)
+    history_line, = ax_graph.plot([], [], color='tab:blue', linewidth=1.2, alpha=0.8)
     cursor_zoom, = ax_zoom.plot([], [], color='red', linewidth=2)
-    history_zoom, = ax_zoom.plot([], [], color='red', linewidth=1.5, alpha=0.8)
+    history_zoom, = ax_zoom.plot([], [], color='tab:green', linewidth=1.2, alpha=0.8)
     angle_text = ax_board.text(0.02, 0.92, '', transform=ax_board.transAxes,
                                 fontsize=16, color='red', fontweight='bold')
     time_text = ax_board.text(0.98, 0.92, '', transform=ax_board.transAxes,
