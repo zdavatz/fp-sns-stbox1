@@ -238,7 +238,7 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
         if drop_time <= t_now <= drop_flash_end:
             # Fade out: alpha goes from 1.0 to 0.0 over 2 seconds
             fade = max(0, 1.0 - (t_now - drop_time) / 2.0)
-            ax_board.text(0.5, 0.15, f'Dropwinkel: {drop_angle:.1f}°',
+            ax_board.text(0.5, 0.65, f'Dropwinkel: {drop_angle:.1f}°',
                           transform=ax_board.transAxes, fontsize=22,
                           color='red', fontweight='bold', ha='center',
                           alpha=fade)
