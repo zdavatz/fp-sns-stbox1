@@ -105,6 +105,8 @@ Python scripts for plotting sensor and quaternion data are in `Utilities/scripts
   | `--title TEXT` | Title card text (green, bold) |
   | `--subtitle TEXT` | Subtitle card text (light blue, bold) |
 
+  The animation automatically detects the steepest board angle during the drop-in (first 10s) and flashes **"Dropwinkel: X.X°"** in bold red, fading out over 2 seconds.
+
 Generated plots are saved to the `png/` directory with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
 Board animations are saved to `gif/` as `anim_board_*_sessionN.gif`.
 Combined video+sensor side-by-side outputs (synced camera footage with board animation) are in `mov/` as MOV files for pause/scrub playback. When `--title`/`--subtitle` are provided, a 2-second title card is prepended.

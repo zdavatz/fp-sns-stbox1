@@ -126,6 +126,7 @@ Generates per-session animated GIFs showing board orientation in real time:
 - All graph lines build up progressively (no future data shown), x-axis grows dynamically with the cursor
 - Nose angle uses Butterworth 2 Hz low-pass filter (preserves ~1 Hz pump, removes wobble) and 10s centered rolling median baseline (tracks rider position, removes sensor drift)
 - Board translates vertically proportional to angle (0.05m per degree) for visible pump movement
+- Drop-in detection: steepest angle in first 10s shown as "Dropwinkel: X.X°" flash (bold red, 2s fade-out)
 
 CLI options for combined MOV output:
 ```
