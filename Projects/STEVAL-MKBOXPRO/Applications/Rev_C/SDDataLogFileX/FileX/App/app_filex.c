@@ -684,6 +684,24 @@ static void read_thread_entry(ULONG thread_input)
 {
   MessageData_t *Msg;
   INT LogCommandType = COMMAND_STOP_LOG;
+
+  /* Auto-start logging on power-on */
+  {
+    Msg = (MessageData_t *)SensorBufferWritingPointer;
+    SensorBufferWritingPointer += sizeof(MessageData_t);
+    if (SensorBufferWritingPointer == SensorBufferEndPointer)
+    {
+      SensorBufferWritingPointer = SensorBuffer;
+    }
+    Msg->CommandType = LogCommandType = COMMAND_START_LOG;
+    if (tx_queue_send(&MessageQueue, &Msg, TX_WAIT_FOREVER) != TX_SUCCESS)
+    {
+      Error_Handler(__FILE__, __LINE__);
+    }
+    MessagePushed++;
+    STBOX1_PRINTF("Auto-start SD logging\r\n");
+  }
+
   while (1)
   {
     tx_semaphore_get(&SemaphorePtr, TX_WAIT_FOREVER);

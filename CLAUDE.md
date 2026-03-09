@@ -96,7 +96,7 @@ The data logging application creates two files per session on the SD card:
 - `SensNNN.csv` — sensor CSV at ~100 Hz: timestamp (ms), acc XYZ (mg), gyro XYZ (mdps), mag XYZ (mgauss), pressure (hPa), temperature (°C)
 - `MicNNN.wav` — mono 16-bit PCM WAV at 16 kHz from the onboard digital microphone
 
-Logging is toggled by the user button. File counter auto-increments to avoid overwrites. The first 200 ms of audio is discarded (mic glitch workaround). The core logging logic is in `FileX/App/app_filex.c` within each SDDataLogFileX project.
+Logging starts automatically on power-on and can be stopped/restarted with the user button. File counter auto-increments to avoid overwrites. The first 200 ms of audio is discarded (mic glitch workaround). The core logging logic is in `FileX/App/app_filex.c` within each SDDataLogFileX project.
 
 Data collected via the ST BLE Sensor app uses a slightly different format (date/time columns instead of raw ms timestamp).
 

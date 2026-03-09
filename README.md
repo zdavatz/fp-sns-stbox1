@@ -45,7 +45,7 @@ Here is the list of references to user documents:
 
 ## SD Card Data Format (SDDataLogFileX)
 
-Each logging session (started/stopped via the user button) creates two files on the SD card:
+Logging starts automatically on power-on. Press the user button to stop, press again to restart. Each session creates two files on the SD card:
 
 ### Sensor CSV: `SensNNN.csv`
 
