@@ -38,9 +38,9 @@ class MadgwickAHRS:
         6DOF IMU-only update (accelerometer + gyroscope, no magnetometer).
 
         Gives clean roll/pitch from gravity reference. Yaw drifts slowly
-        from gyro integration only, but avoids magnetometer interference
-        (metal screws, hard/soft iron distortion) that corrupts all axes
-        through the coupled gradient descent.
+        from gyro integration only. The LIS2MDL magnetometer drifts over
+        time (even without metal interference), corrupting yaw and coupling
+        into roll/pitch through the gradient descent. 6DOF avoids this.
         """
         q = self.q.copy()
         q0, q1, q2, q3 = q
@@ -232,8 +232,8 @@ def compute_quaternions_from_csv(csv_path, beta=0.1, use_mag=False):
         lower = more gyro trust.
     use_mag : bool
         If True, use 9DOF mode (acc+gyro+mag). Default False (6DOF IMU-only)
-        because metal screws near the sensor cause hard/soft iron magnetometer
-        interference that corrupts yaw and couples into roll/pitch.
+        because the LIS2MDL magnetometer drifts over time, corrupting yaw
+        and coupling into roll/pitch through the gradient descent.
 
     Returns
     -------

@@ -116,7 +116,7 @@ Python scripts in `Utilities/scripts/` for plotting sensor data:
 - `animate_board_3d.py` — animated board side-view GIF per session from quaternion data
 
 Two CSV formats are supported (auto-detected from header):
-- **SD card**: `Time [mS], AccX [mg], ...` — raw sensor data, quaternions computed via 6DOF Madgwick fusion at 100 Hz (no magnetometer by default, avoids metal screw interference)
+- **SD card**: `Time [mS], AccX [mg], ...` — raw sensor data, quaternions computed via 6DOF Madgwick fusion at 100 Hz (no magnetometer by default, LIS2MDL drifts over time and corrupts roll/pitch via coupled gradient descent)
 - **BLE**: `dd/mm/yyyy, hh:mm:ss.ms, IMU accX[mg], ...` — with separate quaternion CSV at 120 Hz (legacy)
 
 Generated plots go to `png/` with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).

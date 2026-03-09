@@ -80,7 +80,7 @@ When stopping, all queued sensor data is written to the file before closing (no 
 
 Python scripts for plotting sensor and quaternion data are in `Utilities/scripts/`:
 
-- **`sensor_fusion.py`** — Madgwick AHRS sensor fusion: computes quaternions from raw accelerometer and gyroscope data (SD card CSV format). Default is 6DOF IMU-only mode (no magnetometer) because metal screws near the sensor cause hard/soft iron interference that corrupts yaw and couples into roll/pitch. Use `--use-mag` for 9DOF mode with plastic screws.
+- **`sensor_fusion.py`** — Madgwick AHRS sensor fusion: computes quaternions from raw accelerometer and gyroscope data (SD card CSV format). Default is 6DOF IMU-only mode (no magnetometer) because the LIS2MDL magnetometer drifts over time, corrupting yaw and coupling into roll/pitch. Use `--use-mag` for 9DOF mode if magnetometer is reliable.
   ```
   python Utilities/scripts/sensor_fusion.py sensor_data.csv [beta] [output.csv] [--use-mag]
   ```
