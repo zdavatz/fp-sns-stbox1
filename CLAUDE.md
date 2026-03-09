@@ -166,10 +166,10 @@ Makefiles are provided for building firmware without STM32CubeIDE:
 - `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLESensorsPnPL/STM32CubeIDE/Makefile` → `build/BLESensorsPnPL.bin`
 - `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE/Makefile` → `build/SDDataLogFileX.bin`
 
-The toolchain path is configured in `config.mk` at the repository root:
-```makefile
-TOOLCHAIN = $(HOME)/.software/arm-gnu-toolchain/bin
-```
+The toolchain path is auto-detected by platform in `config.mk` at the repository root (using `uname -s`):
+- **macOS (Darwin)**: `$(HOME)/.software/arm-gnu-toolchain/bin`
+- **Linux**: `/usr/bin`
+
 Both Makefiles include `config.mk` via `-include $(ROOT)/config.mk` with a fallback default. The path can also be overridden per invocation: `make TOOLCHAIN=/other/path`.
 
 ## Known Limitations

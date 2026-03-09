@@ -151,10 +151,10 @@ make
 
 Requires ARM GNU Toolchain (`arm-none-eabi-gcc`). Output binaries are in `build/`.
 
-The toolchain path is configured in `config.mk` at the repository root:
-```makefile
-TOOLCHAIN = $(HOME)/.software/arm-gnu-toolchain/bin
-```
+The toolchain path is auto-detected in `config.mk` at the repository root:
+- **macOS**: `$(HOME)/.software/arm-gnu-toolchain/bin` (full ARM GNU Toolchain via .pkg)
+- **Linux**: `/usr/bin` (system-wide install via apt/dnf)
+
 Override per invocation: `make TOOLCHAIN=/other/path`.
 
 Requires: `pandas`, `numpy`, `matplotlib`, `scipy`.
