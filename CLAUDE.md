@@ -111,12 +111,12 @@ Data collected via the ST BLE Sensor app uses a slightly different format (date/
 
 Python scripts in `Utilities/scripts/` for plotting sensor data:
 - `visualize_sensors.py` — sensor CSV + optional quaternion CSV plotting (auto-detects SD card vs BLE format)
-- `sensor_fusion.py` — Madgwick AHRS filter: computes quaternions from raw acc+gyro+mag data (SD card format)
+- `sensor_fusion.py` — Madgwick AHRS filter: computes quaternions from raw acc+gyro data (6DOF IMU-only default, `--use-mag` for 9DOF)
 - `visualize_pumpfoil.py` — pumpfoil session analysis (cadence spectrogram, movement phases)
 - `animate_board_3d.py` — animated board side-view GIF per session from quaternion data
 
 Two CSV formats are supported (auto-detected from header):
-- **SD card**: `Time [mS], AccX [mg], ...` — raw sensor data, quaternions computed via Madgwick fusion at 100 Hz
+- **SD card**: `Time [mS], AccX [mg], ...` — raw sensor data, quaternions computed via 6DOF Madgwick fusion at 100 Hz (no magnetometer by default, avoids metal screw interference)
 - **BLE**: `dd/mm/yyyy, hh:mm:ss.ms, IMU accX[mg], ...` — with separate quaternion CSV at 120 Hz (legacy)
 
 Generated plots go to `png/` with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).

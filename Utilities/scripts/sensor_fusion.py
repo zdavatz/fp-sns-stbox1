@@ -33,6 +33,61 @@ class MadgwickAHRS:
         # Internal: [w, x, y, z] = [1, 0, 0, 0]
         self.q = np.array([1.0, 0.0, 0.0, 0.0])
 
+    def update_imu(self, accel, gyro):
+        """
+        6DOF IMU-only update (accelerometer + gyroscope, no magnetometer).
+
+        Gives clean roll/pitch from gravity reference. Yaw drifts slowly
+        from gyro integration only, but avoids magnetometer interference
+        (metal screws, hard/soft iron distortion) that corrupts all axes
+        through the coupled gradient descent.
+        """
+        q = self.q.copy()
+        q0, q1, q2, q3 = q
+
+        ax, ay, az = accel
+        gx, gy, gz = gyro
+
+        # Rate of change from gyroscope
+        qDot = 0.5 * np.array([
+            -q1 * gx - q2 * gy - q3 * gz,
+             q0 * gx + q2 * gz - q3 * gy,
+             q0 * gy - q1 * gz + q3 * gx,
+             q0 * gz + q1 * gy - q2 * gx,
+        ])
+
+        # Normalize accelerometer
+        a_norm = np.linalg.norm([ax, ay, az])
+        if a_norm == 0:
+            self.q = _normalize(q + qDot / self.sample_rate)
+            return
+
+        ax, ay, az = ax / a_norm, ay / a_norm, az / a_norm
+
+        _2q0 = 2.0 * q0
+        _2q1 = 2.0 * q1
+        _2q2 = 2.0 * q2
+        _2q3 = 2.0 * q3
+
+        # Gradient descent corrective step (gravity only, 3 equations)
+        f = np.array([
+            _2q1 * q3 - _2q0 * q2 - ax,
+            _2q0 * q1 + _2q2 * q3 - ay,
+            1.0 - _2q1 * q1 - _2q2 * q2 - az,
+        ])
+
+        J = np.array([
+            [-_2q2, _2q3, -_2q0, _2q1],
+            [_2q1, _2q0, _2q3, _2q2],
+            [0.0, -2.0 * _2q1, -2.0 * _2q2, 0.0],
+        ])
+
+        step = J.T @ f
+        step = _normalize(step)
+
+        qDot -= self.beta * step
+        self.q = _normalize(q + qDot / self.sample_rate)
+
     def update(self, accel, gyro, mag):
         """
         Update filter with one sample.
@@ -164,7 +219,7 @@ def load_sd_csv(csv_path):
     return out
 
 
-def compute_quaternions_from_csv(csv_path, beta=0.1):
+def compute_quaternions_from_csv(csv_path, beta=0.1, use_mag=False):
     """
     Run Madgwick AHRS on SD card CSV and return quaternion DataFrame.
 
@@ -175,6 +230,10 @@ def compute_quaternions_from_csv(csv_path, beta=0.1):
     beta : float
         Madgwick filter gain (default 0.1). Higher = more acc/mag trust,
         lower = more gyro trust.
+    use_mag : bool
+        If True, use 9DOF mode (acc+gyro+mag). Default False (6DOF IMU-only)
+        because metal screws near the sensor cause hard/soft iron magnetometer
+        interference that corrupts yaw and couples into roll/pitch.
 
     Returns
     -------
@@ -200,6 +259,9 @@ def compute_quaternions_from_csv(csv_path, beta=0.1):
         print(f"sensor_fusion: detected sample rate {sample_rate:.1f} Hz "
               f"(median dt = {median_dt:.1f} ms)")
 
+    mode = "9DOF (acc+gyro+mag)" if use_mag else "6DOF IMU-only (acc+gyro)"
+    print(f"sensor_fusion: {mode}, beta={beta}")
+
     ahrs = MadgwickAHRS(sample_rate=sample_rate, beta=beta)
 
     n = len(data)
@@ -216,16 +278,22 @@ def compute_quaternions_from_csv(csv_path, beta=0.1):
         data['gyro_y'].values / 1000.0 * np.pi / 180.0,
         data['gyro_z'].values / 1000.0 * np.pi / 180.0,
     ])
-    mag_all = np.column_stack([
-        data['mag_x'].values,
-        data['mag_y'].values,
-        data['mag_z'].values,
-    ])
 
-    for i in range(n):
-        ahrs.update(acc_all[i], gyro_all[i], mag_all[i])
-        qi, qj, qk, qs = ahrs.quaternion_ijks
-        quats[i] = [qi, qj, qk, qs]
+    if use_mag:
+        mag_all = np.column_stack([
+            data['mag_x'].values,
+            data['mag_y'].values,
+            data['mag_z'].values,
+        ])
+        for i in range(n):
+            ahrs.update(acc_all[i], gyro_all[i], mag_all[i])
+            qi, qj, qk, qs = ahrs.quaternion_ijks
+            quats[i] = [qi, qj, qk, qs]
+    else:
+        for i in range(n):
+            ahrs.update_imu(acc_all[i], gyro_all[i])
+            qi, qj, qk, qs = ahrs.quaternion_ijks
+            quats[i] = [qi, qj, qk, qs]
 
     return pd.DataFrame(quats, columns=['Qi', 'Qj', 'Qk', 'Qs'])
 
@@ -234,14 +302,17 @@ if __name__ == '__main__':
     import sys
 
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <sensor_csv> [beta] [output_csv]")
+        print(f"Usage: {sys.argv[0]} <sensor_csv> [beta] [output_csv] [--use-mag]")
         sys.exit(1)
 
-    csv_path = sys.argv[1]
-    beta = float(sys.argv[2]) if len(sys.argv) > 2 else 0.1
-    output = sys.argv[3] if len(sys.argv) > 3 else None
+    use_mag = '--use-mag' in sys.argv
+    args = [a for a in sys.argv[1:] if a != '--use-mag']
 
-    df = compute_quaternions_from_csv(csv_path, beta=beta)
+    csv_path = args[0]
+    beta = float(args[1]) if len(args) > 1 else 0.1
+    output = args[2] if len(args) > 2 else None
+
+    df = compute_quaternions_from_csv(csv_path, beta=beta, use_mag=use_mag)
 
     if output:
         df.to_csv(output, index=False)
