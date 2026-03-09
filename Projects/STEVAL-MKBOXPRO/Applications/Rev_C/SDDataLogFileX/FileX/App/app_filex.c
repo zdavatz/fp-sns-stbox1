@@ -150,6 +150,7 @@ static uint32_t WavProcess_HeaderInit(void);
 static uint32_t WavProcess_HeaderUpdate(uint32_t len);
 static void ErrorLog_BuildFilename(CHAR *buf);
 static void ErrorLog_Open(void);
+static INT  CheckAndApplyFirmwareUpdate(void);
 /* USER CODE END PFP */
 
 /**
@@ -275,6 +276,9 @@ static void fx_thread_entry(ULONG thread_input)
 
   SHORT SDCardCounter = 0;
   CHAR file_name[30];
+
+  /* Check SD card for firmware update before starting normal logging */
+  CheckAndApplyFirmwareUpdate();
 
   while (1)
   {
@@ -808,6 +812,221 @@ void ErrorLog_Close(void)
 
   fx_file_close(&ErrorLogFxFile);
   ErrorLogFileOpen = 0;
+}
+
+/**
+  * @brief  Check SD card for firmware.bin and flash it to the other bank
+  *
+  * On boot, opens the SD card and looks for "firmware.bin". If found:
+  *   1. Detects current flash bank (option bytes)
+  *   2. Erases the other bank
+  *   3. Programs firmware.bin to the other bank (16-byte aligned writes)
+  *   4. Renames firmware.bin → firmware.done
+  *   5. Swaps banks via option bytes and resets
+  *
+  * To update firmware: copy firmware.bin to SD card, power-cycle the device.
+  * The red LED blinks during the update. If no firmware.bin is found,
+  * normal SD logging continues.
+  *
+  * @retval 0 = no update found, continues normally
+  *         Does not return on successful update (system reset)
+  */
+static INT CheckAndApplyFirmwareUpdate(void)
+{
+  UINT status;
+  FX_FILE fw_file;
+  ULONG fw_size;
+  ULONG bytes_read;
+
+  /* Open SD card media */
+  status = fx_media_open(&sdio_disk, "STM32_SDIO_DISK", fx_stm32_sd_driver,
+                         0, (VOID *)media_memory, sizeof(media_memory));
+  if (status != FX_SUCCESS)
+  {
+    /* No SD card or media error — skip update, continue to logging */
+    return 0;
+  }
+
+  /* Try to open firmware.bin */
+  status = fx_file_open(&sdio_disk, &fw_file, "firmware.bin", FX_OPEN_FOR_READ);
+  if (status != FX_SUCCESS)
+  {
+    /* No firmware.bin found — close media and continue */
+    fx_media_close(&sdio_disk);
+    return 0;
+  }
+
+  fw_size = (ULONG)fw_file.fx_file_current_file_size;
+  STBOX1_PRINTF("\r\n*** SD Firmware Update ***\r\n");
+  STBOX1_PRINTF("Found firmware.bin (%lu bytes)\r\n", fw_size);
+
+  if (fw_size == 0 || fw_size > (1024 * 1024 - 8192))
+  {
+    /* Empty or too large (max ~1016 KB, leave room for FW ID page) */
+    STBOX1_PRINTF("ERROR: Invalid firmware size\r\n");
+    fx_file_close(&fw_file);
+    fx_media_close(&sdio_disk);
+    return 0;
+  }
+
+  /* Detect current active bank from option bytes */
+  int32_t CurrentBank;
+  {
+    FLASH_OBProgramInitTypeDef OBInit;
+    HAL_FLASH_Unlock();
+    HAL_FLASH_OB_Unlock();
+    HAL_FLASHEx_OBGetConfig(&OBInit);
+    HAL_FLASH_OB_Lock();
+    HAL_FLASH_Lock();
+    if ((OBInit.USERConfig & OB_SWAP_BANK_ENABLE) == OB_SWAP_BANK_ENABLE)
+      CurrentBank = 2;
+    else
+      CurrentBank = 1;
+  }
+  STBOX1_PRINTF("Current bank: %ld, writing to bank %ld\r\n",
+                CurrentBank, (CurrentBank == 1) ? 2L : 1L);
+
+  /* Erase the other bank */
+  STBOX1_PRINTF("Erasing target bank...\r\n");
+  BSP_LED_On(LED_RED);
+  {
+    FLASH_EraseInitTypeDef EraseInit;
+    uint32_t SectorError = 0;
+    uint32_t num_pages = (fw_size + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE;
+
+    EraseInit.TypeErase = FLASH_TYPEERASE_PAGES;
+    EraseInit.Banks = (CurrentBank == 1) ? FLASH_BANK_2 : FLASH_BANK_1;
+    EraseInit.Page = 0;
+    EraseInit.NbPages = num_pages;
+
+    if (HAL_ICACHE_Disable() != HAL_OK)
+    {
+      STBOX1_PRINTF("ERROR: ICache disable failed\r\n");
+      goto update_error;
+    }
+    HAL_FLASH_Unlock();
+
+    if (HAL_FLASHEx_Erase(&EraseInit, &SectorError) != HAL_OK)
+    {
+      STBOX1_PRINTF("ERROR: Flash erase failed at page %lu\r\n", SectorError);
+      HAL_FLASH_Lock();
+      HAL_ICACHE_Enable();
+      goto update_error;
+    }
+    STBOX1_PRINTF("Erased %lu pages (%lu KB)\r\n", num_pages,
+                  (num_pages * FLASH_PAGE_SIZE) / 1024);
+  }
+
+  /* Program firmware from SD to flash, 16 bytes at a time */
+  STBOX1_PRINTF("Programming flash...\r\n");
+  {
+    /* OTA writes to physical Bank 2 address (0x08100000) regardless of
+       which bank is currently active — the hardware swap maps it correctly */
+    uint32_t write_addr = 0x08100000;
+    ULONG total_written = 0;
+    uint8_t read_buf[512];
+    uint32_t quad_buf[4];  /* 16-byte aligned write buffer */
+
+    fx_file_seek(&fw_file, 0);
+
+    while (total_written < fw_size)
+    {
+      /* Read a chunk from SD */
+      status = fx_file_read(&fw_file, read_buf, sizeof(read_buf), &bytes_read);
+      if (status != FX_SUCCESS && status != FX_END_OF_FILE)
+      {
+        STBOX1_PRINTF("ERROR: SD read failed at offset %lu\r\n", total_written);
+        HAL_FLASH_Lock();
+        HAL_ICACHE_Enable();
+        goto update_error;
+      }
+      if (bytes_read == 0)
+        break;
+
+      /* Write in 16-byte (quadword) chunks */
+      for (ULONG i = 0; i < bytes_read; i += 16)
+      {
+        /* Zero-fill the quadword buffer for the last partial chunk */
+        memset(quad_buf, 0xFF, 16);
+        ULONG chunk = bytes_read - i;
+        if (chunk > 16) chunk = 16;
+        memcpy(quad_buf, read_buf + i, chunk);
+
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, write_addr,
+                              (uint32_t)quad_buf) != HAL_OK)
+        {
+          STBOX1_PRINTF("ERROR: Flash program failed at 0x%08lX\r\n", write_addr);
+          HAL_FLASH_Lock();
+          HAL_ICACHE_Enable();
+          goto update_error;
+        }
+        write_addr += 16;
+      }
+
+      total_written += bytes_read;
+
+      /* Blink red LED as progress indicator */
+      BSP_LED_Toggle(LED_RED);
+    }
+
+    HAL_FLASH_Lock();
+    if (HAL_ICACHE_Enable() != HAL_OK)
+    {
+      STBOX1_PRINTF("WARNING: ICache re-enable failed\r\n");
+    }
+
+    STBOX1_PRINTF("Programmed %lu bytes\r\n", total_written);
+  }
+
+  /* Close firmware file and rename to firmware.done */
+  fx_file_close(&fw_file);
+  fx_file_rename(&sdio_disk, "firmware.bin", "firmware.done");
+  fx_media_flush(&sdio_disk);
+  fx_media_close(&sdio_disk);
+
+  STBOX1_PRINTF("Swapping banks and resetting...\r\n");
+  BSP_LED_Off(LED_RED);
+  BSP_LED_On(LED_GREEN);
+
+  /* Swap flash banks via option bytes — triggers system reset */
+  {
+    FLASH_OBProgramInitTypeDef OBInit;
+    HAL_FLASH_Unlock();
+    HAL_FLASH_OB_Unlock();
+    HAL_FLASHEx_OBGetConfig(&OBInit);
+
+    OBInit.OptionType = OPTIONBYTE_USER;
+    OBInit.USERType = OB_USER_SWAP_BANK;
+
+    if ((OBInit.USERConfig & FLASH_OPTR_SWAP_BANK) == FLASH_OPTR_SWAP_BANK)
+      OBInit.USERConfig &= ~FLASH_OPTR_SWAP_BANK;
+    else
+      OBInit.USERConfig = FLASH_OPTR_SWAP_BANK;
+
+    if (HAL_FLASHEx_OBProgram(&OBInit) != HAL_OK)
+    {
+      STBOX1_PRINTF("ERROR: Option bytes program failed\r\n");
+      /* Fall through to reset anyway */
+    }
+
+    /* This triggers a system reset */
+    HAL_FLASH_OB_Launch();
+
+    /* Should not reach here */
+    HAL_FLASH_OB_Lock();
+    HAL_FLASH_Lock();
+    HAL_NVIC_SystemReset();
+  }
+
+  /* Never reached */
+  return 0;
+
+update_error:
+  STBOX1_PRINTF("Firmware update FAILED — continuing normal boot\r\n");
+  fx_file_close(&fw_file);
+  fx_media_close(&sdio_disk);
+  BSP_LED_Off(LED_RED);
+  return 0;
 }
 
 static void read_thread_entry(ULONG thread_input)

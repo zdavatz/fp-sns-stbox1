@@ -76,6 +76,18 @@ Standard RIFF WAV — mono, 16-bit PCM, 16 kHz sample rate (MP23DB01HP microphon
 
 When stopping, all queued sensor data is written to the file before closing (no data loss).
 
+### Firmware Update via SD Card
+
+The firmware can be updated without BLE, JTAG, or ST-Link — just the SD card:
+
+1. Copy `firmware.bin` to the SD card root directory
+2. Insert the SD card and power on (or reset) the device
+3. The red LED blinks during the update
+4. The device automatically reboots with the new firmware
+5. `firmware.bin` is renamed to `firmware.done` (prevents re-flashing on next boot)
+
+If no `firmware.bin` is found, normal SD logging starts as usual. The update uses the STM32U585 dual-bank flash: the new firmware is written to the inactive bank, then the banks are swapped. Max firmware size: ~1016 KB.
+
 ## Visualization Scripts
 
 Python scripts for plotting sensor and quaternion data are in `Utilities/scripts/`:

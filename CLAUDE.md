@@ -101,7 +101,9 @@ Timestamps are ThreadX tick counts (1 tick = 10ms), not raw milliseconds.
 
 Logging starts automatically on power-on and can be stopped/restarted with the user button. File counter auto-increments to avoid overwrites. The first 200 ms of audio is discarded (mic glitch workaround). The core logging logic is in `FileX/App/app_filex.c` within each SDDataLogFileX project.
 
-LED behavior: Green LED on = logging active, green LED off = logging stopped. Remaining sensor data in the queue is drained (written to file) before closing, preventing empty files on stop.
+LED behavior: Green LED on = logging active, green LED off = logging stopped. Red LED blinks during firmware update. Remaining sensor data in the queue is drained (written to file) before closing, preventing empty files on stop.
+
+SD card firmware update: On boot, the app checks for `firmware.bin` on the SD card. If found, it programs the inactive flash bank (dual-bank STM32U585), renames the file to `firmware.done`, swaps banks via option bytes, and resets. No BLE/JTAG/ST-Link needed. Max firmware size ~1016 KB. Implementation in `CheckAndApplyFirmwareUpdate()` in `app_filex.c`.
 
 An error log file `Error_Log_Pump_Tsueri_dd.mm.yyyy.log` (compile date) is created on the SD card alongside the sensor data. It logs boot markers and fatal errors with timestamps. The `Error_Handler` writes the error location to this file before halting.
 
