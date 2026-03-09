@@ -125,6 +125,10 @@ static uint8_t pAudioHeader[44];
 static volatile CHAR SensorsFileOpen = 0;
 static volatile CHAR AudioFileOpen = 0;
 
+/* Error log file */
+FX_FILE         ErrorLogFxFile;
+static volatile CHAR ErrorLogFileOpen = 0;
+
 /* For Understanding Max Message Queues size */
 INT MessagePushed = 0;
 INT MessageRemoved = 0;
@@ -144,6 +148,8 @@ static void ReadingTimerCallbackFunction(ULONG timer);
 static void AudioProcess_SD_Recording(uint16_t *pInBuff, uint32_t len);
 static uint32_t WavProcess_HeaderInit(void);
 static uint32_t WavProcess_HeaderUpdate(uint32_t len);
+static void ErrorLog_BuildFilename(CHAR *buf);
+static void ErrorLog_Open(void);
 /* USER CODE END PFP */
 
 /**
@@ -315,6 +321,9 @@ static void fx_thread_entry(ULONG thread_input)
             }
 
             STBOX1_PRINTF("SD FX Media Open\r\n");
+
+            /* Open error log file (append) */
+            ErrorLog_Open();
 
             /* Create a file in the root directory.  */
             status =  fx_file_create(&sdio_disk, file_name);
@@ -582,6 +591,9 @@ static void fx_thread_entry(ULONG thread_input)
 
             AudioFileOpen = 0;
 
+            /* Close error log before closing media */
+            ErrorLog_Close();
+
             /* Close the media.  */
             status =  fx_media_close(&sdio_disk);
 
@@ -678,6 +690,108 @@ void BSP_PB_Callback(Button_TypeDef Button)
     /* Release the Semaphore */
     tx_semaphore_put(&SemaphorePtr);
   }
+}
+
+/**
+  * @brief  Build error log filename from compile date
+  *         Format: Error_Log_Pump_Tsueri_dd.mm.yyyy.log
+  * @param  buf: output buffer (at least 45 bytes)
+  * @retval None
+  */
+static void ErrorLog_BuildFilename(CHAR *buf)
+{
+  /* __DATE__ = "Mar  9 2026" */
+  const char *months[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                          "Jul","Aug","Sep","Oct","Nov","Dec"};
+  const char *d = __DATE__;
+  int month = 1, day, year;
+
+  for (int i = 0; i < 12; i++)
+  {
+    if (d[0] == months[i][0] && d[1] == months[i][1] && d[2] == months[i][2])
+    {
+      month = i + 1;
+      break;
+    }
+  }
+  day = (d[4] == ' ') ? (d[5] - '0') : ((d[4] - '0') * 10 + (d[5] - '0'));
+  year = (d[7] - '0') * 1000 + (d[8] - '0') * 100 + (d[9] - '0') * 10 + (d[10] - '0');
+
+  sprintf(buf, "Error_Log_Pump_Tsueri_%02d.%02d.%04d.log", day, month, year);
+}
+
+/**
+  * @brief  Open error log file on SD card (append mode)
+  *         Called after SD media is opened
+  * @retval None
+  */
+static void ErrorLog_Open(void)
+{
+  UINT status;
+  CHAR log_name[50];
+
+  if (ErrorLogFileOpen)
+    return;
+
+  ErrorLog_BuildFilename(log_name);
+
+  /* Create if not existing */
+  status = fx_file_create(&sdio_disk, log_name);
+  if (status != FX_SUCCESS && status != FX_ALREADY_CREATED)
+  {
+    STBOX1_PRINTF("Error creating %s\r\n", log_name);
+    return;
+  }
+
+  /* Open for write */
+  status = fx_file_open(&sdio_disk, &ErrorLogFxFile, log_name, FX_OPEN_FOR_WRITE);
+  if (status != FX_SUCCESS)
+  {
+    STBOX1_PRINTF("Error opening %s\r\n", log_name);
+    return;
+  }
+
+  /* Seek to end for append */
+  fx_file_seek(&ErrorLogFxFile, ErrorLogFxFile.fx_file_current_file_size);
+
+  ErrorLogFileOpen = 1;
+
+  /* Write boot marker */
+  CHAR boot_msg[128];
+  INT len = sprintf(boot_msg, "--- Boot %s %s ---\r\n", __DATE__, __TIME__);
+  fx_file_write(&ErrorLogFxFile, boot_msg, len);
+  fx_media_flush(&sdio_disk);
+
+  STBOX1_PRINTF("Error log: %s\r\n", log_name);
+}
+
+/**
+  * @brief  Write a message to the error log file
+  * @param  msg: null-terminated string to log
+  * @retval None
+  */
+void ErrorLog_Write(const char *msg)
+{
+  if (!ErrorLogFileOpen)
+    return;
+
+  CHAR line[300];
+  INT len = sprintf(line, "[%lu ms] %s\r\n", tx_time_get(), msg);
+  fx_file_write(&ErrorLogFxFile, line, len);
+  fx_media_flush(&sdio_disk);
+}
+
+/**
+  * @brief  Close error log file and flush SD media
+  * @retval None
+  */
+void ErrorLog_Close(void)
+{
+  if (!ErrorLogFileOpen)
+    return;
+
+  fx_file_close(&ErrorLogFxFile);
+  ErrorLogFileOpen = 0;
 }
 
 static void read_thread_entry(ULONG thread_input)

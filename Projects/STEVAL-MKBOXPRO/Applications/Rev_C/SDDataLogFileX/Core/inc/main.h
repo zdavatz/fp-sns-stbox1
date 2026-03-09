@@ -56,7 +56,8 @@ extern "C" {
 extern void Error_Handler(char *File,int32_t Line);
 
 /* USER CODE BEGIN EFP */
-
+extern void ErrorLog_Write(const char *msg);
+extern void ErrorLog_Close(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

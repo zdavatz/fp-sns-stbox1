@@ -449,6 +449,15 @@ void Error_Handler(char *File,int32_t Line)
   /* User can add his own implementation to report the HAL error return state */
   BSP_LED_Off(LED_GREEN);
   STBOX1_PRINTF("Error at %d at %s\r\n",Line,File);
+
+  /* Write error to SD card log */
+  {
+    char err_msg[256];
+    sprintf(err_msg, "FATAL: %s:%ld", File, (long)Line);
+    ErrorLog_Write(err_msg);
+    ErrorLog_Close();
+  }
+
   while (1)
   {
     BSP_LED_Toggle(LED_RED);

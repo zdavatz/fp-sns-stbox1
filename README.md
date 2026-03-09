@@ -45,7 +45,7 @@ Here is the list of references to user documents:
 
 ## SD Card Data Format (SDDataLogFileX)
 
-Logging starts automatically on power-on. Press the user button to stop, press again to restart. Each session creates two files on the SD card:
+Logging starts automatically on power-on. Press the user button to stop, press again to restart. An error log (`Error_Log_Pump_Tsueri_dd.mm.yyyy.log`, using compile date) is written to the SD card with boot markers and fatal errors. Each session creates two files on the SD card:
 
 ### Sensor CSV: `SensNNN.csv`
 
