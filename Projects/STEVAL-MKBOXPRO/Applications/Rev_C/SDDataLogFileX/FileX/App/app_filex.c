@@ -288,6 +288,7 @@ static void fx_thread_entry(ULONG thread_input)
         case COMMAND_START_LOG:
         {
           BSP_LED_Off(LED_RED);
+          BSP_LED_On(LED_GREEN);  /* Green ON = logging active */
 
           /* Init the Queue Statistics */
           MessagePushed = 0;
@@ -503,14 +504,29 @@ static void fx_thread_entry(ULONG thread_input)
               Error_Handler(__FILE__, __LINE__);
             }
 
-            /* Flush the Queue for Sensors Data */
-            status = tx_queue_flush(&MessageQueue);
-
-            if (status != FX_SUCCESS)
+            /* Drain remaining sensor messages from queue before closing */
             {
-              /* Error flushing the queue, call error handler.  */
-              Error_Handler(__FILE__, __LINE__);
+              MessageData_t *DrainMsg;
+              while (tx_queue_receive(&MessageQueue, &DrainMsg, TX_NO_WAIT) == TX_SUCCESS)
+              {
+                if (DrainMsg->CommandType == COMMAND_SAVE_SENSORS)
+                {
+                  CHAR data_s[256];
+                  INT size;
+                  size = sprintf(data_s, "%ld, %d, %d, %d, %d, %d, %d, %d, %d, %d, %5.2f, %5.2f\r\n",
+                                 DrainMsg->MsgTime,
+                                 DrainMsg->acc.x, DrainMsg->acc.y, DrainMsg->acc.z,
+                                 DrainMsg->gyro.x, DrainMsg->gyro.y, DrainMsg->gyro.z,
+                                 DrainMsg->mag.x, DrainMsg->mag.y, DrainMsg->mag.z,
+                                 DrainMsg->pressure, DrainMsg->temperature);
+                  fx_file_write(&SensorsFxFile, data_s, size);
+                }
+                MessageRemoved++;
+              }
             }
+
+            /* LED off to clearly signal logging stopped */
+            BSP_LED_Off(LED_GREEN);
 
             /* Close the test file.  */
             status =  fx_file_close(&SensorsFxFile);

@@ -66,7 +66,7 @@
 #define LSM6DSV16X_ACC_ODR 120.0f /* ODR = 120Hz */
 #define LSM6DSV16X_ACC_FS 4 /* FS = 4g */
 #define LSM6DSV16X_GYRO_ODR 120.0f /* ODR = 120Hz */
-#define LSM6DSV16X_GYRO_FS 2000 /* FS = 2000dps */
+#define LSM6DSV16X_GYRO_FS 500 /* FS = 500dps (17.5 mdps/LSB, 4x finer than 2000dps) */
 #define LPS22DF_ODR 25.0f /* ODR = 25.0Hz */
 #define LIS2MDL_MAG_ODR 100.0f /* ODR = 100Hz */
 #define LIS2MDL_MAG_FS 50 /* FS = 50gauss */

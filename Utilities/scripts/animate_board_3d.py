@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-Board orientation animation from quaternion sensor data.
+Board orientation animation from sensor data.
 
 Creates animated GIFs per pumpfoil session showing the board tilting
-according to the quaternion sensor data, with optional combined
-side-by-side MOV output synchronized with camera footage.
+according to sensor data, with optional combined side-by-side MOV
+output synchronized with camera footage.
+
+Supports two CSV formats (auto-detected):
+  - SD card format: raw sensors, quaternions computed via Madgwick fusion
+  - BLE format: pre-computed quaternion CSV
 
 Usage:
   # GIF only (all sessions)
-  python animate_board_3d.py quaternion_data.csv -o gif/
+  python animate_board_3d.py sensor_data.csv -o gif/
 
   # Combined MOV with camera video (single session)
-  python animate_board_3d.py quaternion_data.csv -o mov/ \
+  python animate_board_3d.py sensor_data.csv -o mov/ \
     --video camera.MOV --video-offset 56 --sensor-offset 1.5 \
     --session 1 --title "PumpGraph Mirco" --subtitle "ONIX Albatross 1160"
 """
@@ -31,7 +35,13 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 from scipy.signal import butter, filtfilt
 
 
-SAMPLE_RATE_HZ = 120
+def detect_csv_format(csv_path):
+    """Detect CSV format from header line. Returns 'sd' or 'ble'."""
+    with open(csv_path, 'r') as f:
+        header = f.readline()
+    if 'AccX [mg]' in header or 'Time [mS]' in header:
+        return 'sd'
+    return 'ble'
 
 
 def quat_rotate(q, v):
@@ -55,10 +65,25 @@ def remove_yaw(qi, qj, qk, qs):
     return r_i, r_j, r_k, r_s
 
 
+def load_quaternions(csv_path):
+    """Load quaternion data from CSV, auto-detecting format.
+
+    Returns (quat_data, sample_rate_hz)."""
+    fmt = detect_csv_format(csv_path)
+    if fmt == 'sd':
+        print("SD card format detected, running Madgwick sensor fusion...")
+        from sensor_fusion import compute_quaternions_from_csv
+        quat_data = compute_quaternions_from_csv(csv_path)
+        return quat_data, 100
+    else:
+        quat_data = pd.read_csv(csv_path, skiprows=1, header=None, usecols=[0, 1, 2, 3])
+        quat_data.columns = ['Qi', 'Qj', 'Qk', 'Qs']
+        return quat_data, 120
+
+
 def detect_sessions(csv_path):
     """Detect pumping sessions (reuses logic from visualize_sensors.py)."""
-    quat_data = pd.read_csv(csv_path, skiprows=1, header=None, usecols=[0, 1, 2, 3])
-    quat_data.columns = ['Qi', 'Qj', 'Qk', 'Qs']
+    quat_data, sample_rate_hz = load_quaternions(csv_path)
 
     qi = quat_data['Qi'].values
     qj = quat_data['Qj'].values
@@ -74,7 +99,7 @@ def detect_sessions(csv_path):
 
     euler_change = (np.abs(np.diff(pitch, prepend=pitch[0]))
                     + np.abs(np.diff(roll, prepend=roll[0])))
-    activity = pd.Series(euler_change).rolling(SAMPLE_RATE_HZ).mean().fillna(0)
+    activity = pd.Series(euler_change).rolling(sample_rate_hz).mean().fillna(0)
     threshold = activity.median() + activity.std()
     active = (activity > threshold).astype(int)
     changes = active.diff().fillna(0)
@@ -83,7 +108,7 @@ def detect_sessions(csv_path):
     if active.iloc[-1] == 1:
         ends.append(len(activity) - 1)
 
-    merge_gap = 60 * SAMPLE_RATE_HZ
+    merge_gap = 60 * sample_rate_hz
     sessions = []
     for s, e in zip(starts, ends):
         if sessions and (s - sessions[-1][1]) < merge_gap:
@@ -91,7 +116,7 @@ def detect_sessions(csv_path):
         else:
             sessions.append((s, e))
 
-    min_duration = 30 * SAMPLE_RATE_HZ
+    min_duration = 30 * sample_rate_hz
     sessions = [(s, e) for s, e in sessions if (e - s) >= min_duration]
 
     pumping_sessions = []
@@ -99,16 +124,16 @@ def detect_sessions(csv_path):
         p = pitch[s:e]
         p_centered = p - np.median(p)
         crossings = np.sum(np.diff(np.sign(p_centered)) != 0)
-        duration = (e - s) / SAMPLE_RATE_HZ
+        duration = (e - s) / sample_rate_hz
         osc_freq = crossings / duration / 2
         if osc_freq >= 0.3:
             pumping_sessions.append((s, e))
 
-    return quat_data, pumping_sessions
+    return quat_data, pumping_sessions, sample_rate_hz
 
 
 def create_board_animation(quat_data, session_start, session_end, session_num,
-                           output_dir, base_name, fps=15):
+                           output_dir, base_name, fps=15, sample_rate_hz=120):
     """Create a 2D side-view animated GIF showing nose angle pumping motion.
 
     Top panel: board seen from the side (line tilting up/down) with water surface.
@@ -126,30 +151,30 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
     # Butterworth low-pass at 2 Hz: preserves ~1 Hz pump oscillation
     # (amplitude ±3.1° vs ±3.6° raw) while removing high-frequency
     # noise that causes wobbling in the 15fps animation
-    b, a = butter(4, 2, fs=SAMPLE_RATE_HZ)
+    b, a = butter(4, 2, fs=sample_rate_hz)
     nose_smooth_full = filtfilt(b, a, nose_deg_full)
 
     # Baseline drift correction: 10s centered rolling median
     # Tracks rider's actual riding angle, removes sensor drift,
     # without disturbing the ~1 Hz pump oscillation
     baseline = pd.Series(nose_smooth_full).rolling(
-        10 * SAMPLE_RATE_HZ, center=True, min_periods=1).median().values
+        10 * sample_rate_hz, center=True, min_periods=1).median().values
     nose_corrected_full = nose_smooth_full - baseline
 
     # Slice to session
     nose_smooth = nose_corrected_full[session_start:session_end]
-    t_sess = np.arange(session_end - session_start) / SAMPLE_RATE_HZ
+    t_sess = np.arange(session_end - session_start) / sample_rate_hz
 
     # Detect drop-in: steepest (most negative) angle in the first 10s
-    drop_search = nose_smooth[:min(10 * SAMPLE_RATE_HZ, len(nose_smooth))]
+    drop_search = nose_smooth[:min(10 * sample_rate_hz, len(nose_smooth))]
     drop_sample_idx = int(np.argmin(drop_search))
     drop_angle = drop_search[drop_sample_idx]
-    drop_time = drop_sample_idx / SAMPLE_RATE_HZ
+    drop_time = drop_sample_idx / sample_rate_hz
     # Flash duration: show text for 2 seconds after the steepest point
     drop_flash_end = drop_time + 2.0
 
     # Subsample for animation frames
-    step = max(1, SAMPLE_RATE_HZ // fps)
+    step = max(1, sample_rate_hz // fps)
     frame_indices = np.arange(0, len(nose_smooth), step)
     n_frames = len(frame_indices)
 
@@ -157,7 +182,7 @@ def create_board_animation(quat_data, session_start, session_end, session_num,
     board_len = 1.6  # total length in display units
     hl = board_len / 2
 
-    duration_s = (session_end - session_start) / SAMPLE_RATE_HZ
+    duration_s = (session_end - session_start) / sample_rate_hz
     dm, ds = divmod(int(duration_s), 60)
 
     fig, (ax_board, ax_zoom, ax_graph) = plt.subplots(3, 1, figsize=(12, 9),
@@ -371,7 +396,7 @@ def main():
     --session 1 \\
     --title "PumpGraph Mirco" --subtitle "ONIX Albatross 1160"
 """)
-    parser.add_argument('quaternion_csv', help='Path to quaternion CSV')
+    parser.add_argument('quaternion_csv', help='Path to sensor CSV (SD card or BLE quaternion format)')
     parser.add_argument('-o', '--output-dir', default='.', help='Output directory (default: .)')
     parser.add_argument('--fps', type=int, default=15, help='Frames per second (default: 15)')
     parser.add_argument('--session', type=int, default=None,
@@ -392,25 +417,26 @@ def main():
     base = os.path.basename(args.quaternion_csv).replace('.csv', '')
 
     print(f"Loading {args.quaternion_csv}...")
-    quat_data, sessions = detect_sessions(args.quaternion_csv)
+    quat_data, sessions, sample_rate_hz = detect_sessions(args.quaternion_csv)
 
     if not sessions:
         print("No pumping sessions detected.")
         sys.exit(1)
 
-    print(f"Found {len(sessions)} pumping session(s).")
+    print(f"Found {len(sessions)} pumping session(s) ({sample_rate_hz} Hz).")
 
     for i, (s, e) in enumerate(sessions, 1):
         if args.session is not None and i != args.session:
             continue
-        dur = (e - s) / SAMPLE_RATE_HZ
+        dur = (e - s) / sample_rate_hz
         dm, ds = divmod(int(dur), 60)
         print(f"  Session {i}: {dm}:{ds:02d} ({e - s} samples)")
 
         gif_dir = args.output_dir if not args.video else tempfile.mkdtemp()
         gif_path = create_board_animation(quat_data, s, e, i,
                                           gif_dir if not args.video else gif_dir,
-                                          base, fps=args.fps)
+                                          base, fps=args.fps,
+                                          sample_rate_hz=sample_rate_hz)
 
         if args.video:
             # Save GIF alongside MOV for reference

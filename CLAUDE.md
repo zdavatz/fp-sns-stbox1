@@ -93,10 +93,15 @@ Each application follows the same layout:
 ## SD Card Data Format (SDDataLogFileX)
 
 The data logging application creates two files per session on the SD card:
-- `SensNNN.csv` — sensor CSV at ~100 Hz: timestamp (ms), acc XYZ (mg), gyro XYZ (mdps), mag XYZ (mgauss), pressure (hPa), temperature (°C)
+- `SensNNN.csv` — sensor CSV at ~100 Hz: timestamp (ticks), acc XYZ (mg), gyro XYZ (mdps), mag XYZ (mgauss), pressure (hPa), temperature (°C)
 - `MicNNN.wav` — mono 16-bit PCM WAV at 16 kHz from the onboard digital microphone
 
+Gyroscope full-scale is 500 dps (17.5 mdps/LSB) for good fusion resolution. Accelerometer is 4g (0.122 mg/LSB).
+Timestamps are ThreadX tick counts (1 tick = 10ms), not raw milliseconds.
+
 Logging starts automatically on power-on and can be stopped/restarted with the user button. File counter auto-increments to avoid overwrites. The first 200 ms of audio is discarded (mic glitch workaround). The core logging logic is in `FileX/App/app_filex.c` within each SDDataLogFileX project.
+
+LED behavior: Green LED on = logging active, green LED off = logging stopped. Remaining sensor data in the queue is drained (written to file) before closing, preventing empty files on stop.
 
 An error log file `Error_Log_Pump_Tsueri_dd.mm.yyyy.log` (compile date) is created on the SD card alongside the sensor data. It logs boot markers and fatal errors with timestamps. The `Error_Handler` writes the error location to this file before halting.
 
@@ -105,12 +110,17 @@ Data collected via the ST BLE Sensor app uses a slightly different format (date/
 ## Visualization Scripts
 
 Python scripts in `Utilities/scripts/` for plotting sensor data:
-- `visualize_sensors.py` — sensor CSV + optional quaternion CSV plotting
+- `visualize_sensors.py` — sensor CSV + optional quaternion CSV plotting (auto-detects SD card vs BLE format)
+- `sensor_fusion.py` — Madgwick AHRS filter: computes quaternions from raw acc+gyro+mag data (SD card format)
 - `visualize_pumpfoil.py` — pumpfoil session analysis (cadence spectrogram, movement phases)
 - `animate_board_3d.py` — animated board side-view GIF per session from quaternion data
 
+Two CSV formats are supported (auto-detected from header):
+- **SD card**: `Time [mS], AccX [mg], ...` — raw sensor data, quaternions computed via Madgwick fusion at 100 Hz
+- **BLE**: `dd/mm/yyyy, hh:mm:ss.ms, IMU accX[mg], ...` — with separate quaternion CSV at 120 Hz (legacy)
+
 Generated plots go to `png/` with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
-Quaternion plots use a min:sek time axis based on 120 Hz sample rate.
+Quaternion plots use a min:sek time axis.
 Pumpfoil sessions are auto-detected by pitch oscillation frequency (>0.3 Hz = pumping, <0.3 Hz = walking).
 Each session gets a zoomed plot with quaternions, Euler angles, and nose angle to water.
 Nose angle uses rotated sensor Y-axis (Breitachse mounting), 1s median filter (removes magnetometer spikes),

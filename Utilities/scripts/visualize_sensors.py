@@ -2,9 +2,11 @@
 """
 Visualize STEVAL-MKBOXPRO sensor data and quaternion orientation data.
 
-Expects CSV files as exported by the ST BLE Sensor app:
-  - Sensor CSV with columns: dd/mm/yyyy, hh:mm:ss.ms, IMU accX[mg], ...
-  - Quaternion CSV with columns: Qi, Qj, Qk, Qs
+Supports two CSV formats (auto-detected from header):
+  - SD card format: Time [mS], AccX [mg], ... (raw sensor data, quaternions
+    computed via Madgwick sensor fusion)
+  - BLE format: dd/mm/yyyy, hh:mm:ss.ms, IMU accX[mg], ...
+    with separate quaternion CSV: Qi, Qj, Qk, Qs
 
 Usage:
   python visualize_sensors.py sensor_data.csv [quaternion_data.csv] [-o OUTPUT_DIR]
@@ -20,7 +22,77 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def plot_sensors(csv_path, output_dir):
+def detect_csv_format(csv_path):
+    """Detect CSV format from header line. Returns 'sd' or 'ble'."""
+    with open(csv_path, 'r') as f:
+        header = f.readline()
+    if 'AccX [mg]' in header or 'Time [mS]' in header:
+        return 'sd'
+    return 'ble'
+
+
+def plot_sensors_sd(csv_path, output_dir):
+    """Plot sensor data from SD card CSV format."""
+    from sensor_fusion import load_sd_csv
+    data = load_sd_csv(csv_path)
+
+    # Convert tick-based timestamps to seconds
+    t_raw = data['time_ms'].values
+    dt_raw = np.diff(t_raw)
+    median_dt = np.median(dt_raw[dt_raw > 0])
+    if median_dt < 5:
+        t_sec = (t_raw - t_raw[0]) * 0.01  # ticks * 10ms
+    else:
+        t_sec = (t_raw - t_raw[0]) / 1000.0
+
+    fig, axes = plt.subplots(5, 1, figsize=(14, 16), sharex=True)
+    title = os.path.basename(csv_path).replace('.csv', '')
+
+    axes[0].plot(t_sec, data['acc_x'], label='X', alpha=0.8)
+    axes[0].plot(t_sec, data['acc_y'], label='Y', alpha=0.8)
+    axes[0].plot(t_sec, data['acc_z'], label='Z', alpha=0.8)
+    axes[0].set_ylabel('Acc [mg]')
+    axes[0].set_title(f'Sensordaten (SD-Karte) - {title}\nBeschleunigung', fontsize=13)
+    axes[0].legend(loc='upper right')
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(t_sec, data['gyro_x'], label='X', alpha=0.8)
+    axes[1].plot(t_sec, data['gyro_y'], label='Y', alpha=0.8)
+    axes[1].plot(t_sec, data['gyro_z'], label='Z', alpha=0.8)
+    axes[1].set_ylabel('Gyro [mdps]')
+    axes[1].set_title('Drehrate')
+    axes[1].legend(loc='upper right')
+    axes[1].grid(True, alpha=0.3)
+
+    axes[2].plot(t_sec, data['mag_x'], label='X', alpha=0.8)
+    axes[2].plot(t_sec, data['mag_y'], label='Y', alpha=0.8)
+    axes[2].plot(t_sec, data['mag_z'], label='Z', alpha=0.8)
+    axes[2].set_ylabel('Mag [mGauss]')
+    axes[2].set_title('Magnetfeld')
+    axes[2].legend(loc='upper right')
+    axes[2].grid(True, alpha=0.3)
+
+    axes[3].plot(t_sec, data['temperature'], color='tab:red')
+    axes[3].set_ylabel('T [°C]')
+    axes[3].set_title('Temperatur')
+    axes[3].grid(True, alpha=0.3)
+
+    axes[4].plot(t_sec, data['pressure'], color='tab:purple')
+    axes[4].set_ylabel('P [hPa]')
+    axes[4].set_title('Luftdruck')
+    axes[4].set_xlabel('Zeit [s]')
+    axes[4].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    base = os.path.basename(csv_path).replace('.csv', '')
+    out_path = os.path.join(output_dir, f'plot_sensors_{base}.png')
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
+def plot_sensors_ble(csv_path, output_dir):
+    """Plot sensor data from BLE/ST BLE Sensor app format."""
     df = pd.read_csv(csv_path)
     df.columns = [c.strip().rstrip(',') for c in df.columns]
 
@@ -77,11 +149,11 @@ def plot_sensors(csv_path, output_dir):
     print(f"Saved {out_path}")
 
 
-def plot_quaternions(csv_path, output_dir):
-    quat_data = pd.read_csv(csv_path, skiprows=1, header=None, usecols=[0, 1, 2, 3])
-    quat_data.columns = ['Qi', 'Qj', 'Qk', 'Qs']
-    # Quaternion sample rate: 120 Hz
-    sample_rate_hz = 120
+def plot_quaternions(csv_path, output_dir, quat_data=None, base_name=None,
+                     sample_rate_hz=120):
+    if quat_data is None:
+        quat_data = pd.read_csv(csv_path, skiprows=1, header=None, usecols=[0, 1, 2, 3])
+        quat_data.columns = ['Qi', 'Qj', 'Qk', 'Qs']
     t_sec = np.arange(len(quat_data)) / sample_rate_hz
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8))
@@ -93,7 +165,8 @@ def plot_quaternions(csv_path, output_dir):
     from matplotlib.ticker import FuncFormatter
     time_fmt = FuncFormatter(fmt_min_sec)
 
-    title = os.path.basename(csv_path).replace('.csv', '')
+    title = base_name if base_name else os.path.basename(csv_path).replace('.csv', '')
+    base = title
     ax1.plot(t_sec, quat_data['Qi'], label='Qi', alpha=0.8)
     ax1.plot(t_sec, quat_data['Qj'], label='Qj', alpha=0.8)
     ax1.plot(t_sec, quat_data['Qk'], label='Qk', alpha=0.8)
@@ -129,7 +202,6 @@ def plot_quaternions(csv_path, output_dir):
     ax2.set_xlabel('Zeit [min:sek]')
 
     plt.tight_layout()
-    base = os.path.basename(csv_path).replace('.csv', '')
     out_path = os.path.join(output_dir, f'plot_quaternions_{base}.png')
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -450,20 +522,36 @@ def plot_quaternions(csv_path, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize STEVAL-MKBOXPRO sensor data')
-    parser.add_argument('sensor_csv', help='Path to sensor CSV (ST BLE Sensor app format)')
+    parser.add_argument('sensor_csv', help='Path to sensor CSV (SD card or BLE format, auto-detected)')
     parser.add_argument('quaternion_csv', nargs='?', default=None,
-                        help='Path to quaternion CSV (optional)')
+                        help='Path to quaternion CSV (optional, only for BLE format)')
     parser.add_argument('-o', '--output-dir', default='.',
                         help='Output directory for PNG plots (default: current dir)')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    try:
-        plot_sensors(args.sensor_csv, args.output_dir)
-    except KeyError:
-        print(f"Skipping sensor plot (no sensor columns in {args.sensor_csv})")
-    if args.quaternion_csv:
-        plot_quaternions(args.quaternion_csv, args.output_dir)
+
+    fmt = detect_csv_format(args.sensor_csv)
+    print(f"Detected CSV format: {fmt}")
+
+    if fmt == 'sd':
+        # SD card format: plot sensors and compute quaternions via fusion
+        plot_sensors_sd(args.sensor_csv, args.output_dir)
+        print("Computing quaternions via Madgwick sensor fusion...")
+        from sensor_fusion import compute_quaternions_from_csv
+        quat_data = compute_quaternions_from_csv(args.sensor_csv)
+        # Use 100 Hz sample rate for SD card data
+        plot_quaternions(None, args.output_dir, quat_data=quat_data,
+                         base_name=os.path.basename(args.sensor_csv).replace('.csv', ''),
+                         sample_rate_hz=100)
+    else:
+        # BLE format: existing behavior
+        try:
+            plot_sensors_ble(args.sensor_csv, args.output_dir)
+        except KeyError:
+            print(f"Skipping sensor plot (no sensor columns in {args.sensor_csv})")
+        if args.quaternion_csv:
+            plot_quaternions(args.quaternion_csv, args.output_dir)
 
 
 if __name__ == '__main__':
