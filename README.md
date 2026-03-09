@@ -127,14 +127,23 @@ The LIS2MDL magnetometer driver (`Drivers/BSP/Components/lis2mdl/lis2mdl.c`) has
 
 ### Command-Line Build
 
-A Makefile is provided for building the BLESensorsPnPL firmware without STM32CubeIDE:
+Makefiles are provided for building firmware without STM32CubeIDE:
 
 ```
 cd Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLESensorsPnPL/STM32CubeIDE
 make
+
+cd Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE
+make
 ```
 
-Requires ARM GNU Toolchain (`arm-none-eabi-gcc`). The output binary is `build/BLESensorsPnPL.bin`.
+Requires ARM GNU Toolchain (`arm-none-eabi-gcc`). Output binaries are in `build/`.
+
+The toolchain path is configured in `config.mk` at the repository root:
+```makefile
+TOOLCHAIN = $(HOME)/.software/arm-gnu-toolchain/bin
+```
+Override per invocation: `make TOOLCHAIN=/other/path`.
 
 Requires: `pandas`, `numpy`, `matplotlib`, `scipy`.
 

@@ -150,8 +150,15 @@ The LIS2MDL driver (`Drivers/BSP/Components/lis2mdl/lis2mdl.c`) Init function ha
 
 ### Command-Line Build
 
-A Makefile at `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLESensorsPnPL/STM32CubeIDE/Makefile` builds the firmware with `arm-none-eabi-gcc`. Output: `build/BLESensorsPnPL.bin`.
-The Makefile uses the full ARM GNU Toolchain at `~/arm-gnu-toolchain/bin/`.
+Makefiles are provided for building firmware without STM32CubeIDE:
+- `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLESensorsPnPL/STM32CubeIDE/Makefile` → `build/BLESensorsPnPL.bin`
+- `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE/Makefile` → `build/SDDataLogFileX.bin`
+
+The toolchain path is configured in `config.mk` at the repository root:
+```makefile
+TOOLCHAIN = $(HOME)/.software/arm-gnu-toolchain/bin
+```
+Both Makefiles include `config.mk` via `-include $(ROOT)/config.mk` with a fallback default. The path can also be overridden per invocation: `make TOOLCHAIN=/other/path`.
 
 ## Known Limitations
 

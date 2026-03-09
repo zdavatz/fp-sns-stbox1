@@ -1,14 +1,15 @@
 # Makefile for BLESensorsPnPL - STEVAL-MKBOXPRO Rev_C
 # Generated for arm-none-eabi-gcc command-line build
 
-TOOLCHAIN = /Users/zdavatz/arm-gnu-toolchain/bin
+ROOT = ../../../../../..
+-include $(ROOT)/config.mk
+TOOLCHAIN ?= $(HOME)/.software/arm-gnu-toolchain/bin
 PREFIX = $(TOOLCHAIN)/arm-none-eabi-
 CC = $(PREFIX)gcc
 AS = $(PREFIX)gcc -x assembler-with-cpp
 CP = $(PREFIX)objcopy
 SZ = $(PREFIX)size
 
-ROOT = ../../../../../..
 APP = ..
 
 CPU = -mcpu=cortex-m33 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard
