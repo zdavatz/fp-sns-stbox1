@@ -198,6 +198,18 @@ def plot_quaternions(csv_path, output_dir, quat_data=None, base_name=None,
     ax2.set_title('Euler-Winkel (aus Quaternionen berechnet)')
     ax2.legend(loc='upper right')
     ax2.grid(True, alpha=0.3)
+
+    # Mark gimbal lock regions (pitch near ±90°) with transparent shading
+    gimbal_mask = np.abs(pitch) > 85
+    if np.any(gimbal_mask):
+        diff = np.diff(gimbal_mask.astype(int), prepend=0, append=0)
+        starts_gl = np.where(diff == 1)[0]
+        ends_gl = np.where(diff == -1)[0]
+        for s, e in zip(starts_gl, ends_gl):
+            ax2.axvspan(t_sec[s], t_sec[min(e, len(t_sec)-1)],
+                        alpha=0.15, color='red', zorder=0)
+        ax2.axvspan(0, 0, alpha=0.15, color='red', label='Gimbal Lock (Pitch~90°)')
+        ax2.legend(loc='upper right')
     ax2.xaxis.set_major_formatter(time_fmt)
     ax2.set_xlabel('Zeit [min:sek]')
 

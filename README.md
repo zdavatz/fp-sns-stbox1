@@ -135,6 +135,7 @@ Generated plots are saved to the `png/` directory with filenames derived from th
 Board animations are saved to `gif/` as `anim_board_*_sessionN.gif`.
 Combined video+sensor side-by-side outputs (synced camera footage with board animation) are in `mov/` as MOV files for pause/scrub playback. When `--title`/`--subtitle` are provided, a 2-second title card is prepended.
 Quaternion plots display time in min:sek format (120 Hz for BLE data, 100 Hz for SD card data).
+Euler angle plots automatically detect and shade **gimbal lock** regions (red, where pitch approaches ±90°) — the sharp roll/yaw spikes in these zones are mathematical artifacts, not real motion.
 Pumpfoil sessions are auto-detected (rhythmic pitch oscillation > 0.3 Hz filters out walking).
 Each session plot includes quaternion components, Euler angles, and board nose angle relative to the water surface. The nose angle is computed from the rotated sensor Y-axis (sensor mounted in Breitachse = X across board), with a Butterworth 2 Hz low-pass filter (preserves ~1 Hz pump oscillation, removes high-frequency noise) and a 10-second centered rolling median baseline (tracks rider position, removes sensor drift). The board visualization shows both tilt and vertical translation proportional to the nose angle. Drop-in (green dashed line) and end-of-session crash (red shaded area) are marked.
 The combined nose angle comparison plot (`plot_nose_angle_*.png`) includes FFT frequency analysis per session to distinguish pump frequency (~1 Hz) from magnetometer drift (~0.1 Hz).

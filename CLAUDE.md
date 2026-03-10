@@ -123,6 +123,7 @@ Two CSV formats are supported (auto-detected from header):
 
 Generated plots go to `png/` with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
 Quaternion plots use a min:sek time axis.
+Euler angle plots automatically detect and shade gimbal lock regions (red, where pitch approaches ±90°) — the sharp roll/yaw spikes in these zones are mathematical artifacts of the Euler representation, not real motion. The quaternion data remains correct and smooth.
 Pumpfoil sessions are auto-detected by pitch oscillation frequency (>0.3 Hz = pumping, <0.3 Hz = walking).
 Each session gets a zoomed plot with quaternions, Euler angles, and nose angle to water.
 Nose angle uses rotated sensor Y-axis (Breitachse mounting), 1s median filter (removes magnetometer spikes),
