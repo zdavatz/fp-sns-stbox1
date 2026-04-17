@@ -45,7 +45,7 @@ Here is the list of references to user documents:
 
 ## SD Card Data Format (SDDataLogFileX)
 
-Logging starts automatically on power-on. Press the user button to stop, press again to restart. An error log (`Error_Log_Pump_Tsueri_dd.mm.yyyy.log`, using compile date) is written to the SD card with boot markers and fatal errors. Each session creates two files on the SD card:
+Logging starts automatically on power-on. Press the user button to stop, press again to restart. An error log (`Error_Log_Pump_Tsueri_dd.mm.yyyy.log`, using compile date) is written to the SD card with boot markers and fatal errors. Each session creates up to three files on the SD card (GPS file only when a u-blox MAX-M10S module is connected):
 
 ### Sensor CSV: `SensNNN.csv`
 
@@ -68,6 +68,35 @@ Time [mS], AccX [mg], AccY [mg], AccZ [mg], GyroX [mdps], GyroY [mdps], GyroZ [m
 
 Standard RIFF WAV — mono, 16-bit PCM, 16 kHz sample rate (MP23DB01HP microphone). The file number `NNN` matches the corresponding sensor CSV.
 
+### GPS CSV: `GpsNNN.csv` (optional, u-blox MAX-M10S)
+
+CSV at 1 Hz with header:
+
+```
+Time [mS], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP
+```
+
+| Column | Unit | Source |
+|--------|------|--------|
+| Time | ThreadX ticks (1 tick = 10 ms) | System |
+| UTC | `hhmmss.ss` | `$GNRMC` |
+| Lat/Lon | decimal degrees, signed (N/E = +, S/W = −) | `$GNRMC` |
+| Alt | metres above mean sea level | `$GNGGA` |
+| Speed | km/h (knots × 1.852) | `$GNRMC` |
+| Course | degrees true | `$GNRMC` |
+| Fix | 0 = no fix, 1 = GPS, 2 = DGPS | `$GNGGA` |
+| NumSat | satellites used | `$GNGGA` |
+| HDOP | horizontal dilution of precision | `$GNGGA` |
+
+The GPS module (SparkFun u-blox MAX-M10S) connects via UART4 at 38400 baud, 8N1, NMEA:
+
+- GPS TX → PA1 (UART4 RX)
+- GPS RX → PA0 (UART4 TX, optional, only for UBX config)
+- 3V3 → 3V3
+- GND → GND
+
+Before first use, configure the module once via **u-center**: UART1 baudrate → 38400, then `CFG-CFG Save` to BBR+Flash. `STBOX1_ENABLE_PRINTF` is disabled by default because UART4 is now the GPS link — fatal errors still land in the SD error log.
+
 ### LED Behavior
 
 - **Green LED on** — logging active (data being recorded)
@@ -87,6 +116,8 @@ The firmware can be updated without BLE, JTAG, or ST-Link — just the SD card:
 5. `firmware.bin` is renamed to `firmware.done` (prevents re-flashing on next boot)
 
 If no `firmware.bin` is found, normal SD logging starts as usual. The update uses the STM32U585 dual-bank flash: the new firmware is written to the inactive bank, then the banks are swapped. Max firmware size: ~1016 KB.
+
+See [**Documentation/Flash_Firmware_Mac.pdf**](Documentation/Flash_Firmware_Mac.pdf) for the full Mac flashing guide — covers the SD card method plus STM32CubeProgrammer GUI and CLI (`STM32_Programmer_CLI`, `dfu-util`) alternatives.
 
 ## Visualization Scripts
 
