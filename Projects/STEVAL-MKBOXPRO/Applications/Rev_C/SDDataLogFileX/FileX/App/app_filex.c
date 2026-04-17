@@ -30,6 +30,7 @@
 #include "SensorTileBoxPro_motion_sensors.h"
 #include "SensorTileBoxPro_audio.h"
 #include "main.h"
+#include "gps_nmea.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,11 +39,16 @@ typedef struct
 {
   UINT CommandType;
   ULONG MsgTime;
-  float pressure;
-  float temperature;
-  BSP_MOTION_SENSOR_Axes_t acc;
-  BSP_MOTION_SENSOR_Axes_t gyro;
-  BSP_MOTION_SENSOR_Axes_t mag;
+  union {
+    struct {
+      float pressure;
+      float temperature;
+      BSP_MOTION_SENSOR_Axes_t acc;
+      BSP_MOTION_SENSOR_Axes_t gyro;
+      BSP_MOTION_SENSOR_Axes_t mag;
+    } sensors;
+    GPS_Fix_t gps;
+  } payload;
 } MessageData_t;
 /* USER CODE END PTD */
 
@@ -69,6 +75,7 @@ typedef struct
 #define COMMAND_START_LOG  1
 #define COMMAND_SAVE_AUDIO 2
 #define COMMAND_SAVE_SENSORS 3
+#define COMMAND_SAVE_GPS 4
 
 #define STBOX1_AUDIO_DATA_NOT_READY 0xFFFFFF
 
@@ -95,9 +102,11 @@ ALIGN_32BYTES(uint32_t media_memory[FX_STM32_SD_DEFAULT_SECTOR_SIZE / sizeof(uin
 FX_MEDIA        sdio_disk;
 FX_FILE         SensorsFxFile;
 FX_FILE         AudioFxFile;
+FX_FILE         GpsFxFile;
 /* Define ThreadX global data structures.  */
 TX_THREAD       fx_app_thread;
 TX_THREAD       read_app_thread;
+TX_THREAD       gps_app_thread;
 TX_QUEUE        MessageQueue;
 
 /* Timer for reading the sensor's Data*/
@@ -124,6 +133,7 @@ static uint8_t pAudioHeader[44];
 
 static volatile CHAR SensorsFileOpen = 0;
 static volatile CHAR AudioFileOpen = 0;
+static volatile CHAR GpsFileOpen = 0;
 
 /* Error log file */
 FX_FILE         ErrorLogFxFile;
@@ -144,6 +154,7 @@ static volatile uint32_t UserButtonPressed = 0;
 
 static void fx_thread_entry(ULONG thread_input);
 static void read_thread_entry(ULONG thread_input);
+static void gps_thread_entry(ULONG thread_input);
 static void ReadingTimerCallbackFunction(ULONG timer);
 static void AudioProcess_SD_Recording(uint16_t *pInBuff, uint32_t len);
 static uint32_t WavProcess_HeaderInit(void);
@@ -204,6 +215,21 @@ UINT MX_FileX_Init(VOID *memory_ptr)
 
 
   STBOX1_PRINTF("Read Sensor Thread Created\r\n");
+
+  /* Allocate memory for the GPS poll thread (smaller stack, rarely runs) */
+  ret = tx_byte_allocate(byte_pool, &pointer, DEFAULT_STACK_SIZE, TX_NO_WAIT);
+
+  if (ret != FX_SUCCESS)
+  {
+    Error_Handler(__FILE__, __LINE__);
+  }
+
+  /* Create the GPS poll thread — polls GPS_GetLatestFix at 1 Hz
+     and pushes COMMAND_SAVE_GPS into the queue when a new fix arrives. */
+  tx_thread_create(&gps_app_thread, "GPS App Thread", gps_thread_entry, 0, pointer, DEFAULT_STACK_SIZE,
+                   READ_APP_THREAD_PRIO + 1, READ_APP_THREAD_PRIO + 1, TX_NO_TIME_SLICE, TX_AUTO_START);
+
+  STBOX1_PRINTF("GPS Thread Created\r\n");
 
   /* Allocate memory for MessageQueue */
   ret = tx_byte_allocate(byte_pool, &pointer, MESSAGE_QUEUE_SIZE * sizeof(MessageData_t *), TX_NO_WAIT);
@@ -497,6 +523,33 @@ static void fx_thread_entry(ULONG thread_input)
           {
             STBOX1_PRINTF("Error MicXXX.wav already opened\r\n");
           }
+
+          /* --- open GpsNNN.csv alongside Sens/Mic --- */
+          if (GpsFileOpen == 0)
+          {
+            CHAR gps_header[] = "Time [mS], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP\r\n";
+            sprintf(file_name, "Gps%03d.csv", SDCardCounter - 1);
+
+            status = fx_file_create(&sdio_disk, file_name);
+            if (status != FX_SUCCESS && status != FX_ALREADY_CREATED)
+            {
+              STBOX1_PRINTF("Error creating %s\r\n", file_name);
+              Error_Handler(__FILE__, __LINE__);
+            }
+
+            status = fx_file_open(&sdio_disk, &GpsFxFile, file_name, FX_OPEN_FOR_WRITE);
+            if (status != FX_SUCCESS)
+            {
+              STBOX1_PRINTF("Error opening %s\r\n", file_name);
+              Error_Handler(__FILE__, __LINE__);
+            }
+
+            fx_file_seek(&GpsFxFile, 0);
+            GpsFileOpen = 1;
+            STBOX1_PRINTF("File %s open\r\n", file_name);
+
+            fx_file_write(&GpsFxFile, gps_header, sizeof(gps_header) - 1);
+          }
         }
         break;
         case COMMAND_STOP_LOG:
@@ -508,7 +561,7 @@ static void fx_thread_entry(ULONG thread_input)
               Error_Handler(__FILE__, __LINE__);
             }
 
-            /* Drain remaining sensor messages from queue before closing */
+            /* Drain remaining sensor/GPS messages from queue before closing */
             {
               MessageData_t *DrainMsg;
               while (tx_queue_receive(&MessageQueue, &DrainMsg, TX_NO_WAIT) == TX_SUCCESS)
@@ -519,11 +572,22 @@ static void fx_thread_entry(ULONG thread_input)
                   INT size;
                   size = sprintf(data_s, "%ld, %d, %d, %d, %d, %d, %d, %d, %d, %d, %5.2f, %5.2f\r\n",
                                  DrainMsg->MsgTime,
-                                 DrainMsg->acc.x, DrainMsg->acc.y, DrainMsg->acc.z,
-                                 DrainMsg->gyro.x, DrainMsg->gyro.y, DrainMsg->gyro.z,
-                                 DrainMsg->mag.x, DrainMsg->mag.y, DrainMsg->mag.z,
-                                 DrainMsg->pressure, DrainMsg->temperature);
+                                 DrainMsg->payload.sensors.acc.x, DrainMsg->payload.sensors.acc.y, DrainMsg->payload.sensors.acc.z,
+                                 DrainMsg->payload.sensors.gyro.x, DrainMsg->payload.sensors.gyro.y, DrainMsg->payload.sensors.gyro.z,
+                                 DrainMsg->payload.sensors.mag.x, DrainMsg->payload.sensors.mag.y, DrainMsg->payload.sensors.mag.z,
+                                 DrainMsg->payload.sensors.pressure, DrainMsg->payload.sensors.temperature);
                   fx_file_write(&SensorsFxFile, data_s, size);
+                }
+                else if (DrainMsg->CommandType == COMMAND_SAVE_GPS && GpsFileOpen)
+                {
+                  CHAR data_s[256];
+                  INT size;
+                  GPS_Fix_t *g = &DrainMsg->payload.gps;
+                  size = sprintf(data_s, "%ld, %s, %.7f, %.7f, %.2f, %.2f, %.2f, %u, %u, %.2f\r\n",
+                                 DrainMsg->MsgTime, g->Utc, g->Lat, g->Lon,
+                                 g->Alt, g->SpeedKmh, g->Course,
+                                 g->Fix, g->NumSat, g->Hdop);
+                  fx_file_write(&GpsFxFile, data_s, size);
                 }
                 MessageRemoved++;
               }
@@ -549,6 +613,18 @@ static void fx_thread_entry(ULONG thread_input)
           else
           {
             STBOX1_PRINTF("Error SensXXX.csv Not opened\r\n");
+          }
+
+          if (GpsFileOpen)
+          {
+            status = fx_file_close(&GpsFxFile);
+            if (status != FX_SUCCESS)
+            {
+              STBOX1_PRINTF("Error closing GpsXXX.csv\r\n");
+              Error_Handler(__FILE__, __LINE__);
+            }
+            STBOX1_PRINTF("File GpsXXX.csv closed\r\n");
+            GpsFileOpen = 0;
           }
 
           if (AudioFileOpen)
@@ -667,10 +743,10 @@ static void fx_thread_entry(ULONG thread_input)
             INT size;
             size = sprintf(data_s, "%ld, %d, %d, %d, %d, %d, %d, %d, %d, %d, %5.2f, %5.2f\r\n",
                            RMsg->MsgTime,
-                           RMsg->acc.x, RMsg->acc.y, RMsg->acc.z,
-                           RMsg->gyro.x, RMsg->gyro.y, RMsg->gyro.z,
-                           RMsg->mag.x, RMsg->mag.y, RMsg->mag.z,
-                           RMsg->pressure, RMsg->temperature);
+                           RMsg->payload.sensors.acc.x, RMsg->payload.sensors.acc.y, RMsg->payload.sensors.acc.z,
+                           RMsg->payload.sensors.gyro.x, RMsg->payload.sensors.gyro.y, RMsg->payload.sensors.gyro.z,
+                           RMsg->payload.sensors.mag.x, RMsg->payload.sensors.mag.y, RMsg->payload.sensors.mag.z,
+                           RMsg->payload.sensors.pressure, RMsg->payload.sensors.temperature);
 
             /* Write a string to the test file.  */
             status =  fx_file_write(&SensorsFxFile, data_s, size);
@@ -684,6 +760,28 @@ static void fx_thread_entry(ULONG thread_input)
             }
           }
           BSP_LED_Toggle(LED_GREEN);
+        }
+        break;
+
+        case COMMAND_SAVE_GPS:
+        {
+          if (GpsFileOpen)
+          {
+            CHAR data_s[256];
+            INT size;
+            GPS_Fix_t *g = &RMsg->payload.gps;
+            size = sprintf(data_s, "%ld, %s, %.7f, %.7f, %.2f, %.2f, %.2f, %u, %u, %.2f\r\n",
+                           RMsg->MsgTime, g->Utc, g->Lat, g->Lon,
+                           g->Alt, g->SpeedKmh, g->Course,
+                           g->Fix, g->NumSat, g->Hdop);
+
+            status = fx_file_write(&GpsFxFile, data_s, size);
+            if (status != FX_SUCCESS)
+            {
+              STBOX1_PRINTF("Error writing GpsXXX.csv\r\n");
+              Error_Handler(__FILE__, __LINE__);
+            }
+          }
         }
         break;
 
@@ -1102,11 +1200,11 @@ static void read_thread_entry(ULONG thread_input)
         /* Read Sensors' Value */
         Msg->CommandType = COMMAND_SAVE_SENSORS;
         Msg->MsgTime = tx_time_get();
-        BSP_ENV_SENSOR_GetValue(STTS22H_0, ENV_TEMPERATURE, &Msg->temperature);
-        BSP_ENV_SENSOR_GetValue(LPS22DF_0, ENV_PRESSURE, &Msg->pressure);
-        BSP_MOTION_SENSOR_GetAxes(LSM6DSV16X_0, MOTION_ACCELERO, &Msg->acc);
-        BSP_MOTION_SENSOR_GetAxes(LSM6DSV16X_0, MOTION_GYRO, &Msg->gyro);
-        BSP_MOTION_SENSOR_GetAxes(LIS2MDL_0, MOTION_MAGNETO, &Msg->mag);
+        BSP_ENV_SENSOR_GetValue(STTS22H_0, ENV_TEMPERATURE, &Msg->payload.sensors.temperature);
+        BSP_ENV_SENSOR_GetValue(LPS22DF_0, ENV_PRESSURE, &Msg->payload.sensors.pressure);
+        BSP_MOTION_SENSOR_GetAxes(LSM6DSV16X_0, MOTION_ACCELERO, &Msg->payload.sensors.acc);
+        BSP_MOTION_SENSOR_GetAxes(LSM6DSV16X_0, MOTION_GYRO, &Msg->payload.sensors.gyro);
+        BSP_MOTION_SENSOR_GetAxes(LIS2MDL_0, MOTION_MAGNETO, &Msg->payload.sensors.mag);
 
         /* Send message to MessageQueue.  */
         if (tx_queue_send(&MessageQueue, &Msg, TX_WAIT_FOREVER) != TX_SUCCESS)
@@ -1362,5 +1460,49 @@ static uint32_t WavProcess_HeaderUpdate(uint32_t len)
   return 0;
 }
 
+
+/**
+  * @brief  GPS poll thread.
+  *         Polls GPS_GetLatestFix() at 1 Hz and, when a new fix is ready,
+  *         pushes a COMMAND_SAVE_GPS message onto the shared FileX queue.
+  *         Skips when GpsFileOpen==0 (between stop and next start).
+  *
+  *         Uses a private slot in SensorBuffer to avoid clashing with the
+  *         sensor reading thread's buffer rotation.
+  */
+static void gps_thread_entry(ULONG thread_input)
+{
+  (void)thread_input;
+  /* Dedicated message slot for GPS — sits outside the 100-entry sensor ring
+     buffer. Static keeps it alive across calls; the FileX writer copies the
+     contents before acknowledging, so overwriting next tick is safe. */
+  static MessageData_t GpsMsg;
+
+  while (1)
+  {
+    tx_thread_sleep(100);   /* 1 s @ 10 ms/tick */
+
+    if (!GpsFileOpen) continue;
+
+    GPS_Fix_t fix;
+    if (!GPS_GetLatestFix(&fix)) continue;
+    if (!fix.Valid) continue;
+
+    GpsMsg.CommandType   = COMMAND_SAVE_GPS;
+    GpsMsg.MsgTime       = tx_time_get();
+    GpsMsg.payload.gps   = fix;
+
+    MessageData_t *pMsg = &GpsMsg;
+    if (tx_queue_send(&MessageQueue, &pMsg, TX_NO_WAIT) == TX_SUCCESS)
+    {
+      MessagePushed++;
+      if ((MessagePushed - MessageRemoved) > MessageMaxSize)
+      {
+        MessageMaxSize = MessagePushed - MessageRemoved;
+      }
+    }
+    /* On queue full: drop this fix — the sensor data is higher priority. */
+  }
+}
 
 /* USER CODE END 1 */

@@ -13,11 +13,23 @@ Pressing the User Button is possible to start/stop the logger
 For each log session, the board saves:
 
 - one .wav file that it's the output of the digital microphone
-- one .csv file with the sensors logged at 100Hz 
+- one .csv file with the sensors logged at 100Hz
+- one GpsNNN.csv file with 1 Hz GPS fixes (only when a u-blox MAX-M10S module is connected via UART4)
+
+### <b>GPS module (u-blox MAX-M10S)</b>
+
+UART4 (PA0/PA1) is wired to the GPS module instead of debug-printf:
+
+- GPS TX → PA1 (UART4 RX)
+- GPS RX → PA0 (UART4 TX, optional, only needed for UBX config)
+- GPS 3V3 → 3V3
+- GPS GND → GND
+
+Before first use, configure the GPS once via u-center: UART1 baudrate → 38400, then `CFG-CFG Save` to BBR+Flash. The firmware parses only `$GNRMC` and `$GNGGA` NMEA sentences and logs them to `GpsNNN.csv` (timestamp, UTC, lat, lon, alt, speed km/h, course, fix, num-sat, HDOP). `STBOX1_ENABLE_PRINTF` is disabled while the GPS occupies UART4 — fatal errors still land in the SD error log.
 
 ### <b>Keywords</b>
 
-NFC, SPI, I2C, UART, MEMS, BLE, BLE_Manager, STM32WB07KC
+NFC, SPI, I2C, UART, MEMS, BLE, BLE_Manager, STM32WB07KC, GPS
 
 ### <b>Hardware and Software environment</b>
 

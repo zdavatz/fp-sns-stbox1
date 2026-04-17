@@ -53,6 +53,7 @@
 #include "SensorTileBoxPro.h"
 #include "SensorTileBoxPro_env_sensors.h"
 #include "SensorTileBoxPro_motion_sensors.h"
+#include "gps_nmea.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -138,10 +139,12 @@ int main(void)
   /* Enable Button in Interrupt mode */
   BSP_PB_Init(BUTTON_KEY, BUTTON_MODE_EXTI);
   
-  /* Init UART for printf */
-  BSP_COM_Init(COM1);
-  
-  /* Print Banner */
+  /* Init UART4 for the u-blox MAX-M10S GPS module (PA0=TX, PA1=RX, 38400 8N1).
+     Replaces the former BSP_COM_Init(COM1) debug-printf role.
+     STBOX1_PRINTF() is compiled out (see stbox1_config.h). */
+  GPS_Init();
+
+  /* Print Banner (no-op when STBOX1_ENABLE_PRINTF is undefined) */
   PrintInfo();
   
   /* Init Mems Sensors */

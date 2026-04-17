@@ -92,9 +92,10 @@ Each application follows the same layout:
 
 ## SD Card Data Format (SDDataLogFileX)
 
-The data logging application creates two files per session on the SD card:
+The data logging application creates three files per session on the SD card:
 - `SensNNN.csv` — sensor CSV at ~100 Hz: timestamp (ticks), acc XYZ (mg), gyro XYZ (mdps), mag XYZ (mgauss), pressure (hPa), temperature (°C)
 - `MicNNN.wav` — mono 16-bit PCM WAV at 16 kHz from the onboard digital microphone
+- `GpsNNN.csv` — GPS fixes at 1 Hz from u-blox MAX-M10S: timestamp (ticks), UTC (hhmmss.ss), lat/lon (decimal degrees, signed), alt (m), speed (km/h), course (deg), fix quality, num satellites, HDOP. Rows only when a new fix is parsed. Empty (header only) if GPS has no fix or module not connected.
 
 Gyroscope full-scale is 500 dps (17.5 mdps/LSB) for good fusion resolution. Accelerometer is 4g (0.122 mg/LSB).
 Timestamps are ThreadX tick counts (1 tick = 10ms), not raw milliseconds.
@@ -106,6 +107,25 @@ LED behavior: Green LED on = logging active, green LED off = logging stopped. Re
 SD card firmware update: On boot, the app checks for `firmware.bin` on the SD card. If found, it programs the inactive flash bank (dual-bank STM32U585), renames the file to `firmware.done`, swaps banks via option bytes, and resets. No BLE/JTAG/ST-Link needed. Max firmware size ~1016 KB. Implementation in `CheckAndApplyFirmwareUpdate()` in `app_filex.c`.
 
 An error log file `Error_Log_Pump_Tsueri_dd.mm.yyyy.log` (compile date) is created on the SD card alongside the sensor data. It logs boot markers and fatal errors with timestamps. The `Error_Handler` writes the error location to this file before halting.
+
+### GPS module (u-blox MAX-M10S) — hardware & one-time setup
+
+Wiring (SparkFun MAX-M10S breakout → SensorTile.box PRO Rev_C):
+- GPS TX → PA1 (UART4 RX)
+- GPS RX → PA0 (UART4 TX, only needed for UBX config)
+- GPS 3V3 → 3V3
+- GPS GND → GND
+
+Because UART4 now drives the GPS link, `STBOX1_ENABLE_PRINTF` is disabled by default — there is no debug UART while the GPS is connected (error log on SD card still works).
+
+**One-time GPS module configuration via u-center (u-blox desktop tool):**
+1. Connect the GPS module directly to a PC via USB-UART adapter.
+2. Open u-center, connect at 9600 baud (module default).
+3. Navigate to UBX → CFG → PRT, set UART1 baudrate to **38400**, apply.
+4. Reconnect at 38400 baud, then UBX → CFG → CFG → Save current configuration, clicking on **Devices → BBR + Flash**. This persists the baudrate across power cycles.
+5. Done — the firmware will now receive NMEA at 38400 on boot.
+
+The firmware parses only `$GNRMC` and `$GNGGA` sentences. All other NMEA sentences from the module are silently ignored.
 
 Data collected via the ST BLE Sensor app uses a slightly different format (date/time columns instead of raw ms timestamp).
 
@@ -130,7 +150,7 @@ Nose angle uses rotated sensor Y-axis (Breitachse mounting), 1s median filter (r
 60s rolling median baseline (crash-masked). Drop-in (green dashed line) and end crash (red shaded area) are marked.
 Combined nose angle plot includes FFT frequency analysis per session (pump frequency ~1 Hz vs magnetometer drift ~0.1 Hz).
 Mast is carbon (non-magnetic), but small metal screws next to sensor box cause hard/soft iron magnetometer interference. Use plastic screws instead. Session drift caused by gyro bias + stale mag calibration without restart.
-Raw CSV data lives in `csv/`.
+Raw CSV data lives in `csv/`. GPS CSV (`GpsNNN.csv`) lives next to `SensNNN.csv` when the GPS module is connected; no visualization script exists for it yet.
 
 ### Board Animation (`animate_board_3d.py`)
 

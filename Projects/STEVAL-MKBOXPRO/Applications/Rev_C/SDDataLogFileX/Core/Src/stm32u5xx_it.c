@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "fx_stm32_sd_driver.h"
 #include "SensorTileBoxPro_audio.h"
+#include "gps_nmea.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -200,4 +201,12 @@ void EXTI13_IRQHandler(void)
 void GPDMA1_Channel1_IRQHandler(void)
 {
   HAL_DMA_IRQHandler(DMic_OnBoard_MDFFilter.hdma);
+}
+
+/**
+* @brief UART4 global interrupt (GPS module reception).
+*/
+void UART4_IRQHandler(void)
+{
+  GPS_UART_IRQHandler();
 }

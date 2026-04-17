@@ -28,8 +28,17 @@ extern "C" {
 
 /* Exported define ------------------------------------------------------------*/
 
-/* For enabling the printf */
-#define STBOX1_ENABLE_PRINTF
+/* For enabling the printf.
+   NOTE: disabled by default because UART4 (PA0/PA1) is now wired to the
+   u-blox MAX-M10S GPS module. Re-enable only if you disconnect the GPS
+   and want serial debug on UART4 again. */
+/* #define STBOX1_ENABLE_PRINTF */
+
+/* GPS module (u-blox MAX-M10S) on UART4 @ 38400 baud, 8N1, NMEA output.
+   Configure the GPS once via u-center: UART baudrate -> 38400,
+   then CFG-CFG Save to persist into GPS flash. */
+#define STBOX1_GPS_ENABLE
+#define GPS_UART_BAUDRATE  38400
 
 #define STTS22H_ODR 1.0f /* ODR = 1.0Hz */
 #define ISM330DHCX_ACC_ODR 104.0f /* ODR = 104Hz */

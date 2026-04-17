@@ -9,6 +9,11 @@ share/
 
 # Build output
 Projects/*/Applications/*/BLESensorsPnPL/STM32CubeIDE/build/
+Projects/*/Applications/*/SDDataLogFileX/STM32CubeIDE/build/
+Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE/build/
+
+# Temp video extraction
+frames/
 
 # Python cache
 __pycache__/
