@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>SensorTile.box PRO — Firmware flashen vom Mac</title>
+<style>
+  @page { size: A4; margin: 20mm 18mm; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.45;
+    color: #222;
+    max-width: 170mm;
+  }
+  h1 {
+    font-size: 20pt;
+    margin: 0 0 4pt 0;
+    color: #00457c;
+    border-bottom: 2pt solid #00457c;
+    padding-bottom: 4pt;
+  }
+  h2 {
+    font-size: 14pt;
+    margin-top: 18pt;
+    margin-bottom: 6pt;
+    color: #00457c;
+  }
+  h3 {
+    font-size: 11.5pt;
+    margin-top: 12pt;
+    margin-bottom: 4pt;
+  }
+  .subtitle {
+    color: #666;
+    font-size: 10pt;
+    margin-top: 0;
+    margin-bottom: 16pt;
+  }
+  code {
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 9pt;
+    background: #f4f4f4;
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+  pre {
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 9pt;
+    background: #f4f4f4;
+    padding: 8pt 10pt;
+    border-left: 3pt solid #00457c;
+    border-radius: 2px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  pre code { background: transparent; padding: 0; }
+  .callout {
+    background: #fff8e1;
+    border-left: 3pt solid #f0a000;
+    padding: 8pt 12pt;
+    margin: 10pt 0;
+    font-size: 10pt;
+  }
+  .callout-info {
+    background: #e7f3ff;
+    border-left: 3pt solid #00457c;
+    padding: 8pt 12pt;
+    margin: 10pt 0;
+    font-size: 10pt;
+  }
+  table {
+    border-collapse: collapse;
+    margin: 8pt 0;
+    font-size: 10pt;
+  }
+  th, td {
+    border: 1pt solid #ccc;
+    padding: 5pt 10pt;
+    text-align: left;
+  }
+  th { background: #f0f4f8; }
+  ol, ul { margin: 6pt 0 6pt 22pt; }
+  li { margin: 2pt 0; }
+  .footer {
+    margin-top: 24pt;
+    padding-top: 8pt;
+    border-top: 1pt solid #ddd;
+    color: #888;
+    font-size: 9pt;
+  }
+</style>
+</head>
+<body>
+
+<h1>SensorTile.box PRO — Firmware flashen vom Mac</h1>
+<p class="subtitle">SDDataLogFileX (STEVAL-MKBOXPRO Rev&nbsp;C) · Stand: April 2026</p>
+
+<h2>Übersicht</h2>
+<p>Die Firmware <code>SDDataLogFileX.bin</code> kann auf drei Wegen auf die SensorTile.box PRO geflasht werden. Die Datei liegt im Repository unter:</p>
+<pre>Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Binary/SDDataLogFileX.bin</pre>
+
+<table>
+<tr><th>Methode</th><th>Tools</th><th>Wann verwenden?</th></tr>
+<tr><td>1. SD-Karte</td><td>keine</td><td>Einfachster Weg, kein Kabel, Dual-Bank-Swap</td></tr>
+<tr><td>2. STM32CubeProgrammer GUI</td><td>ST GUI-App</td><td>Erstinstallation, visuelles Feedback</td></tr>
+<tr><td>3. CLI (Programmer oder dfu-util)</td><td>Terminal</td><td>Schneller Dev-Loop, scriptable</td></tr>
+</table>
+
+<h2>Methode 1 — SD-Karte (empfohlen)</h2>
+<p>Die Firmware enthält einen Bootloader-Check: beim Start sucht sie auf der SD-Karte nach einer Datei <code>firmware.bin</code>. Wird sie gefunden, flasht die Box die inaktive Bank, swappt die Bänke über die Option-Bytes, benennt die Datei zu <code>firmware.done</code> um und startet neu.</p>
+
+<h3>Ablauf</h3>
+<ol>
+<li>Firmware auf die SD-Karte kopieren (ersetze <code>/Volumes/NONAME</code> mit dem Pfad deiner Karte):
+<pre>cp Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Binary/SDDataLogFileX.bin \
+   /Volumes/NONAME/firmware.bin</pre></li>
+<li>SD-Karte auswerfen und in die Box stecken.</li>
+<li>Box einschalten.</li>
+<li>Rote LED blinkt während des Flash (ca. 5&ndash;10 Sekunden).</li>
+<li>Grüne LED geht an → Logging aktiv mit der neuen Firmware.</li>
+</ol>
+
+<div class="callout-info">
+<b>Vorteil:</b> Die Datei wird zu <code>firmware.done</code> umbenannt, damit sie beim nächsten Boot nicht erneut geflasht wird. Du kannst dieselbe SD mehrfach nutzen. Max. Firmware-Grösse: ~1016&nbsp;KB.
+</div>
+
+<h2>Methode 2 — STM32CubeProgrammer GUI</h2>
+<ol>
+<li>Box über USB-C am Mac anschliessen, <b>User-Button gedrückt halten während des Einsteckens</b>. Damit startet der STM32U585 im USB-DFU-Bootloader-Modus.</li>
+<li>STM32CubeProgrammer öffnen (aus <code>/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/</code>).</li>
+<li>Oben rechts: Port <b>USB</b> auswählen → <b>Refresh</b> → <code>USB1</code> sollte erscheinen → <b>Connect</b>.</li>
+<li>Tab <b>Erasing &amp; Programming</b>:
+  <ul>
+    <li>File path: Pfad zu <code>SDDataLogFileX.bin</code></li>
+    <li>Start address: <code>0x08000000</code></li>
+    <li>Verify programming: ✓</li>
+  </ul>
+</li>
+<li>Button <b>Start Programming</b> drücken.</li>
+<li>Nach Abschluss: <b>Disconnect</b>, Box abstecken, neu einstecken (ohne Button).</li>
+</ol>
+
+<h2>Methode 3 — Kommandozeile</h2>
+
+<h3>Variante A: STM32CubeProgrammer CLI</h3>
+<p>Praktisch für schnelle Iterationen während der Entwicklung. Einmal in <code>~/.zshrc</code> einen Alias setzen:</p>
+<pre>alias stm32cli=/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/MacOs/bin/STM32_Programmer_CLI</pre>
+
+<p>Dann nach dem Einstecken (User-Button gedrückt halten für DFU):</p>
+<pre>stm32cli -c port=USB1 \
+  -w Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Binary/SDDataLogFileX.bin 0x08000000 \
+  -v -rst</pre>
+
+<p>Bedeutung der Flags:</p>
+<ul>
+  <li><code>-c port=USB1</code> → Verbindung zum DFU-Interface</li>
+  <li><code>-w &lt;file&gt; 0x08000000</code> → Write, Startadresse Flash-Bank 1</li>
+  <li><code>-v</code> → Verify nach dem Schreiben</li>
+  <li><code>-rst</code> → Reset nach Abschluss (Firmware startet sofort)</li>
+</ul>
+
+<h3>Variante B: dfu-util (Open-Source)</h3>
+<p>Falls <code>dfu-util</code> via Homebrew installiert ist (<code>brew install dfu-util</code>):</p>
+<pre>dfu-util -a 0 -s 0x08000000:leave \
+  -D Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Binary/SDDataLogFileX.bin</pre>
+<p>USB VID/PID des STM32U5 DFU-Bootloaders: <code>0483:df11</code>. Der Suffix <code>:leave</code> startet die Firmware direkt nach dem Download.</p>
+
+<h2>DFU-Modus aktivieren</h2>
+<p>Die STM32U5-MCU startet im USB-DFU-Bootloader wenn beim Power-On BOOT0 auf HIGH liegt. Auf der SensorTile.box PRO ist BOOT0 mit dem User-Button verbunden — also:</p>
+<ol>
+  <li>Box <b>ausschalten</b> oder USB abstecken.</li>
+  <li>User-Button <b>gedrückt halten</b>.</li>
+  <li>USB einstecken (Button noch gedrückt).</li>
+  <li>Button loslassen, sobald Mac das USB-Device erkannt hat (ca. 1 Sekunde).</li>
+</ol>
+
+<div class="callout">
+<b>Wichtig:</b> Methoden 2 und 3 schreiben direkt auf <code>0x08000000</code> (die aktuell aktive Bank). Das funktioniert, macht aber keinen Bank-Swap. Für einen sauberen Dual-Bank-Rollback-Workflow ist Methode 1 (SD-Karte) besser.
+</div>
+
+<h2>Firmware verifizieren</h2>
+<p>SHA-256 Hash der aktuell gebauten Firmware prüfen:</p>
+<pre>shasum -a 256 Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Binary/SDDataLogFileX.bin</pre>
+<p>Aktuelles Commit: <code>4810362e</code> — Hash: <code>eed46d9d8e37…d82e9</code> (115'316 Bytes).</p>
+
+<h2>Nach dem Flashen</h2>
+<ul>
+<li>Grüne LED an → Logging läuft, Sens/Gps/Mic-Files werden geschrieben.</li>
+<li>User-Button drücken → Logging stoppt (grün aus), Files werden sauber geschlossen.</li>
+<li>Bei fatalen Fehlern: rote LED blinkt dauerhaft, Fehler landen im <code>Error_Log_Pump_Tsueri_dd.mm.yyyy.log</code> auf der SD-Karte.</li>
+</ul>
+
+<div class="footer">
+Repository: <code>github.com/zdavatz/fp-sns-stbox1</code> · Commit <code>4810362e</code> · GPS-Integration (u-blox MAX-M10S) via UART4 @ 38400&nbsp;baud NMEA.
+</div>
+
+</body>
+</html>
