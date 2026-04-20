@@ -21,11 +21,11 @@ For each log session, the board saves:
 UART4 (PA0/PA1) is wired to the GPS module instead of debug-printf:
 
 - GPS TX → PA1 (UART4 RX)
-- GPS RX → PA0 (UART4 TX, optional, only needed for UBX config)
+- GPS RX → PA0 (UART4 TX — required for auto-config)
 - GPS 3V3 → 3V3
 - GPS GND → GND
 
-Before first use, configure the GPS once via u-center: UART1 baudrate → 38400, then `CFG-CFG Save` to BBR+Flash. The firmware parses only `$GNRMC` and `$GNGGA` NMEA sentences and logs them to `GpsNNN.csv` (timestamp, UTC, lat, lon, alt, speed km/h, course, fix, num-sat, HDOP). `STBOX1_ENABLE_PRINTF` is disabled while the GPS occupies UART4 — fatal errors still land in the SD error log.
+No manual setup needed — `GPS_Init()` auto-configures the module on every boot by sending UBX-CFG-PRT at 9600 baud to switch UART1 to 38400, then UBX-CFG-CFG to persist the config in BBR + Flash. The firmware parses only `$GNRMC` and `$GNGGA` NMEA sentences and logs them to `GpsNNN.csv` (timestamp, UTC, lat, lon, alt, speed km/h, course, fix, num-sat, HDOP). `STBOX1_ENABLE_PRINTF` is disabled while the GPS occupies UART4 — fatal errors still land in the SD error log.
 
 ### <b>Keywords</b>
 

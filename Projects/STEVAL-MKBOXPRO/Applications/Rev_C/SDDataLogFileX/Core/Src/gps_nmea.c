@@ -201,6 +201,53 @@ void GPS_UART_IRQHandler(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* UBX config (auto-switch GPS UART1 to GPS_UART_BAUDRATE)            */
+/* ------------------------------------------------------------------ */
+
+/* Send a UBX message: sync chars B5 62, class, id, length (LE), payload,
+   Fletcher-8 checksum over [class..end-of-payload]. Polling TX. */
+static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len)
+{
+  uint8_t hdr[6] = { 0xB5, 0x62, cls, id,
+                     (uint8_t)(len & 0xFF), (uint8_t)(len >> 8) };
+  uint8_t ck[2] = { 0, 0 };
+
+  for (int i = 2; i < 6; i++) { ck[0] += hdr[i]; ck[1] += ck[0]; }
+  for (int i = 0; i < len; i++) { ck[0] += payload[i]; ck[1] += ck[0]; }
+
+  HAL_UART_Transmit(GPS_UART, hdr, 6, 100);
+  if (len) HAL_UART_Transmit(GPS_UART, (uint8_t *)payload, len, 100);
+  HAL_UART_Transmit(GPS_UART, ck, 2, 100);
+}
+
+/* UBX-CFG-PRT for UART1: 8N1, NMEA only out, UBX+NMEA in, given baudrate. */
+static void gps_cfg_port_uart1(uint32_t baudrate)
+{
+  uint8_t p[20] = {0};
+  p[0]  = 0x01;                           /* portID = UART1 */
+  /* p[1] reserved, p[2..3] txReady = 0 */
+  p[4]  = 0xC0; p[5] = 0x08;              /* mode = 0x000008C0 (8N1) */
+  p[8]  = (uint8_t)(baudrate      );
+  p[9]  = (uint8_t)(baudrate >>  8);
+  p[10] = (uint8_t)(baudrate >> 16);
+  p[11] = (uint8_t)(baudrate >> 24);
+  p[12] = 0x03;                           /* inProtoMask  = UBX + NMEA */
+  p[14] = 0x02;                           /* outProtoMask = NMEA */
+  ubx_send(0x06, 0x00, p, sizeof(p));     /* CFG-PRT */
+}
+
+/* UBX-CFG-CFG: save all config sections to BBR + Flash + EEPROM. */
+static void gps_cfg_save_all(void)
+{
+  uint8_t p[13] = {0};
+  /* clearMask = 0 */
+  p[4] = 0xFF; p[5] = 0xFF;               /* saveMask = 0xFFFF (all sections) */
+  /* loadMask = 0 */
+  p[12] = 0x17;                           /* deviceMask = BBR | Flash | EEPROM */
+  ubx_send(0x06, 0x09, p, sizeof(p));     /* CFG-CFG */
+}
+
+/* ------------------------------------------------------------------ */
 /* Public API                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -211,11 +258,26 @@ void GPS_Init(void)
   LineLen = 0;
 
   /* BSP_COM_Init configures GPIO AF + enables UART4 clock and does a
-     basic UART init at 115200. We then override baudrate to the GPS value. */
+     basic UART init at 115200. We drive the baudrate ourselves below. */
   BSP_COM_Init(COM1);
 
+  /* Step 1: open UART4 at 9600 (u-blox factory default) and tell the GPS
+     to switch its UART1 to GPS_UART_BAUDRATE. If the GPS was already at
+     GPS_UART_BAUDRATE, it sees the 9600-rate bytes as garbage and ignores
+     them — harmless. Requires PA0 (UART4 TX) to be wired to GPS RX. */
+  GPS_UART->Init.BaudRate = 9600;
+  HAL_UART_Init(GPS_UART);
+  gps_cfg_port_uart1(GPS_UART_BAUDRATE);
+  HAL_Delay(150);  /* drain TX + let the GPS apply the new baudrate */
+
+  /* Step 2: reconfigure UART4 to match the GPS. */
   GPS_UART->Init.BaudRate = GPS_UART_BAUDRATE;
   HAL_UART_Init(GPS_UART);
+
+  /* Step 3: tell the GPS to persist the new baudrate to BBR + Flash so it
+     survives power cycles. Runs now at GPS_UART_BAUDRATE. */
+  gps_cfg_save_all();
+  HAL_Delay(150);
 
   /* Enable UART4 interrupt in the NVIC */
   HAL_NVIC_SetPriority(UART4_IRQn, 6, 0);

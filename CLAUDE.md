@@ -108,22 +108,17 @@ SD card firmware update: On boot, the app checks for `firmware.bin` on the SD ca
 
 An error log file `Error_Log_Pump_Tsueri_dd.mm.yyyy.log` (compile date) is created on the SD card alongside the sensor data. It logs boot markers and fatal errors with timestamps. The `Error_Handler` writes the error location to this file before halting.
 
-### GPS module (u-blox MAX-M10S) — hardware & one-time setup
+### GPS module (u-blox MAX-M10S) — wiring
 
 Wiring (SparkFun MAX-M10S breakout → SensorTile.box PRO Rev_C):
 - GPS TX → PA1 (UART4 RX)
-- GPS RX → PA0 (UART4 TX, only needed for UBX config)
+- GPS RX → PA0 (UART4 TX — required for auto-config)
 - GPS 3V3 → 3V3
 - GPS GND → GND
 
 Because UART4 now drives the GPS link, `STBOX1_ENABLE_PRINTF` is disabled by default — there is no debug UART while the GPS is connected (error log on SD card still works).
 
-**One-time GPS module configuration via u-center (u-blox desktop tool):**
-1. Connect the GPS module directly to a PC via USB-UART adapter.
-2. Open u-center, connect at 9600 baud (module default).
-3. Navigate to UBX → CFG → PRT, set UART1 baudrate to **38400**, apply.
-4. Reconnect at 38400 baud, then UBX → CFG → CFG → Save current configuration, clicking on **Devices → BBR + Flash**. This persists the baudrate across power cycles.
-5. Done — the firmware will now receive NMEA at 38400 on boot.
+**No manual u-center setup needed.** On every boot, `GPS_Init()` sends a UBX-CFG-PRT at 9600 baud (u-blox factory default) to switch UART1 to `GPS_UART_BAUDRATE` (38400), then a UBX-CFG-CFG to persist the config in BBR + Flash. If the module is already at the target baudrate, the 9600-rate bytes arrive as garbage and are ignored — harmless. Implementation in `Core/Src/gps_nmea.c`.
 
 The firmware parses only `$GNRMC` and `$GNGGA` sentences. All other NMEA sentences from the module are silently ignored.
 

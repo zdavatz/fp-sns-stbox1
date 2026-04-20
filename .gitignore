@@ -15,6 +15,9 @@ Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE/build/
 # Temp video extraction
 frames/
 
+# Personal / local files
+resume
+
 # Python cache
 __pycache__/
 

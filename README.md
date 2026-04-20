@@ -91,11 +91,11 @@ Time [mS], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP
 The GPS module (SparkFun u-blox MAX-M10S) connects via UART4 at 38400 baud, 8N1, NMEA:
 
 - GPS TX → PA1 (UART4 RX)
-- GPS RX → PA0 (UART4 TX, optional, only for UBX config)
+- GPS RX → PA0 (UART4 TX — required for auto-config)
 - 3V3 → 3V3
 - GND → GND
 
-Before first use, configure the module once via **u-center**: UART1 baudrate → 38400, then `CFG-CFG Save` to BBR+Flash. `STBOX1_ENABLE_PRINTF` is disabled by default because UART4 is now the GPS link — fatal errors still land in the SD error log.
+No manual setup needed — the firmware auto-configures the GPS on every boot by sending UBX-CFG-PRT at 9600 baud (u-blox factory default) to switch UART1 to 38400, then UBX-CFG-CFG to persist the config in BBR + Flash. Requires PA0 → GPS RX to be wired so the firmware can talk to the GPS. `STBOX1_ENABLE_PRINTF` is disabled by default because UART4 is now the GPS link — fatal errors still land in the SD error log.
 
 ### LED Behavior
 
