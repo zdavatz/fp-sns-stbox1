@@ -304,7 +304,6 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
-  uint32_t pll_source = RCC_PLLSOURCE_HSE;   /* updated to HSI if HSE fails */
 
   /** Configure the main internal regulator output voltage
   */
@@ -313,21 +312,21 @@ void SystemClock_Config(void)
     Error_Handler(__FILE__,__LINE__);
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks.
-   *  Try HSE first; on battery power the external crystal sometimes fails to
-   *  start in time (HSE_STARTUP_TIMEOUT is 100 ms). If that happens, fall back
-   *  to HSI — both HSI and HSE are 16 MHz on this board, so the same PLL
-   *  multipliers give the same 160 MHz sysclk. */
+  /** Initializes the CPU, AHB and APB buses clocks using HSI (internal 16 MHz).
+   *  HSE was unreliable on battery-power boot — the external crystal sometimes
+   *  did not start within HSE_STARTUP_TIMEOUT, pushing the firmware into
+   *  Error_Handler before main() could turn off the power-on-default red LED.
+   *  HSI is always available and gives the same 160 MHz sysclk with the same
+   *  PLL multipliers. */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSI
-                              |RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+                              |RCC_OSCILLATORTYPE_LSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.LSIDiv = RCC_LSI_DIV1;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLMBOOST = RCC_PLLMBOOST_DIV1;
   RCC_OscInitStruct.PLL.PLLM = 1;
   RCC_OscInitStruct.PLL.PLLN = 10;
@@ -338,16 +337,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLFRACN = 0;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
-    /* HSE did not start (likely battery-power startup glitch) — retry with HSI */
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSI
-                                |RCC_OSCILLATORTYPE_LSI;
-    RCC_OscInitStruct.HSEState = RCC_HSE_OFF;
-    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-    {
-      Error_Handler(__FILE__,__LINE__);
-    }
-    pll_source = RCC_PLLSOURCE_HSI;
+    Error_Handler(__FILE__,__LINE__);
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
@@ -373,7 +363,7 @@ void SystemClock_Config(void)
   PeriphClkInit.Mdf1ClockSelection = RCC_MDF1CLKSOURCE_PLL3;
   PeriphClkInit.Adf1ClockSelection = RCC_ADF1CLKSOURCE_PLL3;
   PeriphClkInit.AdcDacClockSelection = RCC_ADCDACCLKSOURCE_PLL2;
-  PeriphClkInit.PLL3.PLL3Source = pll_source;
+  PeriphClkInit.PLL3.PLL3Source = RCC_PLLSOURCE_HSI;
   PeriphClkInit.PLL3.PLL3M = 2;
   PeriphClkInit.PLL3.PLL3N = 48;
   PeriphClkInit.PLL3.PLL3P = 2;
@@ -382,7 +372,7 @@ void SystemClock_Config(void)
   PeriphClkInit.PLL3.PLL3RGE = RCC_PLLVCIRANGE_1;
   PeriphClkInit.PLL3.PLL3FRACN = 0;
   PeriphClkInit.PLL3.PLL3ClockOut = RCC_PLL3_DIVQ;
-  PeriphClkInit.PLL2.PLL2Source = pll_source;
+  PeriphClkInit.PLL2.PLL2Source = RCC_PLLSOURCE_HSI;
   PeriphClkInit.PLL2.PLL2M = 2;
   PeriphClkInit.PLL2.PLL2N = 48;
   PeriphClkInit.PLL2.PLL2P = 2;
