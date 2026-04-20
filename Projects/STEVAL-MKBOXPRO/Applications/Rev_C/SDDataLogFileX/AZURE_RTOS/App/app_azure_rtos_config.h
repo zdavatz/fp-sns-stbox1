@@ -32,7 +32,11 @@ extern "C" {
 
 #define TX_APP_MEM_POOL_SIZE                     1024
 
-#define FX_APP_MEM_POOL_SIZE                     (1024*10)
+/* 14 KB covers fx_thread (4 KB) + read_thread (4 KB) + gps_thread (2 KB) +
+ * MessageQueue (~400 B) + tx_byte_pool overhead. 10 KB was too tight after
+ * adding gps_thread — tx_byte_allocate returned NO_MEMORY and main's boot
+ * stage 3 was the last visible step. */
+#define FX_APP_MEM_POOL_SIZE                     (1024*14)
 
 #ifdef __cplusplus
 }
