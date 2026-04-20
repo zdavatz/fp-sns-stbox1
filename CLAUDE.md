@@ -102,7 +102,11 @@ Timestamps are ThreadX tick counts (1 tick = 10ms), not raw milliseconds.
 
 Logging starts automatically on power-on and can be stopped/restarted with the user button. File counter auto-increments to avoid overwrites. The first 200 ms of audio is discarded (mic glitch workaround). The core logging logic is in `FileX/App/app_filex.c` within each SDDataLogFileX project.
 
-LED behavior: Green LED on = logging active, green LED off = logging stopped. Red LED blinks during firmware update. Remaining sensor data in the queue is drained (written to file) before closing, preventing empty files on stop.
+LED behavior: On every boot main() runs `BootStageBlink(n)` — 1 green blink after clock/ICache/LED init, 2 after `GPS_Init()`, 3 after `InitMemsSensors()`. Then ThreadX starts and green LED goes solid on = logging active. Green off = logging stopped. Red LED blinking = `Error_Handler` fatal error (see `Error_Log_Pump_Tsueri_*.log`). Red LED solid = either an in-progress SD firmware update (`firmware.bin` present) or a hang *before* the green-blink sequence — useful for distinguishing a clock/power-stage crash from an application-level error. Remaining sensor data in the queue is drained (written to file) before closing, preventing empty files on stop.
+
+Clock config uses **HSI** (internal 16 MHz) as the PLL source, not HSE. The 3.3V board mod (for the GPS module) made the external crystal unreliable on battery-power boot. PLL / PLL2 / PLL3 all source from HSI — same 160 MHz sysclk.
+
+The user-button pin (PC13, EXTI13 at NVIC priority 0) is configured in the BSP with `GPIO_PULLDOWN` — not the stock `GPIO_NOPULL`. Boards with the user button physically disconnected otherwise float PC13, which triggers a continuous highest-priority EXTI storm and hangs the firmware.
 
 SD card firmware update: On boot, the app checks for `firmware.bin` on the SD card. If found, it programs the inactive flash bank (dual-bank STM32U585), renames the file to `firmware.done`, swaps banks via option bytes, and resets. No BLE/JTAG/ST-Link needed. Max firmware size ~1016 KB. Implementation in `CheckAndApplyFirmwareUpdate()` in `app_filex.c`.
 

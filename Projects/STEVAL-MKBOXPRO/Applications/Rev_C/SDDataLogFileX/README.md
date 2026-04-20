@@ -27,6 +27,18 @@ UART4 (PA0/PA1) is wired to the GPS module instead of debug-printf:
 
 No manual setup needed — `GPS_Init()` auto-configures the module on every boot by sending UBX-CFG-PRT at 9600 baud to switch UART1 to 38400, then UBX-CFG-CFG to persist the config in BBR + Flash. The firmware parses only `$GNRMC` and `$GNGGA` NMEA sentences and logs them to `GpsNNN.csv` (timestamp, UTC, lat, lon, alt, speed km/h, course, fix, num-sat, HDOP). `STBOX1_ENABLE_PRINTF` is disabled while the GPS occupies UART4 — fatal errors still land in the SD error log.
 
+### <b>LED behavior</b>
+
+On every boot the firmware emits a green-LED progress sequence (main.c `BootStageBlink()`):
+
+- Brief red flash (power-on default, turned off in main)
+- **1 green blink**: clock + ICache + LED init OK
+- **2 green blinks**: `GPS_Init()` (UART4 + UBX auto-config) OK
+- **3 green blinks**: sensor init OK
+- **Green LED solid**: ThreadX + FileX running, logging active
+
+If boot stops before the 3rd blink, one of the init steps hung — useful for narrowing down hardware/driver issues when `STBOX1_PRINTF` is compiled out. Red LED solid = either an SD firmware update in progress (`firmware.bin` on the card) or an early hang (clock / crystal / floating GPIO). Red LED blinking at ~2.5 Hz = `Error_Handler` — see `Error_Log_Pump_Tsueri_*.log` on the SD card for the source-file and line.
+
 ### <b>Keywords</b>
 
 NFC, SPI, I2C, UART, MEMS, BLE, BLE_Manager, STM32WB07KC, GPS

@@ -99,9 +99,17 @@ No manual setup needed — the firmware auto-configures the GPS on every boot by
 
 ### LED Behavior
 
-- **Green LED on** — logging active (data being recorded)
-- **Green LED off** — logging stopped
-- **Red LED flashing** — fatal error
+Boot sequence (every power-on):
+1. Brief red flash (power-on default → turned off)
+2. **1 green blink** — clock + ICache + LED init OK
+3. **2 green blinks** — GPS_Init (UART4 + auto-config) OK
+4. **3 green blinks** — sensor init OK
+5. **Green LED solid on** — ThreadX + FileX running, logging active
+
+Runtime:
+- **Green LED off** — logging stopped (after user-button press)
+- **Red LED blinking** — fatal error (`Error_Handler`), details in `Error_Log_Pump_Tsueri_dd.mm.yyyy.log` on SD
+- **Red LED solid** — stuck in firmware update (`firmware.bin` on SD), or hang before the green-blink sequence (clock / power / crystal issue)
 
 When stopping, all queued sensor data is written to the file before closing (no data loss).
 
