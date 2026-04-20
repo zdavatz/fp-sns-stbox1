@@ -433,10 +433,15 @@ static void BUTTON_USER_GPIO_Init(void) {
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
 
-  /*Configure GPIO pin : PTPIN */
+  /* Configure GPIO pin : user-button on PC13.
+   * Internal pulldown guards against a disconnected button (otherwise the
+   * floating pin picks up noise, triggering the priority-0 EXTI13 interrupt
+   * continuously and starving SysTick/TIM6, which hangs HAL_Delay and makes
+   * the red LED look stuck on). Normal hardware still drives the pin high
+   * on press — rising-edge detection unchanged. */
   GPIO_InitStruct.Pin = BUS_BSP_BUTTON_GPIO_PIN;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(BUS_BSP_BUTTON_GPIO_PORT, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/

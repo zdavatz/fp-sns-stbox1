@@ -89,6 +89,7 @@ void SystemClock_Config(void);
 static void MX_ICACHE_Init(void);
 static void PrintInfo(void);
 static void InitMemsSensors(void);
+static void BootStageBlink(uint8_t count);
 
 /* USER CODE BEGIN PFP */
 
@@ -135,20 +136,25 @@ int main(void)
   BSP_LED_Init(LED_RED);
   /* RED is activated by default */
   BSP_LED_Off(LED_RED);
-  
+
+  /* Boot-progress indicator: 1 green blink = we got past clock+icache+LED init. */
+  BootStageBlink(1);
+
   /* Enable Button in Interrupt mode */
   BSP_PB_Init(BUTTON_KEY, BUTTON_MODE_EXTI);
-  
+
   /* Init UART4 for the u-blox MAX-M10S GPS module (PA0=TX, PA1=RX, 38400 8N1).
      Replaces the former BSP_COM_Init(COM1) debug-printf role.
      STBOX1_PRINTF() is compiled out (see stbox1_config.h). */
   GPS_Init();
+  BootStageBlink(2);
 
   /* Print Banner (no-op when STBOX1_ENABLE_PRINTF is undefined) */
   PrintInfo();
-  
+
   /* Init Mems Sensors */
   InitMemsSensors();
+  BootStageBlink(3);
   
   /* USER CODE END 2 */
 
@@ -449,6 +455,24 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   * @param int32_t Line number
   * @retval None
   */
+/**
+  * @brief  Boot-progress indicator. Blinks green N times, then a 700 ms pause.
+  *         Used to diagnose where the firmware stops when the red LED comes on
+  *         without any other feedback (STBOX1_PRINTF is compiled out).
+  * @param  count  Number of green blinks (1..n).
+  */
+static void BootStageBlink(uint8_t count)
+{
+  for (uint8_t i = 0; i < count; i++)
+  {
+    BSP_LED_On(LED_GREEN);
+    HAL_Delay(120);
+    BSP_LED_Off(LED_GREEN);
+    HAL_Delay(120);
+  }
+  HAL_Delay(700);
+}
+
 void Error_Handler(char *File,int32_t Line)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
