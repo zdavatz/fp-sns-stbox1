@@ -16,6 +16,8 @@ For each log session, the board saves:
 - one .csv file with the sensors logged at 100Hz
 - one GpsNNN.csv file with 1 Hz GPS fixes (only when a u-blox MAX-M10S module is connected via UART4)
 
+The FAT directory entries are flushed every ~1 s during logging (`fx_media_flush` inside `COMMAND_SAVE_SENSORS`), so the SensNNN.csv and GpsNNN.csv remain valid even after an ungraceful power-off — necessary on hardware-modified boards where the user button is disconnected and there is no graceful stop. At most the final second of sensor data is lost. The WAV header is only finalized on graceful stop; after an ungraceful power-off the audio data is still on the card, but the header keeps pointing at the init dummy size.
+
 ### <b>GPS module (u-blox MAX-M10S)</b>
 
 UART4 (PA0/PA1) is wired to the GPS module instead of debug-printf:

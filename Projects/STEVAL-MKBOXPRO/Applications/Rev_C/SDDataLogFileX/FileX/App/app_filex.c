@@ -741,6 +741,7 @@ static void fx_thread_entry(ULONG thread_input)
           {
             CHAR data_s[256];
             INT size;
+            static uint32_t flush_counter = 0;
             size = sprintf(data_s, "%ld, %d, %d, %d, %d, %d, %d, %d, %d, %d, %5.2f, %5.2f\r\n",
                            RMsg->MsgTime,
                            RMsg->payload.sensors.acc.x, RMsg->payload.sensors.acc.y, RMsg->payload.sensors.acc.z,
@@ -757,6 +758,17 @@ static void fx_thread_entry(ULONG thread_input)
               /* Error writing to a file, call error handler.  */
               STBOX1_PRINTF("Error writing SensXXX.csv\r\n");
               Error_Handler(__FILE__, __LINE__);
+            }
+
+            /* Periodic flush so FAT directory entries (file sizes) stay
+             * up-to-date. Without the user button wired up there is no
+             * graceful stop — power-off at any time must still leave
+             * playable files. Flush every ~1 s (100 samples @ 100 Hz)
+             * covers Sens/Mic/Gps since fx_media_flush is media-wide. */
+            if (++flush_counter >= 100)
+            {
+              flush_counter = 0;
+              fx_media_flush(&sdio_disk);
             }
           }
           BSP_LED_Toggle(LED_GREEN);

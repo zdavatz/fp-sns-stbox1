@@ -45,7 +45,7 @@ Here is the list of references to user documents:
 
 ## SD Card Data Format (SDDataLogFileX)
 
-Logging starts automatically on power-on. Press the user button to stop, press again to restart. An error log (`Error_Log_Pump_Tsueri_dd.mm.yyyy.log`, using compile date) is written to the SD card with boot markers and fatal errors. Each session creates up to three files on the SD card (GPS file only when a u-blox MAX-M10S module is connected):
+Logging starts automatically on power-on. Press the user button to stop, press again to restart. An error log (`Error_Log_Pump_Tsueri_dd.mm.yyyy.log`, using compile date) is written to the SD card with boot markers and fatal errors. The FAT directory (file sizes) is flushed every ~1 s during logging so that a sudden power-off still leaves valid, non-zero-byte files — at most the final second of data is lost. Each session creates up to three files on the SD card (GPS file only when a u-blox MAX-M10S module is connected):
 
 ### Sensor CSV: `SensNNN.csv`
 
@@ -111,7 +111,7 @@ Runtime:
 - **Red LED blinking** — fatal error (`Error_Handler`), details in `Error_Log_Pump_Tsueri_dd.mm.yyyy.log` on SD
 - **Red LED solid** — stuck in firmware update (`firmware.bin` on SD), or hang before the green-blink sequence (clock / power / crystal issue)
 
-When stopping, all queued sensor data is written to the file before closing (no data loss).
+When stopping, all queued sensor data is written to the file before closing (no data loss). Even without a graceful stop (e.g. user button disconnected, power simply switched off), the periodic 1 Hz `fx_media_flush` keeps the FAT directory up-to-date — the sensor CSV and GPS CSV remain readable up to ~1 s before power loss. The WAV header is only finalized on graceful stop; ungraceful power-off leaves the header pointing at the initial dummy size (60 s), but the audio data itself is still on the card.
 
 ### Firmware Update via SD Card
 
