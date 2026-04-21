@@ -483,6 +483,7 @@ static void fx_thread_entry(ULONG thread_input)
             ErrorLog_Write("start: gps header written");
           }
 
+#if STBOX1_LOG_AUDIO
           /* --- Mic: non-fatal — if init/record fails, log it and
              continue without audio. Mic hardware has been observed to
              hang silently on some hardware-modified boards; we must
@@ -557,6 +558,9 @@ static void fx_thread_entry(ULONG thread_input)
           {
             STBOX1_PRINTF("Error MicXXX.wav already opened\r\n");
           }
+#else  /* STBOX1_LOG_AUDIO */
+          ErrorLog_Write("start: mic disabled at compile time");
+#endif /* STBOX1_LOG_AUDIO */
         }
         break;
         case COMMAND_STOP_LOG:
@@ -636,6 +640,7 @@ static void fx_thread_entry(ULONG thread_input)
 
           if (AudioFileOpen)
           {
+#if STBOX1_LOG_AUDIO
             if (BSP_AUDIO_IN_Stop(0 /*BSP_AUDIO_IN_INSTANCE*/) != BSP_ERROR_NONE)
             {
               STBOX1_PRINTF("ERROR Stopping MIC\r\n");
@@ -647,6 +652,7 @@ static void fx_thread_entry(ULONG thread_input)
               STBOX1_PRINTF("ERROR De-Initializing MIC\r\n");
               ErrorLog_Write("stop: BSP_AUDIO_IN_DeInit FAIL - continuing");
             }
+#endif /* STBOX1_LOG_AUDIO */
 
             STBOX1_PRINTF("MIC Stop\r\n");
 
