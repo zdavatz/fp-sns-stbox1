@@ -40,6 +40,13 @@ extern "C" {
 #define STBOX1_GPS_ENABLE
 #define GPS_UART_BAUDRATE  38400
 
+/* Audio logging (MicNNN.wav via MP23DB01HP). Disabled by default:
+   on Peter's hardware-modified board (3.3V + various disconnected
+   connectors) BSP_AUDIO_IN_Init() hangs indefinitely, blocking the
+   fx_thread before it can write any sensor or GPS samples. Set to 1
+   only on an unmodified SensorTile.box PRO. */
+#define STBOX1_LOG_AUDIO 0
+
 #define STTS22H_ODR 1.0f /* ODR = 1.0Hz */
 #define ISM330DHCX_ACC_ODR 104.0f /* ODR = 104Hz */
 #define ISM330DHCX_ACC_FS 4 /* FS = 4g */
