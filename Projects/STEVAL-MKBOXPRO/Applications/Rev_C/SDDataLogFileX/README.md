@@ -18,6 +18,10 @@ For each log session, the board saves:
 
 The FAT directory entries are flushed every ~1 s during logging (`fx_media_flush` inside `COMMAND_SAVE_SENSORS`), so the SensNNN.csv and GpsNNN.csv remain valid even after an ungraceful power-off — necessary on hardware-modified boards where the user button is disconnected and there is no graceful stop. At most the final second of sensor data is lost. The WAV header is only finalized on graceful stop; after an ungraceful power-off the audio data is still on the card, but the header keeps pointing at the init dummy size.
 
+File timestamps are stamped from the compile date + seconds-since-boot (`UpdateFileXClock()`), so files land with approximately wall-clock dates instead of FAT's default 31.12.16.
+
+Audio logging is disabled by default via `STBOX1_LOG_AUDIO 0` in `stbox1_config.h`. On hardware-modified boards (3.3V mod, disconnected connectors) `BSP_AUDIO_IN_Init()` can hang without ever returning, which blocks `fx_thread` mid-START_LOG and stops all sensor and GPS writes. Set `STBOX1_LOG_AUDIO 1` only on an unmodified board. When disabled, no `MicNNN.wav` files are created and the stage-marker `start: mic disabled at compile time` appears in the error log.
+
 ### <b>GPS module (u-blox MAX-M10S)</b>
 
 UART4 (PA0/PA1) is wired to the GPS module instead of debug-printf:

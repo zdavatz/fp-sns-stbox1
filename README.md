@@ -64,9 +64,11 @@ Time [mS], AccX [mg], AccY [mg], AccZ [mg], GyroX [mdps], GyroY [mdps], GyroZ [m
 | P | millibar (hPa) | 0.01 hPa | LPS22DF (MKBOXPRO) / ILPS22QS (STWINBX1) |
 | T | degrees Celsius | 0.01 °C | STTS22H |
 
-### Audio WAV: `MicNNN.wav`
+### Audio WAV: `MicNNN.wav` (optional, off by default)
 
 Standard RIFF WAV — mono, 16-bit PCM, 16 kHz sample rate (MP23DB01HP microphone). The file number `NNN` matches the corresponding sensor CSV.
+
+Audio logging is **disabled by default** via `STBOX1_LOG_AUDIO 0` in `stbox1_config.h`. On hardware-modified boards (e.g. the 3.3V mod for the GPS module) `BSP_AUDIO_IN_Init()` has been observed to hang with no return value — which would block the entire logging pipeline. Set `STBOX1_LOG_AUDIO 1` only on an unmodified SensorTile.box PRO. When disabled, no `MicNNN.wav` files are created.
 
 ### GPS CSV: `GpsNNN.csv` (optional, u-blox MAX-M10S)
 
@@ -112,6 +114,10 @@ Runtime:
 - **Red LED solid** — stuck in firmware update (`firmware.bin` on SD), or hang before the green-blink sequence (clock / power / crystal issue)
 
 When stopping, all queued sensor data is written to the file before closing (no data loss). Even without a graceful stop (e.g. user button disconnected, power simply switched off), the periodic 1 Hz `fx_media_flush` keeps the FAT directory up-to-date — the sensor CSV and GPS CSV remain readable up to ~1 s before power loss. The WAV header is only finalized on graceful stop; ungraceful power-off leaves the header pointing at the initial dummy size (60 s), but the audio data itself is still on the card.
+
+File timestamps: FileX has no RTC, so `UpdateFileXClock()` seeds the FAT date/time from `__DATE__` / `__TIME__` plus `tx_time_get()` seconds-since-boot. Files get a stamp close to wall-clock time (instead of FAT's default 31.12.16). Called at FileX init, before each file create, and before each periodic flush, so timestamps advance during a session.
+
+The error log also contains stage markers from START_LOG: `sens header written`, `gps header written`, and (if audio is enabled) `mic init begin` / `mic init ok` / `mic init FAIL`. A hang during boot leaves the last successful marker visible on the SD, which makes it trivial to localize which init step is the problem.
 
 ### Firmware Update via SD Card
 

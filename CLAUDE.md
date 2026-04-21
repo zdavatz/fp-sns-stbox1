@@ -89,6 +89,7 @@ Each application follows the same layout:
 - `STBOX1_BLE_SECURE_CONNECTION` — enable BLE PIN security (disable for some Android compatibility)
 - `BLE_FORCE_RESCAN` — force BLE service re-scan (disable for some Android compatibility)
 - `STBOX1_UPDATE_ENV` / `STBOX1_UPDATE_INV` — sensor polling intervals (timer ticks)
+- `STBOX1_LOG_AUDIO` (SDDataLogFileX only) — gates all `BSP_AUDIO_IN_*` calls and `.wav` file creation. Default `0`. Set to `1` only on unmodified hardware. On the 3.3V-modded board `BSP_AUDIO_IN_Init` blocks with no return, which hangs `fx_thread` mid-START_LOG before it can write sensor or GPS samples. Keep it off unless you actively need the on-board microphone.
 
 ## SD Card Data Format (SDDataLogFileX)
 
@@ -105,6 +106,12 @@ Logging starts automatically on power-on and can be stopped/restarted with the u
 LED behavior: On every boot main() runs `BootStageBlink(n)` — 1 green blink after clock/ICache/LED init, 2 after `GPS_Init()`, 3 after `InitMemsSensors()`. Then ThreadX starts and green LED goes solid on = logging active. Green off = logging stopped. Red LED blinking = `Error_Handler` fatal error (see `Error_Log_Pump_Tsueri_*.log`). Red LED solid = either an in-progress SD firmware update (`firmware.bin` present) or a hang *before* the green-blink sequence — useful for distinguishing a clock/power-stage crash from an application-level error. Remaining sensor data in the queue is drained (written to file) before closing, preventing empty files on stop.
 
 `app_filex.c` calls `fx_media_flush(&sdio_disk)` every 100 sensor samples (~1 s @ 100 Hz) inside the `COMMAND_SAVE_SENSORS` case. This keeps FAT directory entries (file sizes) up-to-date so an ungraceful power-off — the normal termination on this hardware, since the user button is physically disconnected — still leaves readable Sens/Gps/error-log files. Without the flush, FAT only updates file size on `fx_file_close`, so power-off mid-session shows 0-byte files even though data sectors were written. The WAV header is *not* updated in the same path (size is only written back on graceful stop), so the .wav header keeps pointing at the init dummy size (60 s) after ungraceful stop — audio data is on the card, but players may truncate or overread.
+
+`UpdateFileXClock()` stamps FileX's system date/time from `__DATE__` + `__TIME__` + `tx_time_get()/100` seconds. Called at FileX init, before each file create, and before each periodic flush. Without it, all files show FAT's default `31.12.16` timestamp; with it, files show approximately wall-clock time (build date + runtime seconds). Month/year rollover past the compile date is intentionally not handled — re-flash the firmware instead.
+
+START_LOG writes progress markers to the error log between each init step (`sens header written`, `gps header written`, `mic init begin`, `mic init ok` / `mic init FAIL`, `mic running`). A silent hang leaves the last successful marker on SD, so you can tell exactly where the firmware got stuck. The `mic init begin` marker without a following ok/FAIL is the signature of a hardware-modified-board MIC hang — the fix is to set `STBOX1_LOG_AUDIO 0`.
+
+STOP_LOG closes all files and the SD media regardless of `AudioFileOpen`. The earlier version nested `fx_media_close` inside the audio block, which meant that when MIC init failed or was disabled, the SD media stayed open and the card was left in an inconsistent state on graceful stop. Also the GPS file is created and flushed *before* the MIC init block so a MIC hang cannot prevent GPS data from landing on the card.
 
 Clock config uses **HSI** (internal 16 MHz) as the PLL source, not HSE. The 3.3V board mod (for the GPS module) made the external crystal unreliable on battery-power boot. PLL / PLL2 / PLL3 all source from HSI — same 160 MHz sysclk.
 
