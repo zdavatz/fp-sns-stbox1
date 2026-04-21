@@ -72,7 +72,7 @@ Audio logging is **disabled by default** via `STBOX1_LOG_AUDIO 0` in `stbox1_con
 
 ### GPS CSV: `GpsNNN.csv` (optional, u-blox MAX-M10S)
 
-CSV at 1 Hz with header:
+CSV at 10 Hz with header:
 
 ```
 Time [mS], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP
@@ -97,7 +97,7 @@ The GPS module (SparkFun u-blox MAX-M10S) connects via UART4 at 38400 baud, 8N1,
 - 3V3 → 3V3
 - GND → GND
 
-No manual setup needed — the firmware auto-configures the GPS on every boot by sending UBX-CFG-PRT at 9600 baud (u-blox factory default) to switch UART1 to 38400, then UBX-CFG-CFG to persist the config in BBR + Flash. Requires PA0 → GPS RX to be wired so the firmware can talk to the GPS. `STBOX1_ENABLE_PRINTF` is disabled by default because UART4 is now the GPS link — fatal errors still land in the SD error log.
+No manual setup needed — the firmware auto-configures the GPS on every boot by sending UBX-CFG-PRT at 9600 baud (u-blox factory default) to switch UART1 to 38400, then UBX-CFG-MSG to disable the NMEA sentences we don't parse (GLL, GSA, GSV, VTG), then UBX-CFG-RATE to set the measurement rate to 100 ms (10 Hz), then UBX-CFG-CFG to persist the config in BBR + Flash. With only `$GNGGA` + `$GNRMC` enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART. Requires PA0 → GPS RX to be wired so the firmware can talk to the GPS. `STBOX1_ENABLE_PRINTF` is disabled by default because UART4 is now the GPS link — fatal errors still land in the SD error log.
 
 ### LED Behavior
 

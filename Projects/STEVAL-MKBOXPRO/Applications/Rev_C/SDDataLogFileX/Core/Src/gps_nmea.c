@@ -247,6 +247,39 @@ static void gps_cfg_save_all(void)
   ubx_send(0x06, 0x09, p, sizeof(p));     /* CFG-CFG */
 }
 
+/* UBX-CFG-RATE: set measurement + navigation rate.
+   meas_ms = interval between measurements in ms (100 = 10 Hz).
+   nav_cycles = navigation solution per N measurements (1 = every meas). */
+static void gps_cfg_rate(uint16_t meas_ms, uint16_t nav_cycles)
+{
+  uint8_t p[6];
+  p[0] = (uint8_t)(meas_ms    & 0xFF);
+  p[1] = (uint8_t)(meas_ms    >> 8);
+  p[2] = (uint8_t)(nav_cycles & 0xFF);
+  p[3] = (uint8_t)(nav_cycles >> 8);
+  p[4] = 0x01;                            /* timeRef = GPS */
+  p[5] = 0x00;
+  ubx_send(0x06, 0x08, p, sizeof(p));     /* CFG-RATE */
+}
+
+/* UBX-CFG-MSG: set the UART1 output rate of a single NMEA sentence.
+   rate = 0 disables the sentence, 1 = every nav solution, etc. */
+static void gps_cfg_msg_rate(uint8_t msg_class, uint8_t msg_id, uint8_t rate)
+{
+  uint8_t p[3] = { msg_class, msg_id, rate };
+  ubx_send(0x06, 0x01, p, sizeof(p));     /* CFG-MSG (short form = UART1 only) */
+}
+
+/* Disable the NMEA sentences we don't parse, so 10 Hz fits inside the
+   38400-baud UART budget. Keep only GGA + RMC. */
+static void gps_cfg_disable_unused_nmea(void)
+{
+  gps_cfg_msg_rate(0xF0, 0x01, 0);        /* GLL off */
+  gps_cfg_msg_rate(0xF0, 0x02, 0);        /* GSA off */
+  gps_cfg_msg_rate(0xF0, 0x03, 0);        /* GSV off */
+  gps_cfg_msg_rate(0xF0, 0x05, 0);        /* VTG off */
+}
+
 /* ------------------------------------------------------------------ */
 /* Public API                                                         */
 /* ------------------------------------------------------------------ */
@@ -274,8 +307,16 @@ void GPS_Init(void)
   GPS_UART->Init.BaudRate = GPS_UART_BAUDRATE;
   HAL_UART_Init(GPS_UART);
 
-  /* Step 3: tell the GPS to persist the new baudrate to BBR + Flash so it
-     survives power cycles. Runs now at GPS_UART_BAUDRATE. */
+  /* Step 3: disable the NMEA sentences we don't parse and bump the fix
+     rate to 10 Hz. At 38400 baud, keeping only GGA + RMC leaves the UART
+     at ~40 % utilisation and fits 10 Hz comfortably. */
+  gps_cfg_disable_unused_nmea();
+  HAL_Delay(50);
+  gps_cfg_rate(100, 1);                   /* 100 ms = 10 Hz */
+  HAL_Delay(50);
+
+  /* Step 4: tell the GPS to persist the new baudrate + rate + msg config
+     to BBR + Flash so it survives power cycles. */
   gps_cfg_save_all();
   HAL_Delay(150);
 

@@ -14,7 +14,7 @@ For each log session, the board saves:
 
 - one .wav file that it's the output of the digital microphone
 - one .csv file with the sensors logged at 100Hz
-- one GpsNNN.csv file with 1 Hz GPS fixes (only when a u-blox MAX-M10S module is connected via UART4)
+- one GpsNNN.csv file with 10 Hz GPS fixes (only when a u-blox MAX-M10S module is connected via UART4)
 
 The FAT directory entries are flushed every ~1 s during logging (`fx_media_flush` inside `COMMAND_SAVE_SENSORS`), so the SensNNN.csv and GpsNNN.csv remain valid even after an ungraceful power-off — necessary on hardware-modified boards where the user button is disconnected and there is no graceful stop. At most the final second of sensor data is lost. The WAV header is only finalized on graceful stop; after an ungraceful power-off the audio data is still on the card, but the header keeps pointing at the init dummy size.
 
@@ -31,7 +31,7 @@ UART4 (PA0/PA1) is wired to the GPS module instead of debug-printf:
 - GPS 3V3 → 3V3
 - GPS GND → GND
 
-No manual setup needed — `GPS_Init()` auto-configures the module on every boot by sending UBX-CFG-PRT at 9600 baud to switch UART1 to 38400, then UBX-CFG-CFG to persist the config in BBR + Flash. The firmware parses only `$GNRMC` and `$GNGGA` NMEA sentences and logs them to `GpsNNN.csv` (timestamp, UTC, lat, lon, alt, speed km/h, course, fix, num-sat, HDOP). `STBOX1_ENABLE_PRINTF` is disabled while the GPS occupies UART4 — fatal errors still land in the SD error log.
+No manual setup needed — `GPS_Init()` auto-configures the module on every boot by sending UBX-CFG-PRT at 9600 baud to switch UART1 to 38400, then UBX-CFG-MSG to disable the sentences we don't parse (GLL, GSA, GSV, VTG), then UBX-CFG-RATE to set the measurement rate to 100 ms (10 Hz), then UBX-CFG-CFG to persist the config in BBR + Flash. The firmware parses only `$GNRMC` and `$GNGGA` NMEA sentences and logs them to `GpsNNN.csv` (timestamp, UTC, lat, lon, alt, speed km/h, course, fix, num-sat, HDOP). With only two sentences enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART (well under the ~3.8 kB/s ceiling). `STBOX1_ENABLE_PRINTF` is disabled while the GPS occupies UART4 — fatal errors still land in the SD error log.
 
 ### <b>LED behavior</b>
 

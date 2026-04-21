@@ -96,7 +96,7 @@ Each application follows the same layout:
 The data logging application creates three files per session on the SD card:
 - `SensNNN.csv` — sensor CSV at ~100 Hz: timestamp (ticks), acc XYZ (mg), gyro XYZ (mdps), mag XYZ (mgauss), pressure (hPa), temperature (°C)
 - `MicNNN.wav` — mono 16-bit PCM WAV at 16 kHz from the onboard digital microphone
-- `GpsNNN.csv` — GPS fixes at 1 Hz from u-blox MAX-M10S: timestamp (ticks), UTC (hhmmss.ss), lat/lon (decimal degrees, signed), alt (m), speed (km/h), course (deg), fix quality, num satellites, HDOP. Rows only when a new fix is parsed. Empty (header only) if GPS has no fix or module not connected.
+- `GpsNNN.csv` — GPS fixes at 10 Hz from u-blox MAX-M10S: timestamp (ticks), UTC (hhmmss.ss), lat/lon (decimal degrees, signed), alt (m), speed (km/h), course (deg), fix quality, num satellites, HDOP. Rows only when a new fix is parsed. Empty (header only) if GPS has no fix or module not connected.
 
 Gyroscope full-scale is 500 dps (17.5 mdps/LSB) for good fusion resolution. Accelerometer is 4g (0.122 mg/LSB).
 Timestamps are ThreadX tick counts (1 tick = 10ms), not raw milliseconds.
@@ -131,7 +131,13 @@ Wiring (SparkFun MAX-M10S breakout → SensorTile.box PRO Rev_C):
 
 Because UART4 now drives the GPS link, `STBOX1_ENABLE_PRINTF` is disabled by default — there is no debug UART while the GPS is connected (error log on SD card still works).
 
-**No manual u-center setup needed.** On every boot, `GPS_Init()` sends a UBX-CFG-PRT at 9600 baud (u-blox factory default) to switch UART1 to `GPS_UART_BAUDRATE` (38400), then a UBX-CFG-CFG to persist the config in BBR + Flash. If the module is already at the target baudrate, the 9600-rate bytes arrive as garbage and are ignored — harmless. Implementation in `Core/Src/gps_nmea.c`.
+**No manual u-center setup needed.** On every boot, `GPS_Init()` auto-configures the module in four steps, all persisted to BBR + Flash:
+1. UBX-CFG-PRT at 9600 baud (u-blox factory default) → switch UART1 to `GPS_UART_BAUDRATE` (38400). If already at the target baudrate the 9600-rate bytes arrive as garbage and are ignored — harmless.
+2. UBX-CFG-MSG × 4 → disable the NMEA sentences we don't parse (GLL, GSA, GSV, VTG). Only GGA + RMC remain enabled.
+3. UBX-CFG-RATE → set measurement rate to 100 ms (10 Hz), nav solution every cycle, GPS time reference.
+4. UBX-CFG-CFG → save all sections (BBR + Flash + EEPROM) so the config survives power cycles.
+
+Implementation in `Core/Src/gps_nmea.c`. With only two sentences enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART (ceiling ~3.8 kB/s). Raising the fix rate further (25 Hz max for single-GNSS) would require either disabling even more output or bumping `GPS_UART_BAUDRATE`, but bumping the baud breaks the auto-config flow on already-persisted boards — the factory-default 9600 fallback only works once.
 
 The firmware parses only `$GNRMC` and `$GNGGA` sentences. All other NMEA sentences from the module are silently ignored.
 
