@@ -13,12 +13,19 @@ APP = ..
 
 CPU = -mcpu=cortex-m33 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard
 
+# GPS measurement rate in Hz. Override at build time:
+#   make GPS_RATE_HZ=5
+# Valid 1..25 for single-GNSS on u-blox MAX-M10S. Above ~25 Hz the 38400-baud
+# UART saturates even with only GGA+RMC enabled.
+GPS_RATE_HZ ?= 10
+
 DEFS = \
   -DUSE_HAL_DRIVER \
   -DSTM32U585xx \
   -DFX_INCLUDE_USER_DEFINE_FILE \
   -DTX_INCLUDE_USER_DEFINE_FILE \
-  -DTX_SINGLE_MODE_NON_SECURE=1
+  -DTX_SINGLE_MODE_NON_SECURE=1 \
+  -DGPS_RATE_HZ=$(GPS_RATE_HZ)
 
 ASM_DEFS = -DTX_SINGLE_MODE_NON_SECURE=1
 

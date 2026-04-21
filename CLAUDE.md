@@ -134,7 +134,7 @@ Because UART4 now drives the GPS link, `STBOX1_ENABLE_PRINTF` is disabled by def
 **No manual u-center setup needed.** On every boot, `GPS_Init()` auto-configures the module in four steps, all persisted to BBR + Flash:
 1. UBX-CFG-PRT at 9600 baud (u-blox factory default) → switch UART1 to `GPS_UART_BAUDRATE` (38400). If already at the target baudrate the 9600-rate bytes arrive as garbage and are ignored — harmless.
 2. UBX-CFG-MSG × 4 → disable the NMEA sentences we don't parse (GLL, GSA, GSV, VTG). Only GGA + RMC remain enabled.
-3. UBX-CFG-RATE → set measurement rate to 100 ms (10 Hz), nav solution every cycle, GPS time reference.
+3. UBX-CFG-RATE → set measurement rate from `GPS_MEAS_PERIOD_MS` (derived from the `GPS_RATE_HZ` macro, default 10 Hz → 100 ms; override at build time via `make GPS_RATE_HZ=<n>`). nav solution every cycle, GPS time reference.
 4. UBX-CFG-CFG → save all sections (BBR + Flash + EEPROM) so the config survives power cycles.
 
 Implementation in `Core/Src/gps_nmea.c`. With only two sentences enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART (ceiling ~3.8 kB/s). Raising the fix rate further (25 Hz max for single-GNSS) would require either disabling even more output or bumping `GPS_UART_BAUDRATE`, but bumping the baud breaks the auto-config flow on already-persisted boards — the factory-default 9600 fallback only works once.
@@ -208,6 +208,8 @@ The toolchain path is auto-detected by platform in `config.mk` at the repository
 - **Linux**: `/usr/bin`
 
 Both Makefiles include `config.mk` via `-include $(ROOT)/config.mk` with a fallback default. The path can also be overridden per invocation: `make TOOLCHAIN=/other/path`.
+
+SDDataLogFileX Makefile also exposes `GPS_RATE_HZ` (default 10) that gets passed into `stbox1_config.h` as `-DGPS_RATE_HZ=<n>` and drives `UBX-CFG-RATE` in `gps_nmea.c`. Override per invocation, e.g. `make GPS_RATE_HZ=5` for 5 Hz or `make GPS_RATE_HZ=25` for the max rate. The header has a `[1, 25]` `#error` guard (UART ceiling at 38400 baud with only GGA + RMC enabled). IDE builds that don't define the macro get the 10 Hz default.
 
 ## Known Limitations
 

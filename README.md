@@ -97,7 +97,22 @@ The GPS module (SparkFun u-blox MAX-M10S) connects via UART4 at 38400 baud, 8N1,
 - 3V3 → 3V3
 - GND → GND
 
-No manual setup needed — the firmware auto-configures the GPS on every boot by sending UBX-CFG-PRT at 9600 baud (u-blox factory default) to switch UART1 to 38400, then UBX-CFG-MSG to disable the NMEA sentences we don't parse (GLL, GSA, GSV, VTG), then UBX-CFG-RATE to set the measurement rate to 100 ms (10 Hz), then UBX-CFG-CFG to persist the config in BBR + Flash. With only `$GNGGA` + `$GNRMC` enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART. Requires PA0 → GPS RX to be wired so the firmware can talk to the GPS. `STBOX1_ENABLE_PRINTF` is disabled by default because UART4 is now the GPS link — fatal errors still land in the SD error log.
+No manual setup needed — the firmware auto-configures the GPS on every boot by sending UBX-CFG-PRT at 9600 baud (u-blox factory default) to switch UART1 to 38400, then UBX-CFG-MSG to disable the NMEA sentences we don't parse (GLL, GSA, GSV, VTG), then UBX-CFG-RATE to set the measurement rate (default 100 ms = 10 Hz, configurable at build time — see below), then UBX-CFG-CFG to persist the config in BBR + Flash. With only `$GNGGA` + `$GNRMC` enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART; the 25 Hz ceiling is the UART budget. Requires PA0 → GPS RX to be wired so the firmware can talk to the GPS. `STBOX1_ENABLE_PRINTF` is disabled by default because UART4 is now the GPS link — fatal errors still land in the SD error log.
+
+The GPS measurement rate is a build-time knob. The Makefile exposes `GPS_RATE_HZ` (default 10) which is passed to the compiler as `-DGPS_RATE_HZ=<n>` and drives the UBX-CFG-RATE payload:
+
+```sh
+# default (10 Hz)
+make
+
+# 5 Hz — halves the Gps CSV volume for longer sessions on smaller SD cards
+make GPS_RATE_HZ=5
+
+# 25 Hz — maximum supported at 38400 baud
+make GPS_RATE_HZ=25
+```
+
+Values outside `[1, 25]` trip a compile-time `#error` in `stbox1_config.h`. IDE builds that don't define the macro get the 10 Hz default.
 
 ### LED Behavior
 

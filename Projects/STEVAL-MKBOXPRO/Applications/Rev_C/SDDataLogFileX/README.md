@@ -31,7 +31,17 @@ UART4 (PA0/PA1) is wired to the GPS module instead of debug-printf:
 - GPS 3V3 → 3V3
 - GPS GND → GND
 
-No manual setup needed — `GPS_Init()` auto-configures the module on every boot by sending UBX-CFG-PRT at 9600 baud to switch UART1 to 38400, then UBX-CFG-MSG to disable the sentences we don't parse (GLL, GSA, GSV, VTG), then UBX-CFG-RATE to set the measurement rate to 100 ms (10 Hz), then UBX-CFG-CFG to persist the config in BBR + Flash. The firmware parses only `$GNRMC` and `$GNGGA` NMEA sentences and logs them to `GpsNNN.csv` (timestamp, UTC, lat, lon, alt, speed km/h, course, fix, num-sat, HDOP). With only two sentences enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART (well under the ~3.8 kB/s ceiling). `STBOX1_ENABLE_PRINTF` is disabled while the GPS occupies UART4 — fatal errors still land in the SD error log.
+No manual setup needed — `GPS_Init()` auto-configures the module on every boot by sending UBX-CFG-PRT at 9600 baud to switch UART1 to 38400, then UBX-CFG-MSG to disable the sentences we don't parse (GLL, GSA, GSV, VTG), then UBX-CFG-RATE to set the measurement period from `GPS_MEAS_PERIOD_MS` (derived from `GPS_RATE_HZ`, default 10 Hz), then UBX-CFG-CFG to persist the config in BBR + Flash. The firmware parses only `$GNRMC` and `$GNGGA` NMEA sentences and logs them to `GpsNNN.csv` (timestamp, UTC, lat, lon, alt, speed km/h, course, fix, num-sat, HDOP). With only two sentences enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART (well under the ~3.8 kB/s ceiling). `STBOX1_ENABLE_PRINTF` is disabled while the GPS occupies UART4 — fatal errors still land in the SD error log.
+
+The GPS fix rate is a build-time option. The Makefile exposes `GPS_RATE_HZ`:
+
+```sh
+make                 # default, 10 Hz
+make GPS_RATE_HZ=5   # 5 Hz
+make GPS_RATE_HZ=25  # 25 Hz (UART-budget ceiling at 38400 baud)
+```
+
+Values outside `[1, 25]` trigger a `#error` in `stbox1_config.h`. IDE builds get the 10 Hz default.
 
 ### <b>LED behavior</b>
 

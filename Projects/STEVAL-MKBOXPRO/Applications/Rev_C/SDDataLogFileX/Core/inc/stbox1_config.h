@@ -40,6 +40,18 @@ extern "C" {
 #define STBOX1_GPS_ENABLE
 #define GPS_UART_BAUDRATE  38400
 
+/* GPS measurement rate in Hz. Override at build time:
+     make GPS_RATE_HZ=5
+   Valid 1..25 for single-GNSS mode on u-blox MAX-M10S. With only GGA+RMC
+   enabled, 25 Hz is the UART ceiling at 38400 baud. */
+#ifndef GPS_RATE_HZ
+#define GPS_RATE_HZ 10
+#endif
+#if (GPS_RATE_HZ < 1) || (GPS_RATE_HZ > 25)
+#error "GPS_RATE_HZ must be in [1, 25] Hz for MAX-M10S at 38400 baud."
+#endif
+#define GPS_MEAS_PERIOD_MS (1000 / GPS_RATE_HZ)
+
 /* Audio logging (MicNNN.wav via MP23DB01HP). Disabled by default:
    on Peter's hardware-modified board (3.3V + various disconnected
    connectors) BSP_AUDIO_IN_Init() hangs indefinitely, blocking the

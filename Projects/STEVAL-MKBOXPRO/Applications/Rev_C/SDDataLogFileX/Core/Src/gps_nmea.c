@@ -307,12 +307,13 @@ void GPS_Init(void)
   GPS_UART->Init.BaudRate = GPS_UART_BAUDRATE;
   HAL_UART_Init(GPS_UART);
 
-  /* Step 3: disable the NMEA sentences we don't parse and bump the fix
-     rate to 10 Hz. At 38400 baud, keeping only GGA + RMC leaves the UART
-     at ~40 % utilisation and fits 10 Hz comfortably. */
+  /* Step 3: disable the NMEA sentences we don't parse and set the fix rate
+     from GPS_MEAS_PERIOD_MS (derived from GPS_RATE_HZ, default 10 Hz — can
+     be overridden at build time with `make GPS_RATE_HZ=<n>`). At 38400 baud
+     with only GGA + RMC, rates up to ~25 Hz fit in the UART budget. */
   gps_cfg_disable_unused_nmea();
   HAL_Delay(50);
-  gps_cfg_rate(100, 1);                   /* 100 ms = 10 Hz */
+  gps_cfg_rate(GPS_MEAS_PERIOD_MS, 1);
   HAL_Delay(50);
 
   /* Step 4: tell the GPS to persist the new baudrate + rate + msg config
