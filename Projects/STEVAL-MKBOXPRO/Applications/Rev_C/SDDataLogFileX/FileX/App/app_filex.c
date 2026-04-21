@@ -162,6 +162,7 @@ static uint32_t WavProcess_HeaderUpdate(uint32_t len);
 static void ErrorLog_BuildFilename(CHAR *buf);
 static void ErrorLog_Open(void);
 static INT  CheckAndApplyFirmwareUpdate(void);
+static void UpdateFileXClock(void);
 /* USER CODE END PFP */
 
 /**
@@ -197,6 +198,11 @@ UINT MX_FileX_Init(VOID *memory_ptr)
 
   /* Initialize FileX.  */
   fx_system_initialize();
+
+  /* Seed the FileX system clock so files don't get FAT's default
+     31.12.16 timestamp. Re-applied before each file create and
+     periodic flush during logging. */
+  UpdateFileXClock();
 
   STBOX1_PRINTF("FileX Thread Created\r\n");
 
@@ -333,6 +339,9 @@ static void fx_thread_entry(ULONG thread_input)
 
           if (SensorsFileOpen == 0)
           {
+            /* Refresh clock so this session's files get a current stamp */
+            UpdateFileXClock();
+
             sprintf(file_name, "Sens%03d.csv", SDCardCounter);
             SDCardCounter++;
 
@@ -426,6 +435,11 @@ static void fx_thread_entry(ULONG thread_input)
               Error_Handler(__FILE__, __LINE__);
             }
 
+            /* Flush so the sens header survives an ungraceful power-off
+             * even before the periodic flush kicks in at sample 100. */
+            fx_media_flush(&sdio_disk);
+            ErrorLog_Write("start: sens header written");
+
             if (tx_timer_activate(&ReadTimer) != TX_SUCCESS)
             {
               STBOX1_PRINTF("Error activating the TX Timer\r\n");
@@ -438,93 +452,8 @@ static void fx_thread_entry(ULONG thread_input)
             STBOX1_PRINTF("Error SensXXX.csv already opened\r\n");
           }
 
-          if (AudioFileOpen == 0)
-          {
-            sprintf(file_name, "Mic%03d.wav", SDCardCounter - 1);
-
-            /* Create a file in the root directory.  */
-            status =  fx_file_create(&sdio_disk, file_name);
-
-            /* Check the create status.  */
-            if (status != FX_SUCCESS)
-            {
-              /* Check for an already created status */
-              if (status != FX_ALREADY_CREATED)
-              {
-                /* Create error, call error handler.  */
-                STBOX1_PRINTF("Error creating %s \r\n", file_name);
-                Error_Handler(__FILE__, __LINE__);
-              }
-            }
-
-            /* Open the test file.  */
-            status =  fx_file_open(&sdio_disk, &AudioFxFile, file_name, FX_OPEN_FOR_WRITE);
-
-            /* Check the file open status.  */
-            if (status != FX_SUCCESS)
-            {
-              /* Error opening file, call error handler.  */
-              STBOX1_PRINTF("Error opening MicXXX.csv\r\n");
-              Error_Handler(__FILE__, __LINE__);
-            }
-
-            /* Seek to the beginning of the test file.  */
-            status =  fx_file_seek(&AudioFxFile, 0);
-
-            /* Check the file seek status.  */
-            if (status != FX_SUCCESS)
-            {
-              /* Error performing file seek, call error handler.  */
-              Error_Handler(__FILE__, __LINE__);
-            }
-            AudioFileOpen = 1;
-            STBOX1_PRINTF("File %s open\r\n", file_name);
-
-            /* Initialize the Wav Header file */
-            WavProcess_HeaderInit();
-
-            /* Write the Wav header  */
-            status =  fx_file_write(&AudioFxFile, pAudioHeader, sizeof(pAudioHeader));
-
-            /* Check the file write status.  */
-            if (status != FX_SUCCESS)
-            {
-              /* Error writing to a file, call error handler.  */
-              STBOX1_PRINTF("Error writing MicXXX.csv\r\n");
-              Error_Handler(__FILE__, __LINE__);
-            }
-
-            /* Starting the Acquisition from Digital Microphone */
-            BSP_AUDIO_Init_t MicParams;
-
-            MicParams.BitsPerSample = 16;
-            MicParams.ChannelsNbr = 1;
-            MicParams.Device = ACTIVE_MICROPHONES_MASK;
-            MicParams.SampleRate = AUDIO_IN_SAMPLING_FREQUENCY;
-            MicParams.Volume = AUDIO_VOLUME_INPUT;
-
-            if (BSP_AUDIO_IN_Init(0 /*BSP_AUDIO_IN_INSTANCE*/, &MicParams) != BSP_ERROR_NONE)
-            {
-              STBOX1_PRINTF("ERROR Initializing MIC\r\n");
-              while (1);
-            }
-
-            if (BSP_AUDIO_IN_Record(0 /*BSP_AUDIO_IN_INSTANCE*/, (uint8_t *) OnBoard_PCM_Buffer,
-                                    PCM_AUDIO_IN_SAMPLES) != BSP_ERROR_NONE)
-            {
-              STBOX1_PRINTF("ERROR Starting MIC\r\n");
-              while (1);
-            }
-
-            STBOX1_PRINTF("MIC Start\r\n");
-
-          }
-          else
-          {
-            STBOX1_PRINTF("Error MicXXX.wav already opened\r\n");
-          }
-
-          /* --- open GpsNNN.csv alongside Sens/Mic --- */
+          /* --- open GpsNNN.csv BEFORE the mic block: if mic init hangs
+             or fails, we still want GPS to be logging. --- */
           if (GpsFileOpen == 0)
           {
             CHAR gps_header[] = "Time [mS], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP\r\n";
@@ -549,6 +478,84 @@ static void fx_thread_entry(ULONG thread_input)
             STBOX1_PRINTF("File %s open\r\n", file_name);
 
             fx_file_write(&GpsFxFile, gps_header, sizeof(gps_header) - 1);
+
+            fx_media_flush(&sdio_disk);
+            ErrorLog_Write("start: gps header written");
+          }
+
+          /* --- Mic: non-fatal — if init/record fails, log it and
+             continue without audio. Mic hardware has been observed to
+             hang silently on some hardware-modified boards; we must
+             not take the sensor/GPS logging down with it. --- */
+          if (AudioFileOpen == 0)
+          {
+            ErrorLog_Write("start: mic init begin");
+
+            BSP_AUDIO_Init_t MicParams;
+            MicParams.BitsPerSample = 16;
+            MicParams.ChannelsNbr = 1;
+            MicParams.Device = ACTIVE_MICROPHONES_MASK;
+            MicParams.SampleRate = AUDIO_IN_SAMPLING_FREQUENCY;
+            MicParams.Volume = AUDIO_VOLUME_INPUT;
+
+            if (BSP_AUDIO_IN_Init(0 /*BSP_AUDIO_IN_INSTANCE*/, &MicParams) != BSP_ERROR_NONE)
+            {
+              STBOX1_PRINTF("ERROR Initializing MIC\r\n");
+              ErrorLog_Write("start: mic init FAIL - continuing without audio");
+            }
+            else
+            {
+              ErrorLog_Write("start: mic init ok");
+
+              /* Only create the .wav file once the mic is confirmed alive.
+                 Avoids leaving an orphan 44-byte WAV on the card. */
+              sprintf(file_name, "Mic%03d.wav", SDCardCounter - 1);
+              status =  fx_file_create(&sdio_disk, file_name);
+              if (status != FX_SUCCESS && status != FX_ALREADY_CREATED)
+              {
+                STBOX1_PRINTF("Error creating %s \r\n", file_name);
+                Error_Handler(__FILE__, __LINE__);
+              }
+
+              status =  fx_file_open(&sdio_disk, &AudioFxFile, file_name, FX_OPEN_FOR_WRITE);
+              if (status != FX_SUCCESS)
+              {
+                STBOX1_PRINTF("Error opening MicXXX.wav\r\n");
+                Error_Handler(__FILE__, __LINE__);
+              }
+
+              fx_file_seek(&AudioFxFile, 0);
+
+              WavProcess_HeaderInit();
+              status = fx_file_write(&AudioFxFile, pAudioHeader, sizeof(pAudioHeader));
+              if (status != FX_SUCCESS)
+              {
+                STBOX1_PRINTF("Error writing MicXXX.wav\r\n");
+                Error_Handler(__FILE__, __LINE__);
+              }
+
+              AudioFileOpen = 1;
+
+              if (BSP_AUDIO_IN_Record(0 /*BSP_AUDIO_IN_INSTANCE*/, (uint8_t *) OnBoard_PCM_Buffer,
+                                      PCM_AUDIO_IN_SAMPLES) != BSP_ERROR_NONE)
+              {
+                STBOX1_PRINTF("ERROR Starting MIC\r\n");
+                ErrorLog_Write("start: mic record FAIL - closing .wav, continuing");
+                BSP_AUDIO_IN_DeInit(0);
+                fx_file_close(&AudioFxFile);
+                AudioFileOpen = 0;
+              }
+              else
+              {
+                ErrorLog_Write("start: mic running");
+                STBOX1_PRINTF("MIC Start\r\n");
+              }
+            }
+            fx_media_flush(&sdio_disk);
+          }
+          else
+          {
+            STBOX1_PRINTF("Error MicXXX.wav already opened\r\n");
           }
         }
         break;
@@ -632,13 +639,13 @@ static void fx_thread_entry(ULONG thread_input)
             if (BSP_AUDIO_IN_Stop(0 /*BSP_AUDIO_IN_INSTANCE*/) != BSP_ERROR_NONE)
             {
               STBOX1_PRINTF("ERROR Stopping MIC\r\n");
-              while (1);
+              ErrorLog_Write("stop: BSP_AUDIO_IN_Stop FAIL - continuing");
             }
 
             if (BSP_AUDIO_IN_DeInit(0 /*BSP_AUDIO_IN_INSTANCE*/) != BSP_ERROR_NONE)
             {
               STBOX1_PRINTF("ERROR De-Initializing MIC\r\n");
-              while (1);
+              ErrorLog_Write("stop: BSP_AUDIO_IN_DeInit FAIL - continuing");
             }
 
             STBOX1_PRINTF("MIC Stop\r\n");
@@ -686,34 +693,31 @@ static void fx_thread_entry(ULONG thread_input)
             STBOX1_PRINTF("File MicXXX.wav closed\r\n");
 
             AudioFileOpen = 0;
-
-            /* Close error log before closing media */
-            ErrorLog_Close();
-
-            /* Close the media.  */
-            status =  fx_media_close(&sdio_disk);
-
-            /* Check the media close status.  */
-            if (status != FX_SUCCESS)
-            {
-              /* Error closing the media, call error handler.  */
-              STBOX1_PRINTF("Error closing SD FX Media\r\n");
-              Error_Handler(__FILE__, __LINE__);
-            }
-
-            STBOX1_PRINTF("SD FX Media Closed\r\n");
-
-            STBOX1_PRINTF("|--------------------|\r\n");
-            STBOX1_PRINTF("| Queues summary:    |\r\n");
-            STBOX1_PRINTF("|--------------------|\r\n");
-            STBOX1_PRINTF("|   Queue Max: %4d  |\r\n", MessageMaxSize);
-            STBOX1_PRINTF("|--------------------|\r\n");
-
           }
           else
           {
-            STBOX1_PRINTF("Error MicXXX.wav Not opened\r\n");
+            STBOX1_PRINTF("MicXXX.wav not opened (mic init failed or disabled)\r\n");
           }
+
+          /* Close error log + media AFTER all file closes, unconditionally.
+             Previously the media_close was nested inside `if (AudioFileOpen)`;
+             if mic init failed, Sens/Gps got closed but media stayed open and
+             the SD card was left in an inconsistent state. */
+          ErrorLog_Close();
+
+          status =  fx_media_close(&sdio_disk);
+          if (status != FX_SUCCESS)
+          {
+            STBOX1_PRINTF("Error closing SD FX Media\r\n");
+            Error_Handler(__FILE__, __LINE__);
+          }
+          STBOX1_PRINTF("SD FX Media Closed\r\n");
+
+          STBOX1_PRINTF("|--------------------|\r\n");
+          STBOX1_PRINTF("| Queues summary:    |\r\n");
+          STBOX1_PRINTF("|--------------------|\r\n");
+          STBOX1_PRINTF("|   Queue Max: %4d  |\r\n", MessageMaxSize);
+          STBOX1_PRINTF("|--------------------|\r\n");
         }
         break;
         case COMMAND_SAVE_AUDIO:
@@ -764,10 +768,13 @@ static void fx_thread_entry(ULONG thread_input)
              * up-to-date. Without the user button wired up there is no
              * graceful stop — power-off at any time must still leave
              * playable files. Flush every ~1 s (100 samples @ 100 Hz)
-             * covers Sens/Mic/Gps since fx_media_flush is media-wide. */
+             * covers Sens/Mic/Gps since fx_media_flush is media-wide.
+             * Update clock before flush so directory-entry timestamps
+             * advance with wall-clock time. */
             if (++flush_counter >= 100)
             {
               flush_counter = 0;
+              UpdateFileXClock();
               fx_media_flush(&sdio_disk);
             }
           }
@@ -848,6 +855,51 @@ static void ErrorLog_BuildFilename(CHAR *buf)
   year = (d[7] - '0') * 1000 + (d[8] - '0') * 100 + (d[9] - '0') * 10 + (d[10] - '0');
 
   sprintf(buf, "Error_Log_Pump_Tsueri_%02d.%02d.%04d.log", day, month, year);
+}
+
+/**
+  * @brief  Set FileX's system date/time from compile date + elapsed ticks.
+  *         Files get a timestamp near the real wall-clock time instead of
+  *         the FAT default (31.12.16). No RTC is available on this board;
+  *         we fall back to (compile-date + seconds-since-boot). Call
+  *         before any fx_file_create or fx_media_flush that should get
+  *         an up-to-date stamp. Month/year rollover past the compile date
+  *         is not handled — "close enough" for multi-hour sessions.
+  * @retval None
+  */
+static void UpdateFileXClock(void)
+{
+  const char *months[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                          "Jul","Aug","Sep","Oct","Nov","Dec"};
+  const char *d = __DATE__;
+  const char *t = __TIME__;
+  UINT m = 1;
+  for (UINT i = 0; i < 12; i++)
+  {
+    if (d[0] == months[i][0] && d[1] == months[i][1] && d[2] == months[i][2])
+    {
+      m = i + 1;
+      break;
+    }
+  }
+  UINT day   = (d[4] == ' ') ? (UINT)(d[5] - '0') : (UINT)((d[4] - '0') * 10 + (d[5] - '0'));
+  UINT year  = (UINT)((d[7]-'0')*1000 + (d[8]-'0')*100 + (d[9]-'0')*10 + (d[10]-'0'));
+  UINT hour  = (UINT)((t[0]-'0')*10 + (t[1]-'0'));
+  UINT min   = (UINT)((t[3]-'0')*10 + (t[4]-'0'));
+  UINT sec   = (UINT)((t[6]-'0')*10 + (t[7]-'0'));
+
+  ULONG elapsed = tx_time_get() / 100;  /* ticks → seconds */
+  sec  += (UINT)(elapsed % 60);
+  min  += (UINT)(elapsed / 60);
+  if (sec >= 60) { min += sec / 60; sec %= 60; }
+  hour += min / 60;
+  min  %= 60;
+  day  += hour / 24;
+  hour %= 24;
+  /* Month/year rollover intentionally skipped. */
+
+  fx_system_date_set(year, m, day);
+  fx_system_time_set(hour, min, sec);
 }
 
 /**
