@@ -151,7 +151,13 @@ The firmware parses only `$GNRMC` and `$GNGGA` sentences. All other NMEA sentenc
 
 Data collected via the ST BLE Sensor app uses a slightly different format (date/time columns instead of raw ms timestamp).
 
-## Visualization Scripts
+## Visualization
+
+**Rust crate** `Utilities/rust/stbox-viz/` — in-progress replacement for the Python scripts below. Phase 1 (as of this commit) has feature-parity with `visualize_combined.py` (GPS map + nose angle + baro height + speed panels, Madgwick 6DOF fusion, GPS-anchored baro baseline, ride detection, Plotly CDN link). Missing from Rust for now: click-to-isolate ride buttons, URL anchors, rider classification, per-session output mode. Phases 2/3 will port `visualize_sensors`, `visualize_pumpfoil`, `animate_board_3d` and then the Python under `Utilities/scripts/` will be deleted. Until then both stacks coexist.
+
+Build: `cd Utilities/rust/stbox-viz && cargo build --release`. Run: `./target/release/stbox-viz <path/to/SensNNN.csv> -o html/`. GPS CSV auto-discovered as `<stem>_gps.csv` next to the sensor CSV.
+
+## Python Visualization Scripts (legacy, being ported)
 
 Python scripts in `Utilities/scripts/` for plotting sensor data:
 - `visualize_sensors.py` — sensor CSV + optional quaternion CSV plotting (auto-detects SD card vs BLE format)
