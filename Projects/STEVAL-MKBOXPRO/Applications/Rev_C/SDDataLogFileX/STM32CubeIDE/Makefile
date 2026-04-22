@@ -47,7 +47,8 @@ INCLUDES = \
   -I$(ROOT)/Drivers/BSP/Components/lsm6dsv16x \
   -I$(ROOT)/Drivers/BSP/Components/lis2mdl \
   -I$(ROOT)/Drivers/BSP/Components/lps22df \
-  -I$(ROOT)/Drivers/BSP/Components/stts22h
+  -I$(ROOT)/Drivers/BSP/Components/stts22h \
+  -I$(ROOT)/Drivers/BSP/Components/stc3115
 
 CFLAGS = $(CPU) $(DEFS) $(INCLUDES) -O2 -Wall -Wno-format -fdata-sections -ffunction-sections -g3
 
@@ -110,10 +111,12 @@ C_SOURCES = \
   $(ROOT)/Drivers/BSP/Components/lsm6dsv16x/lsm6dsv16x_reg.c \
   $(ROOT)/Drivers/BSP/Components/stts22h/stts22h.c \
   $(ROOT)/Drivers/BSP/Components/stts22h/stts22h_reg.c \
+  $(ROOT)/Drivers/BSP/Components/stc3115/STC3115_Driver.c \
   $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro.c \
   $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_audio.c \
   $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_bus.c \
   $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_env_sensors.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_gg.c \
   $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_motion_sensors.c \
   $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_sd.c \
   $(ROOT)/Middlewares/ST/filex/common/drivers/fx_stm32_sd_driver.c \

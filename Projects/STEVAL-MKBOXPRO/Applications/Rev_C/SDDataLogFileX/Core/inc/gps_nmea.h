@@ -52,6 +52,13 @@ void GPS_Init(void);
    Returns 1 if the fix was updated since the last call, 0 otherwise. */
 uint8_t GPS_GetLatestFix(GPS_Fix_t *out);
 
+/* Copy the most recent GPS wall-clock (UTC) parsed from $GNRMC.
+   Returns 1 if a valid date+time has been seen since power-on, 0 otherwise.
+   Year is four digits (e.g. 2026). Hour/min/sec are integers; sub-second
+   milliseconds are ignored — good enough to seed FileX's FAT clock. */
+uint8_t GPS_GetWallClock(uint32_t *year, uint32_t *month, uint32_t *day,
+                         uint32_t *hour, uint32_t *minute, uint32_t *second);
+
 /* Called from UART4_IRQHandler via HAL_UART_IRQHandler -> RxCpltCallback */
 void GPS_UART_RxByte(uint8_t byte);
 

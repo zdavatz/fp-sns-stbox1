@@ -26,6 +26,14 @@ static uint16_t LineLen;
 static GPS_Fix_t LatestFix;
 static volatile uint8_t FixUpdated;
 
+/* UTC wall-clock from $GNRMC (time + date fields). Populated only on
+   valid RMC (status 'A'). Used to seed FileX's FAT clock so Sens/Gps/Bat
+   files are stamped with today's actual date instead of the compile date.
+   Year is four-digit (2026, not 26). Sub-seconds discarded. */
+static volatile uint8_t  WallClockValid;
+static uint32_t WallClockYear, WallClockMonth, WallClockDay;
+static uint32_t WallClockHour, WallClockMin,   WallClockSec;
+
 /* ------------------------------------------------------------------ */
 /* NMEA parser                                                        */
 /* ------------------------------------------------------------------ */
@@ -85,6 +93,7 @@ static void parse_rmc(char *fields[], int n)
   const char *ew     = fields[6];
   const char *spd    = fields[7];
   const char *cog    = fields[8];
+  const char *date   = fields[9];  /* "ddmmyy" */
 
   if (status[0] != 'A') return;   /* 'V' = void */
 
@@ -99,6 +108,20 @@ static void parse_rmc(char *fields[], int n)
   LatestFix.TickMs   = tx_time_get();
   LatestFix.Valid    = 1;
   FixUpdated         = 1;
+
+  /* Parse date + time into wall-clock fields. UTC is "hhmmss.ss",
+     date is "ddmmyy". The 21st century assumption below is fine for this
+     application (the u-blox MAX-M10S launched in 2022). */
+  if (utc && strlen(utc) >= 6 && date && strlen(date) >= 6)
+  {
+    WallClockHour  = (uint32_t)((utc[0]-'0')*10 + (utc[1]-'0'));
+    WallClockMin   = (uint32_t)((utc[2]-'0')*10 + (utc[3]-'0'));
+    WallClockSec   = (uint32_t)((utc[4]-'0')*10 + (utc[5]-'0'));
+    WallClockDay   = (uint32_t)((date[0]-'0')*10 + (date[1]-'0'));
+    WallClockMonth = (uint32_t)((date[2]-'0')*10 + (date[3]-'0'));
+    WallClockYear  = (uint32_t)(2000 + (date[4]-'0')*10 + (date[5]-'0'));
+    WallClockValid = 1;
+  }
 
   tx_interrupt_control(primask);
 }
@@ -338,4 +361,22 @@ uint8_t GPS_GetLatestFix(GPS_Fix_t *out)
   FixUpdated = 0;
   tx_interrupt_control(primask);
   return updated;
+}
+
+uint8_t GPS_GetWallClock(uint32_t *year, uint32_t *month, uint32_t *day,
+                         uint32_t *hour, uint32_t *minute, uint32_t *second)
+{
+  UINT primask = tx_interrupt_control(TX_INT_DISABLE);
+  uint8_t valid = WallClockValid;
+  if (valid)
+  {
+    if (year)   *year   = WallClockYear;
+    if (month)  *month  = WallClockMonth;
+    if (day)    *day    = WallClockDay;
+    if (hour)   *hour   = WallClockHour;
+    if (minute) *minute = WallClockMin;
+    if (second) *second = WallClockSec;
+  }
+  tx_interrupt_control(primask);
+  return valid;
 }

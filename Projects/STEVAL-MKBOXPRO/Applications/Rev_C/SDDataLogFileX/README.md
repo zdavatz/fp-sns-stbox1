@@ -15,12 +15,29 @@ For each log session, the board saves:
 - one .wav file that it's the output of the digital microphone
 - one .csv file with the sensors logged at 100Hz
 - one GpsNNN.csv file with 10 Hz GPS fixes (only when a u-blox MAX-M10S module is connected via UART4)
+- one BatNNN.csv file with 1 Hz battery readings from the on-board STC3115 fuel gauge
 
-The FAT directory entries are flushed every ~1 s during logging (`fx_media_flush` inside `COMMAND_SAVE_SENSORS`), so the SensNNN.csv and GpsNNN.csv remain valid even after an ungraceful power-off — necessary on hardware-modified boards where the user button is disconnected and there is no graceful stop. At most the final second of sensor data is lost. The WAV header is only finalized on graceful stop; after an ungraceful power-off the audio data is still on the card, but the header keeps pointing at the init dummy size.
+The FAT directory entries are flushed every ~1 s during logging (`fx_media_flush` inside `COMMAND_SAVE_SENSORS`), so the SensNNN.csv, GpsNNN.csv, and BatNNN.csv remain valid even after an ungraceful power-off — necessary on hardware-modified boards where the user button is disconnected and there is no graceful stop. At most the final second of sensor data is lost. The WAV header is only finalized on graceful stop; after an ungraceful power-off the audio data is still on the card, but the header keeps pointing at the init dummy size.
 
-File timestamps are stamped from the compile date + seconds-since-boot (`UpdateFileXClock()`), so files land with approximately wall-clock dates instead of FAT's default 31.12.16.
+File timestamps start from the compile date + seconds-since-boot (`UpdateFileXClock()`) but are automatically overridden by GPS UTC once the first `$GNRMC` fix with a valid date arrives — `gps_thread` calls `SetClockBaseFromGPS(...)` which shifts the FAT directory-entry stamps on subsequent flushes to today's real date. Without GPS lock, files keep the compile-date fallback.
 
 Audio logging is disabled by default via `STBOX1_LOG_AUDIO 0` in `stbox1_config.h`. On hardware-modified boards (3.3V mod, disconnected connectors) `BSP_AUDIO_IN_Init()` can hang without ever returning, which blocks `fx_thread` mid-START_LOG and stops all sensor and GPS writes. Set `STBOX1_LOG_AUDIO 1` only on an unmodified board. When disabled, no `MicNNN.wav` files are created and the stage-marker `start: mic disabled at compile time` appears in the error log.
+
+### <b>Battery logging</b>
+
+The STEVAL-MKBOXPRO has an STC3115 fuel-gauge IC on I²C4; firmware reads it once per second (in the same 100-sample flush tick as the sensor data) and writes a row to `BatNNN.csv`:
+
+```
+Time [mS], Voltage [mV], SOC [0.1%], Current [100uA]
+```
+
+- **Voltage** is battery terminal voltage in millivolts (e.g. 4150 for 4.15 V)
+- **SOC** is state-of-charge in tenths of a percent (e.g. 983 = 98.3 %)
+- **Current** is signed in 100 µA units; positive = charging, negative = discharging
+
+The gauge is initialised once per boot on the first START_LOG (`BSP_GG_Init`); a per-session start-of-session and end-of-session reading also land in the error log as human-readable markers (`start: battery 4150 mV 98.3%` / `stop: battery 3820 mV 61.2%`), so you can see drain at a glance without opening the CSV.
+
+Gated by `STBOX1_LOG_BATTERY 1` in `stbox1_config.h`. Set to `0` if the gauge ever hangs like the MIC did on hardware-modified boards — same non-fatal pattern, the rest of the logger keeps running. If gauge init returns an I²C error, an error-log marker (`start: gas gauge init FAIL - continuing without battery log`) is written and battery logging is skipped for the rest of the boot.
 
 ### <b>GPS module (u-blox MAX-M10S)</b>
 

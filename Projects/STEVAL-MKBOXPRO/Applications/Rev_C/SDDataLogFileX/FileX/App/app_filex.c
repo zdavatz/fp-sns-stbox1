@@ -29,6 +29,7 @@
 #include "SensorTileBoxPro_env_sensors.h"
 #include "SensorTileBoxPro_motion_sensors.h"
 #include "SensorTileBoxPro_audio.h"
+#include "SensorTileBoxPro_gg.h"
 #include "main.h"
 #include "gps_nmea.h"
 /* USER CODE END Includes */
@@ -139,6 +140,27 @@ static volatile CHAR GpsFileOpen = 0;
 FX_FILE         ErrorLogFxFile;
 static volatile CHAR ErrorLogFileOpen = 0;
 
+#if STBOX1_LOG_BATTERY
+/* STC3115 fuel-gauge state. Init attempt happens once on first START_LOG
+   (guarded by BatteryInitAttempted). On I2C failure we disable battery
+   logging for the remainder of the boot but keep the rest of the logger
+   running — same non-fatal pattern used for the MIC. */
+FX_FILE              BatteryFxFile;
+static volatile CHAR BatteryFileOpen        = 0;
+static volatile CHAR BatteryInitAttempted   = 0;
+static volatile CHAR BatteryInitOk          = 0;
+static void         *HandleGGComponent      = NULL;
+#endif /* STBOX1_LOG_BATTERY */
+
+/* Wall-clock base for UpdateFileXClock. Starts as __DATE__/__TIME__ at
+   boot; once $GNRMC delivers a valid date+time, gps_thread overwrites the
+   base so FAT timestamps on Sens/Gps/Bat files track UTC instead of the
+   stale compile date. */
+static UINT  ClockBaseYear, ClockBaseMonth, ClockBaseDay;
+static UINT  ClockBaseHour, ClockBaseMin,   ClockBaseSec;
+static ULONG ClockBaseTick;  /* tx_time_get() at the moment base was set */
+static volatile CHAR ClockSeededFromGPS = 0;
+
 /* For Understanding Max Message Queues size */
 INT MessagePushed = 0;
 INT MessageRemoved = 0;
@@ -162,6 +184,9 @@ static uint32_t WavProcess_HeaderUpdate(uint32_t len);
 static void ErrorLog_BuildFilename(CHAR *buf);
 static void ErrorLog_Open(void);
 static INT  CheckAndApplyFirmwareUpdate(void);
+static void InitClockBaseFromCompileDate(void);
+static void SetClockBaseFromGPS(UINT year, UINT month, UINT day,
+                                UINT hour, UINT minute, UINT second);
 static void UpdateFileXClock(void);
 /* USER CODE END PFP */
 
@@ -200,8 +225,10 @@ UINT MX_FileX_Init(VOID *memory_ptr)
   fx_system_initialize();
 
   /* Seed the FileX system clock so files don't get FAT's default
-     31.12.16 timestamp. Re-applied before each file create and
-     periodic flush during logging. */
+     31.12.16 timestamp. Compile-date base is used until the first
+     $GNRMC fix, after which gps_thread overrides it with GPS UTC.
+     Re-applied before each file create and periodic flush. */
+  InitClockBaseFromCompileDate();
   UpdateFileXClock();
 
   STBOX1_PRINTF("FileX Thread Created\r\n");
@@ -483,6 +510,69 @@ static void fx_thread_entry(ULONG thread_input)
             ErrorLog_Write("start: gps header written");
           }
 
+#if STBOX1_LOG_BATTERY
+          /* --- Battery: non-fatal. If STC3115 I2C init fails, log it and
+             continue without battery log. Init runs once per boot; the
+             BatteryInitAttempted flag keeps a stop/start cycle from
+             re-probing a known-bad gauge. --- */
+          if (!BatteryInitAttempted)
+          {
+            BatteryInitAttempted = 1;
+            DrvStatusTypeDef gg_st = BSP_GG_Init(&HandleGGComponent);
+            if (gg_st == COMPONENT_OK || gg_st == COMPONENT_BATT_FAIL)
+            {
+              BatteryInitOk = 1;
+              ErrorLog_Write("start: gas gauge init ok");
+            }
+            else
+            {
+              BatteryInitOk = 0;
+              ErrorLog_Write("start: gas gauge init FAIL - continuing without battery log");
+            }
+          }
+
+          if (BatteryInitOk && BatteryFileOpen == 0)
+          {
+            CHAR bat_header[] = "Time [mS], Voltage [mV], SOC [0.1%], Current [100uA]\r\n";
+            sprintf(file_name, "Bat%03d.csv", SDCardCounter - 1);
+
+            status = fx_file_create(&sdio_disk, file_name);
+            if (status != FX_SUCCESS && status != FX_ALREADY_CREATED)
+            {
+              ErrorLog_Write("start: bat file create FAIL - skipping battery log");
+            }
+            else
+            {
+              status = fx_file_open(&sdio_disk, &BatteryFxFile, file_name, FX_OPEN_FOR_WRITE);
+              if (status != FX_SUCCESS)
+              {
+                ErrorLog_Write("start: bat file open FAIL - skipping battery log");
+              }
+              else
+              {
+                fx_file_seek(&BatteryFxFile, 0);
+                BatteryFileOpen = 1;
+                fx_file_write(&BatteryFxFile, bat_header, sizeof(bat_header) - 1);
+                fx_media_flush(&sdio_disk);
+
+                /* Log starting voltage + SOC to the error log for quick
+                   post-session visibility without opening the CSV. */
+                uint8_t v_mode;
+                uint32_t start_v = 0, start_soc = 0;
+                BSP_GG_Task(HandleGGComponent, &v_mode);
+                BSP_GG_GetVoltage(HandleGGComponent, &start_v);
+                BSP_GG_GetSOC(HandleGGComponent, &start_soc);
+                CHAR m[96];
+                sprintf(m, "start: battery %lu mV %lu.%lu%%",
+                        start_v, start_soc / 10, start_soc % 10);
+                ErrorLog_Write(m);
+              }
+            }
+          }
+#else  /* STBOX1_LOG_BATTERY */
+          ErrorLog_Write("start: battery disabled at compile time");
+#endif /* STBOX1_LOG_BATTERY */
+
 #if STBOX1_LOG_AUDIO
           /* --- Mic: non-fatal — if init/record fails, log it and
              continue without audio. Mic hardware has been observed to
@@ -638,6 +728,33 @@ static void fx_thread_entry(ULONG thread_input)
             GpsFileOpen = 0;
           }
 
+#if STBOX1_LOG_BATTERY
+          if (BatteryFileOpen)
+          {
+            /* One final read for the end-of-session marker before close. */
+            if (BatteryInitOk)
+            {
+              uint8_t  v_mode;
+              uint32_t end_v = 0, end_soc = 0;
+              BSP_GG_Task(HandleGGComponent, &v_mode);
+              BSP_GG_GetVoltage(HandleGGComponent, &end_v);
+              BSP_GG_GetSOC(HandleGGComponent, &end_soc);
+              CHAR m[96];
+              sprintf(m, "stop: battery %lu mV %lu.%lu%%",
+                      end_v, end_soc / 10, end_soc % 10);
+              ErrorLog_Write(m);
+            }
+            status = fx_file_close(&BatteryFxFile);
+            if (status != FX_SUCCESS)
+            {
+              STBOX1_PRINTF("Error closing BatXXX.csv\r\n");
+              Error_Handler(__FILE__, __LINE__);
+            }
+            STBOX1_PRINTF("File BatXXX.csv closed\r\n");
+            BatteryFileOpen = 0;
+          }
+#endif /* STBOX1_LOG_BATTERY */
+
           if (AudioFileOpen)
           {
 #if STBOX1_LOG_AUDIO
@@ -781,6 +898,28 @@ static void fx_thread_entry(ULONG thread_input)
             {
               flush_counter = 0;
               UpdateFileXClock();
+
+#if STBOX1_LOG_BATTERY
+              /* One battery row per ~1 s, written here so it ends up in
+                 the same fx_media_flush as the sensor FAT directory
+                 update — an ungraceful power-off still leaves the battery
+                 CSV valid up to the last flush. */
+              if (BatteryFileOpen && BatteryInitOk)
+              {
+                uint8_t  v_mode;
+                uint32_t bv = 0, bsoc = 0;
+                int32_t  bcur = 0;
+                BSP_GG_Task(HandleGGComponent, &v_mode);
+                BSP_GG_GetVoltage(HandleGGComponent, &bv);
+                BSP_GG_GetSOC(HandleGGComponent, &bsoc);
+                BSP_GG_GetCurrent(HandleGGComponent, &bcur);
+                CHAR  bline[96];
+                INT   blen = sprintf(bline, "%ld, %lu, %lu, %ld\r\n",
+                                     RMsg->MsgTime, bv, bsoc, bcur);
+                fx_file_write(&BatteryFxFile, bline, blen);
+              }
+#endif /* STBOX1_LOG_BATTERY */
+
               fx_media_flush(&sdio_disk);
             }
           }
@@ -864,16 +1003,13 @@ static void ErrorLog_BuildFilename(CHAR *buf)
 }
 
 /**
-  * @brief  Set FileX's system date/time from compile date + elapsed ticks.
-  *         Files get a timestamp near the real wall-clock time instead of
-  *         the FAT default (31.12.16). No RTC is available on this board;
-  *         we fall back to (compile-date + seconds-since-boot). Call
-  *         before any fx_file_create or fx_media_flush that should get
-  *         an up-to-date stamp. Month/year rollover past the compile date
-  *         is not handled — "close enough" for multi-hour sessions.
+  * @brief  Initialise the wall-clock base from the compile date/time.
+  *         Called once during MX_FileX_Init so UpdateFileXClock has a
+  *         sensible base before the first GPS fix arrives. Overridden
+  *         later by SetClockBaseFromGPS when $GNRMC delivers real UTC.
   * @retval None
   */
-static void UpdateFileXClock(void)
+static void InitClockBaseFromCompileDate(void)
 {
   const char *months[] = {"Jan","Feb","Mar","Apr","May","Jun",
                           "Jul","Aug","Sep","Oct","Nov","Dec"};
@@ -888,13 +1024,53 @@ static void UpdateFileXClock(void)
       break;
     }
   }
-  UINT day   = (d[4] == ' ') ? (UINT)(d[5] - '0') : (UINT)((d[4] - '0') * 10 + (d[5] - '0'));
-  UINT year  = (UINT)((d[7]-'0')*1000 + (d[8]-'0')*100 + (d[9]-'0')*10 + (d[10]-'0'));
-  UINT hour  = (UINT)((t[0]-'0')*10 + (t[1]-'0'));
-  UINT min   = (UINT)((t[3]-'0')*10 + (t[4]-'0'));
-  UINT sec   = (UINT)((t[6]-'0')*10 + (t[7]-'0'));
+  ClockBaseYear  = (UINT)((d[7]-'0')*1000 + (d[8]-'0')*100 + (d[9]-'0')*10 + (d[10]-'0'));
+  ClockBaseMonth = m;
+  ClockBaseDay   = (d[4] == ' ') ? (UINT)(d[5] - '0') : (UINT)((d[4] - '0') * 10 + (d[5] - '0'));
+  ClockBaseHour  = (UINT)((t[0]-'0')*10 + (t[1]-'0'));
+  ClockBaseMin   = (UINT)((t[3]-'0')*10 + (t[4]-'0'));
+  ClockBaseSec   = (UINT)((t[6]-'0')*10 + (t[7]-'0'));
+  ClockBaseTick  = 0;
+}
 
-  ULONG elapsed = tx_time_get() / 100;  /* ticks → seconds */
+/**
+  * @brief  Overwrite the wall-clock base with GPS UTC. Called by gps_thread
+  *         once $GNRMC delivers a valid date+time, so Sens/Gps/Bat files
+  *         created (or flushed) afterwards get today's real FAT timestamp
+  *         instead of the stale compile date.
+  * @retval None
+  */
+static void SetClockBaseFromGPS(UINT year, UINT month, UINT day,
+                                UINT hour, UINT minute, UINT second)
+{
+  ClockBaseYear  = year;
+  ClockBaseMonth = month;
+  ClockBaseDay   = day;
+  ClockBaseHour  = hour;
+  ClockBaseMin   = minute;
+  ClockBaseSec   = second;
+  ClockBaseTick  = tx_time_get();
+  ClockSeededFromGPS = 1;
+}
+
+/**
+  * @brief  Set FileX's system date/time from (base + ticks-since-base).
+  *         Base is the compile date at boot, or the most recent GPS UTC
+  *         if a fix has been seen. Files land with approximately wall-clock
+  *         timestamps instead of FAT's default 31.12.16. Month/year
+  *         rollover past the base date is not handled.
+  * @retval None
+  */
+static void UpdateFileXClock(void)
+{
+  UINT year = ClockBaseYear;
+  UINT m    = ClockBaseMonth;
+  UINT day  = ClockBaseDay;
+  UINT hour = ClockBaseHour;
+  UINT min  = ClockBaseMin;
+  UINT sec  = ClockBaseSec;
+
+  ULONG elapsed = (tx_time_get() - ClockBaseTick) / 100;  /* ticks → seconds */
   sec  += (UINT)(elapsed % 60);
   min  += (UINT)(elapsed / 60);
   if (sec >= 60) { min += sec / 60; sec %= 60; }
@@ -1551,6 +1727,25 @@ static void gps_thread_entry(ULONG thread_input)
   while (1)
   {
     tx_thread_sleep(100);   /* 1 s @ 10 ms/tick */
+
+    /* Seed FileX's wall-clock base from GPS UTC, once. Runs independently
+       of GpsFileOpen so the base is ready as soon as the first fix lands
+       — subsequent fx_media_flush calls (which run UpdateFileXClock) then
+       stamp Sens/Gps/Bat directory entries with today's real date instead
+       of the stale compile date. */
+    if (!ClockSeededFromGPS)
+    {
+      uint32_t gy, gmo, gd, gh, gmi, gs;
+      if (GPS_GetWallClock(&gy, &gmo, &gd, &gh, &gmi, &gs))
+      {
+        SetClockBaseFromGPS(gy, gmo, gd, gh, gmi, gs);
+        CHAR m[96];
+        sprintf(m, "clock: seeded from GPS %04lu-%02lu-%02lu %02lu:%02lu:%02lu UTC",
+                (unsigned long)gy, (unsigned long)gmo, (unsigned long)gd,
+                (unsigned long)gh, (unsigned long)gmi, (unsigned long)gs);
+        ErrorLog_Write(m);
+      }
+    }
 
     if (!GpsFileOpen) continue;
 

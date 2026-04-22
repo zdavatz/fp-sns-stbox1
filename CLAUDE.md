@@ -90,13 +90,15 @@ Each application follows the same layout:
 - `BLE_FORCE_RESCAN` — force BLE service re-scan (disable for some Android compatibility)
 - `STBOX1_UPDATE_ENV` / `STBOX1_UPDATE_INV` — sensor polling intervals (timer ticks)
 - `STBOX1_LOG_AUDIO` (SDDataLogFileX only) — gates all `BSP_AUDIO_IN_*` calls and `.wav` file creation. Default `0`. Set to `1` only on unmodified hardware. On the 3.3V-modded board `BSP_AUDIO_IN_Init` blocks with no return, which hangs `fx_thread` mid-START_LOG before it can write sensor or GPS samples. Keep it off unless you actively need the on-board microphone.
+- `STBOX1_LOG_BATTERY` (SDDataLogFileX only) — gates the STC3115 fuel-gauge path and `BatNNN.csv` file creation. Default `1`. Gauge init (`BSP_GG_Init`) runs once per boot on first START_LOG; I²C failure is non-fatal — writes a marker to the error log and skips battery logging for the remainder of the boot, without taking sensor/GPS logging down. Set to `0` only if the STC3115 ever hangs the way the MIC did on hardware-modified boards.
 
 ## SD Card Data Format (SDDataLogFileX)
 
-The data logging application creates three files per session on the SD card:
+The data logging application creates up to four files per session on the SD card:
 - `SensNNN.csv` — sensor CSV at ~100 Hz: timestamp (ticks), acc XYZ (mg), gyro XYZ (mdps), mag XYZ (mgauss), pressure (hPa), temperature (°C)
 - `MicNNN.wav` — mono 16-bit PCM WAV at 16 kHz from the onboard digital microphone
 - `GpsNNN.csv` — GPS fixes at 10 Hz from u-blox MAX-M10S: timestamp (ticks), UTC (hhmmss.ss), lat/lon (decimal degrees, signed), alt (m), speed (km/h), course (deg), fix quality, num satellites, HDOP. Rows only when a new fix is parsed. Empty (header only) if GPS has no fix or module not connected.
+- `BatNNN.csv` — battery at 1 Hz from STC3115 fuel gauge on I²C4: timestamp (ticks), voltage (mV), SOC (0.1%), current (100 µA, signed: positive = charging). Written from the same `COMMAND_SAVE_SENSORS` flush tick as the sensor data, so ungraceful power-off never leaves a 0-byte battery CSV. Start-of-session and end-of-session readings also land in the error log as `start: battery 4150 mV 98.3%` / `stop: battery 3820 mV 61.2%` markers.
 
 Gyroscope full-scale is 500 dps (17.5 mdps/LSB) for good fusion resolution. Accelerometer is 4g (0.122 mg/LSB).
 Timestamps are ThreadX tick counts (1 tick = 10ms), not raw milliseconds.
@@ -107,9 +109,11 @@ LED behavior: On every boot main() runs `BootStageBlink(n)` — 1 green blink af
 
 `app_filex.c` calls `fx_media_flush(&sdio_disk)` every 100 sensor samples (~1 s @ 100 Hz) inside the `COMMAND_SAVE_SENSORS` case. This keeps FAT directory entries (file sizes) up-to-date so an ungraceful power-off — the normal termination on this hardware, since the user button is physically disconnected — still leaves readable Sens/Gps/error-log files. Without the flush, FAT only updates file size on `fx_file_close`, so power-off mid-session shows 0-byte files even though data sectors were written. The WAV header is *not* updated in the same path (size is only written back on graceful stop), so the .wav header keeps pointing at the init dummy size (60 s) after ungraceful stop — audio data is on the card, but players may truncate or overread.
 
-`UpdateFileXClock()` stamps FileX's system date/time from `__DATE__` + `__TIME__` + `tx_time_get()/100` seconds. Called at FileX init, before each file create, and before each periodic flush. Without it, all files show FAT's default `31.12.16` timestamp; with it, files show approximately wall-clock time (build date + runtime seconds). Month/year rollover past the compile date is intentionally not handled — re-flash the firmware instead.
+`UpdateFileXClock()` stamps FileX's system date/time from a wall-clock *base* plus `(tx_time_get() - ClockBaseTick)/100` seconds. The base starts as `__DATE__` + `__TIME__` (compile date) at boot, but `gps_thread` overwrites it via `SetClockBaseFromGPS(...)` as soon as the first `$GNRMC` arrives with a valid date — so files created before GPS lock land with the stale compile date, and everything after gets today's real UTC. The error log filename is still constructed from `__DATE__` once at boot (before any GPS fix) so it keeps the compile-date format; only the FAT directory entries migrate to GPS time. Month/year rollover past the base date is not handled.
 
-START_LOG writes progress markers to the error log between each init step (`sens header written`, `gps header written`, `mic init begin`, `mic init ok` / `mic init FAIL`, `mic running`). A silent hang leaves the last successful marker on SD, so you can tell exactly where the firmware got stuck. The `mic init begin` marker without a following ok/FAIL is the signature of a hardware-modified-board MIC hang — the fix is to set `STBOX1_LOG_AUDIO 0`.
+START_LOG / gps_thread writes a `clock: seeded from GPS YYYY-MM-DD HH:MM:SS UTC` line to the error log at the moment of seeding so you can see exactly when the FAT timestamps switched over.
+
+START_LOG writes progress markers to the error log between each init step (`sens header written`, `gps header written`, `gas gauge init ok` / `init FAIL`, `battery START mV START%`, `mic init begin`, `mic init ok` / `mic init FAIL`, `mic running`). A silent hang leaves the last successful marker on SD, so you can tell exactly where the firmware got stuck. The `mic init begin` marker without a following ok/FAIL is the signature of a hardware-modified-board MIC hang — the fix is to set `STBOX1_LOG_AUDIO 0`. Same pattern applies for the gauge: `gas gauge init FAIL` means the STC3115 isn't responding on I²C4; the rest of the logger still runs (battery CSV is skipped for that boot).
 
 STOP_LOG closes all files and the SD media regardless of `AudioFileOpen`. The earlier version nested `fx_media_close` inside the audio block, which meant that when MIC init failed or was disabled, the SD media stayed open and the card was left in an inconsistent state on graceful stop. Also the GPS file is created and flushed *before* the MIC init block so a MIC hang cannot prevent GPS data from landing on the card.
 

@@ -114,6 +114,29 @@ make GPS_RATE_HZ=25
 
 Values outside `[1, 25]` trip a compile-time `#error` in `stbox1_config.h`. IDE builds that don't define the macro get the 10 Hz default.
 
+Once the first `$GNRMC` with a valid date+time arrives, `gps_thread` seeds FileX's wall-clock base with the GPS UTC — every file created or flushed after that moment gets today's real FAT timestamp (`gps_nmea.c: GPS_GetWallClock`, `app_filex.c: SetClockBaseFromGPS`). Files written before GPS lock still carry the compile-date fallback. The moment of seeding is logged to the SD error log as `clock: seeded from GPS YYYY-MM-DD HH:MM:SS UTC`. The error-log filename itself is built once at boot from `__DATE__` and is not renamed — only FAT directory entries on new files migrate to GPS time.
+
+### Battery CSV: `BatNNN.csv` (on by default)
+
+CSV at 1 Hz from the on-board STC3115 fuel gauge on I²C4:
+
+```
+Time [mS], Voltage [mV], SOC [0.1%], Current [100uA]
+```
+
+| Column | Unit | Source |
+|--------|------|--------|
+| Time | ThreadX ticks (1 tick = 10 ms) | System |
+| Voltage | millivolts (e.g. 4150 = 4.15 V) | STC3115 |
+| SOC | tenths of a percent (e.g. 983 = 98.3 %) | STC3115 |
+| Current | 100 µA units, signed (positive = charging, negative = discharging) | STC3115 |
+
+One row per second, written from the same 100-sample flush tick as the sensor data so the FAT directory entry stays up to date. Battery CSV `NNN` matches the corresponding `SensNNN.csv` / `GpsNNN.csv`.
+
+Start-of-session and end-of-session readings also land in the error log as human-readable markers (`start: battery 4150 mV 98.3%` / `stop: battery 3820 mV 61.2%`), so you can see session-over-session drain without opening the CSV.
+
+Gated by `STBOX1_LOG_BATTERY 1` in `stbox1_config.h` (default on). Gauge init runs once per boot on first START_LOG; I²C failure writes a `start: gas gauge init FAIL - continuing without battery log` marker to the error log and skips battery logging for the rest of the boot, without taking sensor/GPS logging down. Set to `0` only if the STC3115 ever hangs the way the MIC did on hardware-modified boards.
+
 ### LED Behavior
 
 Boot sequence (every power-on):

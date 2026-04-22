@@ -59,6 +59,12 @@ extern "C" {
    only on an unmodified SensorTile.box PRO. */
 #define STBOX1_LOG_AUDIO 0
 
+/* Battery logging (BatNNN.csv via STC3115 fuel gauge on I2C4).
+   One row per second: timestamp, voltage mV, SOC 0.1%, current 100uA.
+   Safety valve — set to 0 if the STC3115 init ever hangs the way the
+   MIC did on hardware-modified boards. */
+#define STBOX1_LOG_BATTERY 1
+
 #define STTS22H_ODR 1.0f /* ODR = 1.0Hz */
 #define ISM330DHCX_ACC_ODR 104.0f /* ODR = 104Hz */
 #define ISM330DHCX_ACC_FS 4 /* FS = 4g */
