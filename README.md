@@ -175,57 +175,49 @@ If no `firmware.bin` is found, normal SD logging starts as usual. The update use
 
 See [**Documentation/Flash_Firmware_Mac.pdf**](Documentation/Flash_Firmware_Mac.pdf) for the full Mac flashing guide — covers the SD card method plus STM32CubeProgrammer GUI and CLI (`STM32_Programmer_CLI`, `dfu-util`) alternatives.
 
-## Visualization Scripts
+## Visualization
 
-Python scripts for plotting sensor and quaternion data are in `Utilities/scripts/`:
+Rust crate at `Utilities/rust/stbox-viz/` — single binary, no Python/venv required. Build once with `cd Utilities/rust/stbox-viz && cargo build --release` then run from the repo root:
 
-- **`sensor_fusion.py`** — Madgwick AHRS sensor fusion: computes quaternions from raw accelerometer and gyroscope data (SD card CSV format). Default is 6DOF IMU-only mode (no magnetometer) because the LIS2MDL magnetometer drifts over time, corrupting yaw and coupling into roll/pitch. Use `--use-mag` for 9DOF mode if magnetometer is reliable.
-  ```
-  python Utilities/scripts/sensor_fusion.py sensor_data.csv [beta] [output.csv] [--use-mag]
-  ```
-- **`visualize_sensors.py`** — Plot sensor CSV data and quaternion orientation. Auto-detects SD card format (raw sensors → Madgwick fusion) vs BLE format (pre-computed quaternions).
-  ```
-  python Utilities/scripts/visualize_sensors.py sensor_data.csv [quaternion_data.csv] [-o OUTPUT_DIR]
-  ```
-- **`visualize_pumpfoil.py`** — Pumpfoil session analysis: pump cadence spectrogram and movement phase detection.
-  ```
-  python Utilities/scripts/visualize_pumpfoil.py sensor_data.csv [-o OUTPUT_DIR]
-  ```
-- **`visualize_combined.py`** — Interactive HTML page combining the GPS track on an OpenStreetMap-style basemap with synchronised board-angle, baro-derived board-height-above-water, and speed time-series. Rides over water are auto-isolated from sustained GPS movement (not pitch oscillation, so smooth flights don't get missed), classified by rider via a UTC split point, and exposed as URL anchors — share e.g. `html/viz_<stem>.html#s3` to point at a specific ride. Click a ride button or anchor to hide all other rides and auto-zoom the map + time-series to that ride.
-  ```
-  python Utilities/scripts/visualize_combined.py sensor_data.csv [gps.csv] \
-    [-o html/] [--rider-split-utc HH:MM:SS] [--per-session]
-  ```
-  Key defaults and conventions:
-  - Speed is **position-derived (haversine)** at 1 Hz, clamped at 60 km/h (multipath glitches), 5 s median-smoothed, y-axis pinned to 0–30 km/h.
-  - Board height above water uses the **LPS22DF barometer** with a 10 s rolling-minimum baseline as water reference. Values above 80 cm (mast length) + 10 cm tolerance → NaN; y-axis pinned to [−0.05, 0.95 m] with a dotted red mast-ceiling line. GPS altitude is not used — its 5–10 m vertical error cannot resolve pump motion.
-  - Hover on any GPS marker shows speed, nose angle, and height-above-water together.
-  - Firmware rider assignment: halves rule by default (first half = Peter, second half = Ayano). Override with `--rider-split-utc 07:04:30` when video evidence points elsewhere.
+```sh
+# Interactive Plotly HTML (map + nose angle + baro height + speed)
+./Utilities/rust/stbox-viz/target/release/stbox-viz combined csv/peter_22.4.2026_1250.csv -o html/
 
-- **`animate_board_3d.py`** — Animated board side-view GIF per session, with optional combined side-by-side MOV output synchronized with camera footage. Auto-detects CSV format (SD card raw sensors or BLE quaternions).
-  ```
-  # GIF only (all sessions)
-  python Utilities/scripts/animate_board_3d.py sensor_data.csv -o gif/
+# 5-panel sensor summary + quaternion/Euler PNGs
+./Utilities/rust/stbox-viz/target/release/stbox-viz sensors csv/peter_22.4.2026_1250.csv -o png/
 
-  # Single session GIF
-  python Utilities/scripts/animate_board_3d.py sensor_data.csv -o gif/ --session 1
+# Pump cadence spectrogram + movement phase PNGs
+./Utilities/rust/stbox-viz/target/release/stbox-viz pumpfoil csv/peter_22.4.2026_1250.csv -o png/
 
-  # Combined MOV with camera video and title card
-  python Utilities/scripts/animate_board_3d.py sensor_data.csv -o mov/ \
+# Animated GIF of board side view per session (needs pumping pitch oscillation)
+./Utilities/rust/stbox-viz/target/release/stbox-viz animate csv/mirco_7.3.2026.csv -o gif/ --session 1
+
+# Combined camera + sensor MOV (needs ffmpeg in PATH)
+./Utilities/rust/stbox-viz/target/release/stbox-viz animate csv/mirco_7.3.2026.csv -o mov/ \
+    --session 1 --fps 15 \
     --video camera.MOV --video-offset 56 --sensor-offset 1.5 \
-    --session 1 --title "PumpGraph Mirco" --subtitle "ONIX Albatross 1160"
-  ```
-  Options:
-  | Flag | Description |
-  |------|-------------|
-  | `-o` | Output directory (default: `.`) |
-  | `--fps` | Frames per second (default: 15) |
-  | `--session N` | Generate only session N (default: all) |
-  | `--video FILE` | Camera video (MOV/MP4) for combined side-by-side MOV |
-  | `--video-offset SEC` | Start time in camera video in seconds |
-  | `--sensor-offset SEC` | Start time in sensor GIF in seconds |
-  | `--title TEXT` | Title card text (green, bold) |
-  | `--subtitle TEXT` | Subtitle card text (light blue, bold) |
+    --title "PumpGraph Mirco" --subtitle "ONIX Albatross 1160"
+```
+
+`combined` runs Madgwick 6DOF fusion on raw acc/gyro, detects rides from sustained GPS movement (≥3 km/h, ≥10 s, merged across <30 s gaps), anchors the baro water reference at GPS-stationary samples with temperature compensation, and emits a Plotly HTML using the CDN JS. 23-minute session → 1.2 MB HTML in ~10 s. The HTML opens on the **first ride** by default; a button bar above the chart (`Ride 1` / `Ride 2` / …) swaps between rides — each button updates the map (only that ride's GPS trace is drawn), the shared x-axis range of the time-series panels, and the map centre + zoom. There's deliberately no "All rides" button: showing every on-shore GPS point at once drowned out the actual action, and the full-session x-axis made the time-series panels extend past where any ride actually happened.
+
+`sensors` / `pumpfoil` write 2100×2400 and 2400×1800 PNGs via `plotters` + `rustfft` — sub-second end-to-end for a full 23-minute session.
+
+`animate` writes per-session GIFs directly via `plotters` bitmap + `gif` encoder; the optional combined MOV shells out to `ffmpeg` with the same `hstack` filter + title-card concat pipeline that the old Python version used.
+
+| Flag | Applies to | Description |
+|------|------------|-------------|
+| `-o` | all | output directory |
+| `--beta` | `combined` | Madgwick filter gain (default 0.1, 6DOF) |
+| `--fps` | `animate` | GIF frame rate (default 15) |
+| `--session N` | `animate` | render only session N |
+| `--video FILE` | `animate` | camera video for side-by-side MOV |
+| `--video-offset SEC` | `animate` | start time in camera video |
+| `--sensor-offset SEC` | `animate` | start time in GIF |
+| `--title TEXT` | `animate` | title card (green, bold, 2 s intro) |
+| `--subtitle TEXT` | `animate` | subtitle (light blue) |
+
+CSV column names from the on-device firmware (both `Time [mS]` legacy and the current `Time [10ms]`) are auto-detected. GPS CSV is picked up automatically as `<stem>_gps.csv` next to the sensor CSV.
 
   The animation automatically detects the steepest board angle during the drop-in (first 10s) and flashes **"Dropwinkel: X.X°"** in bold red, fading out over 2 seconds.
 

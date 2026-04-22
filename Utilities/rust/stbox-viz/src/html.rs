@@ -7,6 +7,7 @@
 //! there and continue to work here.
 
 use crate::gps::Ride;
+use crate::gps::TICKS_PER_SEC;
 use crate::io::GpsRow;
 use serde_json::json;
 use std::fmt::Write as _;
@@ -68,31 +69,54 @@ pub fn render(data: &PanelData) -> String {
     // --- Traces ---
     let mut traces = Vec::<serde_json::Value>::new();
 
+    // One map trace per ride. The "All rides" view is intentionally
+    // dropped — on-shore and between-ride points dominate the map and
+    // the full-track x-axis range made the time-series panels extend
+    // past where any ride actually happened.
+    //
+    // The ride buttons (built further below) toggle visibility so only
+    // one ride's trace is on the map at a time. The first ride is
+    // visible by default; the rest start hidden.
+    let mut map_trace_indices: Vec<usize> = Vec::new();
     if have_map {
-        traces.push(json!({
-            "type": "scattermap",
-            "mode": "markers+lines",
-            "lat": lat_vals,
-            "lon": lon_vals,
-            "text": hover,
-            "hoverinfo": "text",
-            "marker": {
-                "size": 6,
-                "color": nose_at_gps,
-                "colorscale": "RdYlGn",
-                "cmin": -5,
-                "cmax": 5,
-                "colorbar": {"title": {"text": "Nose [°]"}, "thickness": 10, "x": 0.99, "y": 0.78, "len": 0.35}
-            },
-            "line": {"color": "rgba(80,80,80,0.45)", "width": 2},
-            "subplot": "map",
-            "name": "track",
-            "showlegend": false,
-        }));
+        for (ri, r) in data.rides.iter().enumerate() {
+            let end = r.gps_end.min(data.gps.len());
+            if end <= r.gps_start { continue; }
+            let lat_slice: Vec<f64> = data.gps[r.gps_start..end].iter().map(|g| g.lat).collect();
+            let lon_slice: Vec<f64> = data.gps[r.gps_start..end].iter().map(|g| g.lon).collect();
+            let speed_slice: Vec<f64> = data.gps_speed_kmh
+                .get(r.gps_start..end).map(|s| s.to_vec()).unwrap_or_default();
+            let hover_slice: Vec<String> = hover
+                .get(r.gps_start..end).map(|s| s.to_vec()).unwrap_or_default();
+            let is_first = ri == 0;
+            map_trace_indices.push(traces.len());
+            traces.push(json!({
+                "type": "scattermap",
+                "mode": "markers+lines",
+                "lat": lat_slice,
+                "lon": lon_slice,
+                "text": hover_slice,
+                "hoverinfo": "text",
+                "marker": {
+                    "size": 6,
+                    "color": speed_slice,
+                    "colorscale": "Viridis",
+                    "cmin": 0.0,
+                    "cmax": 25.0,
+                    "colorbar": {"title": {"text": "Speed [km/h]"}, "thickness": 10, "x": 0.99, "y": 0.78, "len": 0.35},
+                    "showscale": is_first,
+                },
+                "line": {"color": "rgba(80,80,80,0.45)", "width": 2},
+                "subplot": "map",
+                "name": format!("Ride {}", ri + 1),
+                "showlegend": false,
+                "visible": is_first,
+            }));
+        }
     }
 
-    // Nose angle time-series (row 2 if map, else row 1)
-    let ts_row_offset = if have_map { 1 } else { 0 };
+    // Scattermap doesn't consume a y-axis number, so the first time-series
+    // panel goes to y1 regardless of whether the map is present.
     traces.push(json!({
         "type": "scatter",
         "mode": "lines",
@@ -101,7 +125,7 @@ pub fn render(data: &PanelData) -> String {
         "line": {"color": "#1f77b4", "width": 1},
         "name": "Nose [°]",
         "xaxis": "x",
-        "yaxis": format!("y{}", 1 + ts_row_offset),
+        "yaxis": "y",
         "hovertemplate": "t=%{x:.0f}s<br>nose=%{y:+.2f}°<extra></extra>",
         "showlegend": false,
     }));
@@ -115,7 +139,7 @@ pub fn render(data: &PanelData) -> String {
         "line": {"color": "#2ca02c", "width": 1},
         "name": "Height [m]",
         "xaxis": "x",
-        "yaxis": format!("y{}", 2 + ts_row_offset),
+        "yaxis": "y2",
         "hovertemplate": "t=%{x:.0f}s<br>height=%{y:.2f} m<extra></extra>",
         "showlegend": false,
     }));
@@ -131,13 +155,13 @@ pub fn render(data: &PanelData) -> String {
             "line": {"color": "rgba(200,0,0,0.5)", "width": 1, "dash": "dot"},
             "hoverinfo": "skip",
             "xaxis": "x",
-            "yaxis": format!("y{}", 2 + ts_row_offset),
+            "yaxis": "y2",
             "name": "0.80 m mast",
             "showlegend": false,
         }));
     }
 
-    // Speed time-series
+    // Speed time-series (only when GPS is present → third panel)
     if have_map {
         traces.push(json!({
             "type": "scatter",
@@ -147,25 +171,127 @@ pub fn render(data: &PanelData) -> String {
             "line": {"color": "#d62728", "width": 1},
             "name": "Speed [km/h]",
             "xaxis": "x",
-            "yaxis": format!("y{}", 3 + ts_row_offset),
+            "yaxis": "y3",
             "hovertemplate": "t=%{x:.0f}s<br>speed=%{y:.1f} km/h<extra></extra>",
             "showlegend": false,
         }));
     }
 
     // --- Layout ---
-    // Rows: map (if have_map) + nose + height + speed (if have_map)
+    // Rows: map (if have_map) + nose + height + speed (if have_map).
+    // Each time-series row has a small title strip above it for the
+    // horizontal panel caption — the old rotated-y-axis title couldn't
+    // fit at 180 px panel height.
     let n_ts_rows: usize = if have_map { 3 } else { 2 };
     let map_frac = if have_map { 0.45 } else { 0.0 };
+    let title_h = 0.03;
     let ts_total = 1.0 - map_frac;
-    let ts_row_h = ts_total / n_ts_rows as f64;
+    let ts_slot_h = ts_total / n_ts_rows as f64;    // one row + title strip
+    let ts_row_h = (ts_slot_h - title_h).max(0.05); // panel height only
+
+    // Per-ride x-axis ranges (relative to sensor time) for the zoom buttons.
+    // Rides carry GPS row indices, which we translate into the sensor-time
+    // base that the time-series x-axis uses.
+    let sensor_base = data.t_sensor_s.first().copied().unwrap_or(0.0);
+    let gps_base = data.gps.first().map(|g| g.ticks).unwrap_or(0.0);
+    let ride_windows: Vec<(f64, f64)> = data.rides.iter().map(|r| {
+        let start_ticks = data.gps.get(r.gps_start).map(|g| g.ticks).unwrap_or(0.0);
+        let end_idx = r.gps_end.saturating_sub(1).min(data.gps.len().saturating_sub(1));
+        let end_ticks = data.gps.get(end_idx).map(|g| g.ticks).unwrap_or(0.0);
+        ((start_ticks - gps_base) / TICKS_PER_SEC + sensor_base,
+         (end_ticks - gps_base) / TICKS_PER_SEC + sensor_base)
+    }).collect();
+
+    // Build one button per ride — each update does three things via the
+    // "update" method: (1) toggle trace visibility so only this ride's
+    // map trace is on, (2) relayout x-axis to the ride's time window,
+    // (3) recentre the map on the ride's extent. There's deliberately
+    // no "All rides" button: showing every ride's track on the map at
+    // once was busy and the full-session x-axis made time-series panels
+    // extend past where anything interesting happens.
+    // All traces (map-per-ride + nose + height + mast + speed) are already
+    // pushed at this point, so `traces.len()` is the final count.
+    let n_traces = traces.len();
+    let mut buttons: Vec<serde_json::Value> = Vec::new();
+    for (i, win) in ride_windows.iter().enumerate() {
+        // Per-ride visibility array: only the matching map trace is on,
+        // all non-map traces (nose / height / mast / speed) stay visible.
+        let mut visible = vec![serde_json::Value::Bool(true); n_traces];
+        for (mi, &trace_idx) in map_trace_indices.iter().enumerate() {
+            visible[trace_idx] = serde_json::Value::Bool(mi == i);
+        }
+        // Also drive the colourbar onto the selected trace only.
+        // Per-ride map centre
+        let r = &data.rides[i];
+        let end = r.gps_end.min(data.gps.len());
+        let (lat_slice, lon_slice): (Vec<f64>, Vec<f64>) = data.gps[r.gps_start..end]
+            .iter().map(|g| (g.lat, g.lon)).unzip();
+        let (c_lat, c_lon, z) = if lat_slice.is_empty() {
+            (centre_lat, centre_lon, zoom)
+        } else {
+            let mut ls = lat_slice.clone(); ls.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let mut os = lon_slice.clone(); os.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let cl = ls[ls.len() / 2];
+            let co = os[os.len() / 2];
+            let span = (ls.last().unwrap() - ls.first().unwrap())
+                .max(os.last().unwrap() - os.first().unwrap()).max(0.001);
+            let z = (14.0 - (span * 200.0).log2()).clamp(11.0, 18.0);
+            (cl, co, z)
+        };
+        buttons.push(json!({
+            "label": format!("Ride {}", i + 1),
+            "method": "update",
+            "args": [
+                {"visible": visible},
+                {
+                    "xaxis.range": [win.0, win.1],
+                    "map.center": {"lat": c_lat, "lon": c_lon},
+                    "map.zoom": z,
+                }
+            ]
+        }));
+    }
+
+    // Initial view = first ride, matching the map trace that starts
+    // visible. Without this the x-axis would autoscale to the full
+    // session and the time-series panels would be zoomed out.
+    let (init_x_lo, init_x_hi) = ride_windows.first().copied()
+        .unwrap_or((0.0, data.t_sensor_s.last().copied().unwrap_or(1.0)));
+    let (init_c_lat, init_c_lon, init_zoom) = if let Some(r) = data.rides.first() {
+        let end = r.gps_end.min(data.gps.len());
+        let (mut ls, mut os): (Vec<f64>, Vec<f64>) = data.gps[r.gps_start..end]
+            .iter().map(|g| (g.lat, g.lon)).unzip();
+        if ls.is_empty() {
+            (centre_lat, centre_lon, zoom)
+        } else {
+            ls.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            os.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let span = (ls.last().unwrap() - ls.first().unwrap())
+                .max(os.last().unwrap() - os.first().unwrap()).max(0.001);
+            let z = (14.0 - (span * 200.0).log2()).clamp(11.0, 18.0);
+            (ls[ls.len() / 2], os[os.len() / 2], z)
+        }
+    } else {
+        (centre_lat, centre_lon, zoom)
+    };
 
     let mut layout = json!({
         "title": {"text": data.title, "x": 0.5, "xanchor": "center"},
         "height": if have_map { 1000 } else { 600 },
-        "margin": {"t": 90, "r": 40, "b": 40, "l": 60},
+        "margin": {"t": 90, "r": 40, "b": 40, "l": 90},
         "hovermode": "closest",
         "showlegend": false,
+        "updatemenus": [{
+            "type": "buttons",
+            "direction": "right",
+            "buttons": buttons,
+            "x": 0.0, "xanchor": "left",
+            "y": 1.04, "yanchor": "bottom",
+            "pad": {"r": 8, "t": 4},
+            "showactive": true,
+            "bgcolor": "rgba(255,255,255,0.9)",
+            "active": 0,
+        }]
     });
 
     // Build subplot domain/axis definitions
@@ -173,44 +299,88 @@ pub fn render(data: &PanelData) -> String {
 
     if have_map {
         layout_obj.insert("map".into(), json!({
-            "center": {"lat": centre_lat, "lon": centre_lon},
-            "zoom": zoom,
+            "center": {"lat": init_c_lat, "lon": init_c_lon},
+            "zoom": init_zoom,
             "style": "carto-positron",
             "domain": {"x": [0.0, 1.0], "y": [1.0 - map_frac, 1.0]},
         }));
     }
 
-    // Axis stacks: y1..yN from bottom to top. Place time-series below map.
-    // First TS row is at the top of the TS region (just under the map).
+    // Axis stacks: y1..yN from top to bottom under the map.
+    // Panel titles go above each panel as horizontal annotations (see
+    // the annotation loop below) rather than rotated y-axis titles —
+    // the panels are ~180 px tall and the long "Board height above
+    // water · baro temperature-drift limited" caption can't fit rotated.
+    let panel_titles: Vec<&str> = if have_map {
+        vec![
+            "Board nose angle to water [°]",
+            "Board height above water [m] — mast = 0.80 m · baro is temperature-drift limited",
+            "Speed [km/h] (position-derived, 5 s median)",
+        ]
+    } else {
+        vec![
+            "Board nose angle to water [°]",
+            "Board height above water [m]",
+        ]
+    };
+
+    let mut annotations: Vec<serde_json::Value> = Vec::new();
+
     for r in 0..n_ts_rows {
-        let y_hi = 1.0 - map_frac - (r as f64) * ts_row_h;
-        let y_lo = y_hi - ts_row_h + 0.03;
+        // Slot = title strip on top, panel below. Slots stack from the
+        // bottom of the map (y = 1.0 - map_frac) downwards.
+        let slot_top = 1.0 - map_frac - (r as f64) * ts_slot_h;
+        let panel_top = slot_top - title_h;
+        let panel_bot = panel_top - ts_row_h;
+        let title_y = panel_top + title_h * 0.5;
+
         let idx = r + 1; // y1, y2, y3
         let axis_name = if idx == 1 { "yaxis".to_string() } else { format!("yaxis{}", idx) };
-        let title = match (have_map, r) {
-            (true, 0) => "Board nose angle to water [°]".to_string(),
-            (true, 1) => "Board height above water [m] — mast = 0.80 m · baro is temperature-drift limited".to_string(),
-            (true, 2) => "Speed [km/h] (position-derived, 5 s median)".to_string(),
-            (false, 0) => "Board nose angle to water [°]".to_string(),
-            (false, 1) => "Board height above water [m]".to_string(),
-            _ => String::new(),
+        let unit_label = match (have_map, r) {
+            (true, 0) => "°",
+            (true, 1) => "m",
+            (true, 2) => "km/h",
+            (false, 0) => "°",
+            (false, 1) => "m",
+            _ => "",
         };
         let mut ax = json!({
-            "domain": [y_lo.max(0.0), y_hi.min(1.0)],
+            "domain": [panel_bot.max(0.0), panel_top.min(1.0)],
             "anchor": "x",
-            "title": {"text": title},
+            "title": {"text": unit_label, "standoff": 4},
+            "automargin": true,
         });
         if r == n_ts_rows - 1 && have_map {
             ax["range"] = json!([0, 30]);
         }
         layout_obj.insert(axis_name, ax);
+
+        // Horizontal panel caption centred in the title strip.
+        let title = panel_titles.get(r).copied().unwrap_or("");
+        annotations.push(json!({
+            "text": title,
+            "xref": "paper",
+            "yref": "paper",
+            "x": 0.5,
+            "y": title_y,
+            "xanchor": "center",
+            "yanchor": "middle",
+            "showarrow": false,
+            "font": {"size": 13, "color": "#333"},
+        }));
     }
-    // Shared x-axis across all TS rows
+    // Shared x-axis across all TS rows, label only at the bottom.
+    // Initial range = first ride's window, matching the default visible
+    // map trace; user switches via the ride buttons.
     layout_obj.insert("xaxis".into(), json!({
         "domain": [0.0, 1.0],
         "anchor": format!("y{}", n_ts_rows),
         "title": {"text": "t [s]"},
+        "range": [init_x_lo, init_x_hi],
     }));
+
+    // Attach the panel annotations to the layout.
+    layout_obj.insert("annotations".into(), serde_json::Value::Array(annotations));
 
     // --- Ride summary block (plain HTML TOC above the chart) ---
     let mut ride_toc = String::from(
