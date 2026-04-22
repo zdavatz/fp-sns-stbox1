@@ -203,8 +203,13 @@ def load_sd_csv(csv_path):
     df = pd.read_csv(csv_path)
     df.columns = [c.strip().rstrip(',') for c in df.columns]
 
+    # Time column rename: older firmware wrote "Time [mS]" (a misnomer —
+    # the column is actually ThreadX ticks, 1 tick = 10 ms). Newer firmware
+    # (22.4.2026+) writes "Time [10ms]" to be accurate. Accept both.
+    time_col = "Time [10ms]" if "Time [10ms]" in df.columns else "Time [mS]"
+
     out = pd.DataFrame()
-    out['time_ms'] = df["Time [mS]"].values.astype(float)
+    out['time_ms'] = df[time_col].values.astype(float)
     out['acc_x'] = df["AccX [mg]"].values.astype(float)
     out['acc_y'] = df["AccY [mg]"].values.astype(float)
     out['acc_z'] = df["AccZ [mg]"].values.astype(float)

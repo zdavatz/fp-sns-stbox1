@@ -243,6 +243,96 @@ static void ubx_send(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t l
   HAL_UART_Transmit(GPS_UART, ck, 2, 100);
 }
 
+/* Wait for UBX-ACK-ACK (cls=0x05,id=0x01) or ACK-NAK (cls=0x05,id=0x00)
+   whose 2-byte payload matches the cls/id we sent. Returns:
+     1 = ACK-ACK (command accepted)
+     0 = ACK-NAK (command rejected — bad format or value)
+    -1 = timeout
+
+   Polling RX: the interrupt-driven RX path is NOT armed yet during
+   GPS_Init(), so HAL_UART_Receive can own the UART. NMEA sentences from
+   the module are discarded as non-UBX noise (no 0xB5 0x62 prefix). */
+static int ubx_wait_ack(uint8_t cls, uint8_t id, uint32_t timeout_ms)
+{
+  uint32_t deadline = HAL_GetTick() + timeout_ms;
+  int     state   = 0;
+  uint8_t rx_cls  = 0, rx_id  = 0;
+  uint16_t rx_len = 0, rx_idx = 0;
+  uint8_t rx_p0   = 0, rx_p1  = 0;
+
+  while ((int32_t)(deadline - HAL_GetTick()) > 0)
+  {
+    uint8_t b;
+    if (HAL_UART_Receive(GPS_UART, &b, 1, 5) != HAL_OK) continue;
+
+    switch (state)
+    {
+      case 0: if (b == 0xB5) state = 1;                               break;
+      case 1: state = (b == 0x62) ? 2 : ((b == 0xB5) ? 1 : 0);        break;
+      case 2: rx_cls = b; state = 3;                                  break;
+      case 3: rx_id  = b; state = 4;                                  break;
+      case 4: rx_len = b; state = 5;                                  break;
+      case 5: rx_len |= ((uint16_t)b << 8); rx_idx = 0; state = 6;    break;
+      case 6:
+        if      (rx_idx == 0) rx_p0 = b;
+        else if (rx_idx == 1) rx_p1 = b;
+        rx_idx++;
+        if (rx_idx >= rx_len) state = 7;
+        break;
+      case 7: state = 8;                                              break;  /* CK_A */
+      case 8:
+        /* Full UBX frame received. If it's an ACK for our cls/id, return. */
+        if (rx_cls == 0x05 && rx_p0 == cls && rx_p1 == id)
+          return (rx_id == 0x01) ? 1 : 0;
+        state = 0;                                                    break;
+    }
+  }
+  return -1;
+}
+
+/* Send a UBX command and block for ACK. Retries up to `retries` times on
+   NAK or timeout. Returns same codes as ubx_wait_ack for the last attempt. */
+static int ubx_send_retry(uint8_t cls, uint8_t id, const uint8_t *payload,
+                          uint16_t len, uint32_t timeout_ms, int retries)
+{
+  int res = -1;
+  for (int attempt = 0; attempt <= retries; attempt++)
+  {
+    ubx_send(cls, id, payload, len);
+    res = ubx_wait_ack(cls, id, timeout_ms);
+    if (res == 1) return 1;
+    HAL_Delay(50);
+  }
+  return res;
+}
+
+/* ------------------------------------------------------------------ */
+/* GPS_Init status log — filled in during GPS_Init(), read later by    */
+/* COMMAND_START_LOG and written to the error log so post-boot we can  */
+/* verify the module accepted the requested fix rate.                  */
+/* ------------------------------------------------------------------ */
+
+#define GPS_INIT_LOG_MAX 160
+static char GpsInitLog[GPS_INIT_LOG_MAX];
+
+static void gps_log_append(const char *s)
+{
+  size_t cur = strlen(GpsInitLog);
+  size_t cap = GPS_INIT_LOG_MAX - cur - 1;
+  if (cap == 0) return;
+  strncat(GpsInitLog, s, cap);
+}
+
+static const char *ack_str(int r)
+{
+  return (r == 1) ? "OK" : (r == 0 ? "NAK" : "TO");
+}
+
+const char *GPS_GetInitLog(void)
+{
+  return GpsInitLog;
+}
+
 /* UBX-CFG-PRT for UART1: 8N1, NMEA only out, UBX+NMEA in, given baudrate. */
 static void gps_cfg_port_uart1(uint32_t baudrate)
 {
@@ -259,49 +349,10 @@ static void gps_cfg_port_uart1(uint32_t baudrate)
   ubx_send(0x06, 0x00, p, sizeof(p));     /* CFG-PRT */
 }
 
-/* UBX-CFG-CFG: save all config sections to BBR + Flash + EEPROM. */
-static void gps_cfg_save_all(void)
-{
-  uint8_t p[13] = {0};
-  /* clearMask = 0 */
-  p[4] = 0xFF; p[5] = 0xFF;               /* saveMask = 0xFFFF (all sections) */
-  /* loadMask = 0 */
-  p[12] = 0x17;                           /* deviceMask = BBR | Flash | EEPROM */
-  ubx_send(0x06, 0x09, p, sizeof(p));     /* CFG-CFG */
-}
-
-/* UBX-CFG-RATE: set measurement + navigation rate.
-   meas_ms = interval between measurements in ms (100 = 10 Hz).
-   nav_cycles = navigation solution per N measurements (1 = every meas). */
-static void gps_cfg_rate(uint16_t meas_ms, uint16_t nav_cycles)
-{
-  uint8_t p[6];
-  p[0] = (uint8_t)(meas_ms    & 0xFF);
-  p[1] = (uint8_t)(meas_ms    >> 8);
-  p[2] = (uint8_t)(nav_cycles & 0xFF);
-  p[3] = (uint8_t)(nav_cycles >> 8);
-  p[4] = 0x01;                            /* timeRef = GPS */
-  p[5] = 0x00;
-  ubx_send(0x06, 0x08, p, sizeof(p));     /* CFG-RATE */
-}
-
-/* UBX-CFG-MSG: set the UART1 output rate of a single NMEA sentence.
-   rate = 0 disables the sentence, 1 = every nav solution, etc. */
-static void gps_cfg_msg_rate(uint8_t msg_class, uint8_t msg_id, uint8_t rate)
-{
-  uint8_t p[3] = { msg_class, msg_id, rate };
-  ubx_send(0x06, 0x01, p, sizeof(p));     /* CFG-MSG (short form = UART1 only) */
-}
-
-/* Disable the NMEA sentences we don't parse, so 10 Hz fits inside the
-   38400-baud UART budget. Keep only GGA + RMC. */
-static void gps_cfg_disable_unused_nmea(void)
-{
-  gps_cfg_msg_rate(0xF0, 0x01, 0);        /* GLL off */
-  gps_cfg_msg_rate(0xF0, 0x02, 0);        /* GSA off */
-  gps_cfg_msg_rate(0xF0, 0x03, 0);        /* GSV off */
-  gps_cfg_msg_rate(0xF0, 0x05, 0);        /* VTG off */
-}
+/* UBX-CFG-RATE, UBX-CFG-MSG, UBX-CFG-CFG payloads are built inline in
+   GPS_Init() and dispatched via ubx_send_retry() so the ACK status of
+   each command is captured in GpsInitLog. Keeping them inline avoids
+   drift between the payload layout and the ACK-retry path. */
 
 /* ------------------------------------------------------------------ */
 /* Public API                                                         */
@@ -312,36 +363,67 @@ void GPS_Init(void)
   memset(&LatestFix, 0, sizeof(LatestFix));
   FixUpdated = 0;
   LineLen = 0;
+  GpsInitLog[0] = '\0';
+
+  char buf[64];
 
   /* BSP_COM_Init configures GPIO AF + enables UART4 clock and does a
      basic UART init at 115200. We drive the baudrate ourselves below. */
   BSP_COM_Init(COM1);
 
-  /* Step 1: open UART4 at 9600 (u-blox factory default) and tell the GPS
-     to switch its UART1 to GPS_UART_BAUDRATE. If the GPS was already at
-     GPS_UART_BAUDRATE, it sees the 9600-rate bytes as garbage and ignores
-     them — harmless. Requires PA0 (UART4 TX) to be wired to GPS RX. */
+  /* Step 1: at 9600 baud (u-blox factory default) ask GPS to switch its
+     UART1 to GPS_UART_BAUDRATE. Best-effort, no ACK wait — if the module
+     was already at GPS_UART_BAUDRATE (second boot onwards), any reply
+     would come back at the new baudrate and we couldn't read it here.
+     Requires PA0 (UART4 TX) wired to GPS RX. */
   GPS_UART->Init.BaudRate = 9600;
   HAL_UART_Init(GPS_UART);
   gps_cfg_port_uart1(GPS_UART_BAUDRATE);
-  HAL_Delay(150);  /* drain TX + let the GPS apply the new baudrate */
+  HAL_Delay(200);  /* drain TX + let the GPS apply the new baudrate */
 
   /* Step 2: reconfigure UART4 to match the GPS. */
   GPS_UART->Init.BaudRate = GPS_UART_BAUDRATE;
   HAL_UART_Init(GPS_UART);
+  HAL_Delay(50);   /* let the line settle before reading ACKs */
 
-  /* Step 3: disable the NMEA sentences we don't parse and set the fix rate
-     from GPS_MEAS_PERIOD_MS (derived from GPS_RATE_HZ, default 10 Hz — can
-     be overridden at build time with `make GPS_RATE_HZ=<n>`). At 38400 baud
-     with only GGA + RMC, rates up to ~25 Hz fit in the UART budget. */
-  gps_cfg_disable_unused_nmea();
-  HAL_Delay(50);
-  gps_cfg_rate(GPS_MEAS_PERIOD_MS, 1);
-  HAL_Delay(50);
+  /* Step 3: send UBX-CFG-RATE FIRST — it's the command that actually
+     controls fix frequency. Block on ACK-ACK with 3 retries so we don't
+     silently continue if the module dropped the packet.  Earlier builds
+     sent this without any ACK check and observed 1 Hz in the logs despite
+     a 10 Hz config. */
+  uint8_t rate_p[6];
+  rate_p[0] = (uint8_t)(GPS_MEAS_PERIOD_MS & 0xFF);
+  rate_p[1] = (uint8_t)(GPS_MEAS_PERIOD_MS >> 8);
+  rate_p[2] = 0x01;   rate_p[3] = 0x00;       /* navRate = 1 */
+  rate_p[4] = 0x01;   rate_p[5] = 0x00;       /* timeRef = GPS */
+  int r_rate = ubx_send_retry(0x06, 0x08, rate_p, sizeof(rate_p), 300, 3);
+  sprintf(buf, "rate=%s(%uHz) ", ack_str(r_rate), (unsigned)GPS_RATE_HZ);
+  gps_log_append(buf);
+  HAL_Delay(100);
 
-  /* Step 4: tell the GPS to persist the new baudrate + rate + msg config
-     to BBR + Flash so it survives power cycles. */
-  gps_cfg_save_all();
+  /* Step 4: disable NMEA sentences we don't parse (GLL, GSA, GSV, VTG),
+     one at a time with ACK+retry and 50 ms spacing. With only GGA + RMC
+     enabled, 10 Hz fits inside the 38400-baud UART budget. */
+  const uint8_t unused[4][2] = { {0xF0,0x01}, {0xF0,0x02}, {0xF0,0x03}, {0xF0,0x05} };
+  int r_msg = 1;  /* 1 means all four succeeded */
+  for (int i = 0; i < 4; i++)
+  {
+    uint8_t mp[3] = { unused[i][0], unused[i][1], 0 };
+    int r = ubx_send_retry(0x06, 0x01, mp, sizeof(mp), 300, 3);
+    if (r != 1) r_msg = r;   /* remember the worst result */
+    HAL_Delay(50);
+  }
+  sprintf(buf, "msg=%s ", ack_str(r_msg));
+  gps_log_append(buf);
+
+  /* Step 5: persist everything (rate + port + msg config) to BBR + Flash
+     + EEPROM so the module boots in the right config next time. */
+  uint8_t save_p[13] = {0};
+  save_p[4] = 0xFF; save_p[5] = 0xFF;         /* saveMask = all sections */
+  save_p[12] = 0x17;                          /* deviceMask = BBR|Flash|EEPROM */
+  int r_save = ubx_send_retry(0x06, 0x09, save_p, sizeof(save_p), 600, 2);
+  sprintf(buf, "save=%s", ack_str(r_save));
+  gps_log_append(buf);
   HAL_Delay(150);
 
   /* Enable UART4 interrupt in the NVIC */

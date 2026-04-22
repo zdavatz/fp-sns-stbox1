@@ -135,11 +135,15 @@ Wiring (SparkFun MAX-M10S breakout → SensorTile.box PRO Rev_C):
 
 Because UART4 now drives the GPS link, `STBOX1_ENABLE_PRINTF` is disabled by default — there is no debug UART while the GPS is connected (error log on SD card still works).
 
-**No manual u-center setup needed.** On every boot, `GPS_Init()` auto-configures the module in four steps, all persisted to BBR + Flash:
-1. UBX-CFG-PRT at 9600 baud (u-blox factory default) → switch UART1 to `GPS_UART_BAUDRATE` (38400). If already at the target baudrate the 9600-rate bytes arrive as garbage and are ignored — harmless.
-2. UBX-CFG-MSG × 4 → disable the NMEA sentences we don't parse (GLL, GSA, GSV, VTG). Only GGA + RMC remain enabled.
-3. UBX-CFG-RATE → set measurement rate from `GPS_MEAS_PERIOD_MS` (derived from the `GPS_RATE_HZ` macro, default 10 Hz → 100 ms; override at build time via `make GPS_RATE_HZ=<n>`). nav solution every cycle, GPS time reference.
-4. UBX-CFG-CFG → save all sections (BBR + Flash + EEPROM) so the config survives power cycles.
+**No manual u-center setup needed.** On every boot, `GPS_Init()` auto-configures the module with full UBX-ACK verification (ACK-ACK / ACK-NAK parsing via `ubx_wait_ack()` + up to 3 retries per command in `ubx_send_retry()`, 50–100 ms spacing between commands):
+
+1. UBX-CFG-PRT at 9600 baud (u-blox factory default) → switch UART1 to `GPS_UART_BAUDRATE` (38400). Best-effort, **no ACK wait** — the baudrate is switching mid-command, so any reply would come back on the new rate and we can't read it at 9600.
+2. Switch UART4 to 38400 baud.
+3. UBX-CFG-RATE sent **first** (most important command) → set measurement rate from `GPS_MEAS_PERIOD_MS` (derived from the `GPS_RATE_HZ` macro, default 10 Hz → 100 ms; override at build time via `make GPS_RATE_HZ=<n>`). nav solution every cycle, GPS time reference. Earlier order put CFG-MSG first, but a dropped RATE packet then left the module on its persisted 1 Hz config with no signal in the logs.
+4. UBX-CFG-MSG × 4 → disable the NMEA sentences we don't parse (GLL, GSA, GSV, VTG). Only GGA + RMC remain enabled.
+5. UBX-CFG-CFG → save all sections (BBR + Flash + EEPROM) so the config survives power cycles.
+
+The ACK status of each command is accumulated into a static buffer and flushed to the SD error log on the first `START_LOG` as `gps: rate=OK(10Hz) msg=OK save=OK`. Exposed via `GPS_GetInitLog()` in `Core/Inc/gps_nmea.h`, consumed in `app_filex.c` COMMAND_START_LOG alongside the other boot markers. When the RATE command times out or is NAK'd (and retries all fail), the marker reads `rate=TO(10Hz)` or `rate=NAK(10Hz)` and the on-card `GpsNNN.csv` will show 100-tick row spacing (= 1 s = persisted 1 Hz config) — the exact symptom that motivated adding the ACK path.
 
 Implementation in `Core/Src/gps_nmea.c`. With only two sentences enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART (ceiling ~3.8 kB/s). Raising the fix rate further (25 Hz max for single-GNSS) would require either disabling even more output or bumping `GPS_UART_BAUDRATE`, but bumping the baud breaks the auto-config flow on already-persisted boards — the factory-default 9600 fallback only works once.
 
@@ -176,7 +180,7 @@ Raw CSV data lives in `csv/`. GPS CSV (`GpsNNN.csv`) lives next to `SensNNN.csv`
 Single interactive HTML per recording (saved to `html/`) with:
 - **Plotly Scattermap** on `carto-positron` tiles (works from `file://` — OSM's tile servers require a Referer and block cross-origin requests). Full grey track + per-ride coloured markers, coloured by nose angle. Hover shows speed, nose angle, and height-above-water for every point.
 - **Board nose angle** time-series (drift-corrected as in the per-session PNG).
-- **Board height above water** from the **LPS22DF baro** using a 10 s rolling-minimum baseline as the water surface reference; values above the 80 cm mast ceiling (+10 cm tolerance) are NaN'd and the y-axis is pinned to [−0.05, 0.95 m] with a dotted red mast-line. GPS altitude is deliberately not used — the MAX-M10S's ~5–10 m vertical error can't resolve a pump stroke.
+- **Board height above water** from the **LPS22DF baro** via `height_above_water_m()`. Two-stage correction: (1) temperature-compensate pressure (the LPS22DF sits in a semi-sealed SensorTile enclosure, so P couples to T via ideal gas — a 10 °C swing between indoor storage and cold seawater produces ~15 hPa of fake altitude, far larger than the 0.08 hPa signal from an 80 cm mast); (2) use GPS speed < 3 km/h as ground truth that the board is in the water (knee-start, between rides, pre/post-session), linear-interpolate the TC'd pressure at those anchors across flying segments, and compute height from the local hypsometric approximation (8434 × (1 − P/P_ref)). Earlier versions used a 10 s rolling-min of altitude which collapsed to ~0 m during sustained flight because every sample in the window was "up". Y-axis is now auto-scaled (not pinned 0–80 cm) because residual thermal drift on this hardware is ~0.5–3 m over a 5-min ride even with GPS anchoring — enough to tell "flying" from "in water", but not sub-meter mast-height. GPS altitude is deliberately not used — the MAX-M10S's ~5–10 m vertical error can't resolve a pump stroke. Sub-meter precision would require a mast-mounted ultrasonic height sensor.
 - **Speed** time-series, **position-derived** (haversine on 1 Hz fixes) because the module's Doppler Speed column is unreliable on this board (observed median 0.12 km/h while position deltas showed sustained 10–30 km/h). Clamped at 60 km/h (multipath glitches → NaN + linear interp), 5 s rolling median, y-axis pinned to 0–30 km/h.
 
 **Ride detection**: sustained GPS movement above 3 km/h for ≥10 s, merging gaps <30 s, padded by 3 s. The pitch-oscillation detector used by `visualize_sensors.py` misses smooth flying (board barely pitches); GPS-based detection catches every real ride and skips on-shore activity.

@@ -512,6 +512,21 @@ static void fx_thread_entry(ULONG thread_input)
 
             fx_media_flush(&sdio_disk);
             ErrorLog_Write("start: gps header written");
+
+            /* Surface the outcome of GPS_Init()'s UBX-CFG-RATE / CFG-MSG /
+               CFG-CFG commands. If rate!=OK the module will stay at its
+               persisted rate (often 1 Hz) and the on-card Gps CSV will
+               show 100-tick (=1 s) row spacing. Written once per START_LOG
+               so the first Error_Log entry reflects the current boot. */
+            {
+              const char *gpslog = GPS_GetInitLog();
+              if (gpslog && gpslog[0])
+              {
+                CHAR m[192];
+                sprintf(m, "gps: %s", gpslog);
+                ErrorLog_Write(m);
+              }
+            }
           }
 
 #if STBOX1_LOG_BATTERY

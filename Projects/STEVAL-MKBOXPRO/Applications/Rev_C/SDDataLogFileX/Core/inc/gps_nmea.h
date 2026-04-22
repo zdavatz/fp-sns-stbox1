@@ -59,6 +59,13 @@ uint8_t GPS_GetLatestFix(GPS_Fix_t *out);
 uint8_t GPS_GetWallClock(uint32_t *year, uint32_t *month, uint32_t *day,
                          uint32_t *hour, uint32_t *minute, uint32_t *second);
 
+/* Return the status log from the last GPS_Init() run — one short line
+   summarising the UBX-CFG-RATE / CFG-MSG / CFG-CFG ACK results. Written
+   to the error log in COMMAND_START_LOG so we can verify post-boot that
+   the GPS accepted the requested fix rate. Null-terminated, always safe
+   to read. Example: "rate=OK(10Hz) msg=OK save=OK". */
+const char *GPS_GetInitLog(void);
+
 /* Called from UART4_IRQHandler via HAL_UART_IRQHandler -> RxCpltCallback */
 void GPS_UART_RxByte(uint8_t byte);
 

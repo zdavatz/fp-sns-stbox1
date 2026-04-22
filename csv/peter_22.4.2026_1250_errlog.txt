@@ -1,0 +1,14 @@
+--- Boot Apr 22 2026 13:01:14 ---
+[33 ms] start: sens header written
+[40 ms] start: gps header written
+[100 ms] clock: seeded from GPS 2026-04-22 12:50:16 UTC
+[161 ms] start: gas gauge init ok
+[168 ms] start: battery 4151 mV 10.0%
+[168 ms] start: mic disabled at compile time
+--- Boot Apr 22 2026 13:01:14 ---
+[9 ms] start: sens header written
+[16 ms] start: gps header written
+[100 ms] clock: seeded from GPS 2026-04-22 12:50:53 UTC
+[138 ms] start: gas gauge init ok
+[144 ms] start: battery 4145 mV 10.0%
+[146 ms] start: mic disabled at compile time

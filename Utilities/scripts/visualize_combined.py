@@ -88,7 +88,7 @@ def load_gps_csv(path):
         return None
     df = pd.read_csv(path)
     df.columns = [c.strip() for c in df.columns]
-    return df
+    return _canonicalize_time_column(df)
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +124,75 @@ def baro_altitude_m(pressure_hpa, p0=None):
     if p0 is None:
         p0 = float(pressure_hpa[0])
     return 44330.0 * (1.0 - (pressure_hpa / p0) ** (1.0 / 5.255))
+
+
+def height_above_water_m(t_sensor_ticks, pressure_hpa, temp_celsius,
+                          gps_df, base_ticks, speed_kmh,
+                          stationary_threshold_kmh=3.0):
+    """Board height above water, anchored to GPS-based stationary moments.
+
+    The LPS22DF in the SensorTile.box sits in a semi-sealed enclosure, so the
+    air trapped around the sensor is coupled to internal temperature via the
+    ideal gas law (P ∝ T at constant V). A 10 °C temperature swing between
+    indoor storage and cold seawater produces ~15 hPa of fake "altitude"
+    drift — far larger than the ~0.08 hPa signal from an 80 cm mast. The
+    rolling-min-within-sensor-only approach can't separate the two, because
+    during sustained flight every sample in the window is "up".
+
+    This function works around the hardware limitation by:
+      1. Temperature-compensating pressure: P_tc = P × T_ref / T  (Kelvin)
+      2. Using GPS speed < ``stationary_threshold_kmh`` as ground truth
+         that the board is in the water (knee-start, between rides,
+         pre/post-session). The TC'd pressure at those moments defines
+         the water reference.
+      3. Linear-interpolating the water reference across flying segments
+         (board up on foils, GPS speed high).
+      4. Height = 8434 × (1 − P_tc / P_waterref). The 8434 m coefficient
+         is a local-linearisation of the hypsometric formula near sea
+         level — accurate to 1 % for heights < 100 m.
+
+    Returns: height_m aligned 1:1 with ``t_sensor_ticks`` (sensor sample rate).
+    Residual drift on this hardware is ~0.5–3 m over a 5-min ride, so the
+    result is only reliable at the "flying vs in water" scale, NOT for
+    sub-meter mast-height measurement — use a separate height sensor
+    (mast-mounted ultrasonic) if you need sub-meter precision.
+    """
+    t_sec = (t_sensor_ticks - base_ticks) / TICKS_PER_SEC
+
+    # Step 1: temperature compensation.
+    tk = temp_celsius + 273.15
+    ref_k = float(np.median(tk))
+    press_tc = pressure_hpa * (ref_k / tk)
+
+    # Step 2: GPS time grid in the same "seconds since session start" unit.
+    if gps_df is None or len(gps_df) == 0 or speed_kmh is None:
+        # No GPS — fall back to a long rolling min (still bad, but at least
+        # shows relative motion inside the session).
+        alt = baro_altitude_m(press_tc, p0=press_tc[0])
+        win = 60 * SAMPLE_HZ
+        water_ref_alt = pd.Series(alt).rolling(win, center=True, min_periods=1).min()
+        return alt - water_ref_alt.bfill().ffill().values
+
+    gt_ticks = gps_df['Time [mS]'].astype(float).values
+    g_sec = (gt_ticks - base_ticks) / TICKS_PER_SEC
+
+    # Step 3: interpolate TC'd pressure onto the GPS timeline.
+    press_gps = np.interp(g_sec, t_sec, press_tc)
+
+    # Step 4: water reference = press at stationary moments, interpolated.
+    water_mask = np.asarray(speed_kmh) < stationary_threshold_kmh
+    if not water_mask.any():
+        # All flying? Use the session min pressure (i.e. highest altitude)
+        # as a desperate fallback. Result will under-estimate height.
+        return 8434.0 * (1 - press_tc / float(np.max(press_tc)))
+
+    water_ref_gps = np.where(water_mask, press_gps, np.nan)
+    water_ref_gps = pd.Series(water_ref_gps).interpolate('linear').bfill().ffill().values
+
+    # Step 5: map water reference back to sensor timeline and compute height.
+    water_ref_sensor = np.interp(t_sec, g_sec, water_ref_gps)
+    # Local linearisation: dP/P = -dh/H where H ≈ 8434 m near sea level.
+    return 8434.0 * (1 - press_tc / water_ref_sensor)
 
 
 def bin_to_resolution(t_ticks, values, base_ticks, bucket_ms=100, agg='mean'):
@@ -250,7 +319,7 @@ def build_figure(t_s, nose_1hz, alt_1hz, gps_1hz, title, subtitle,
             subplot_titles=(
                 "GPS track (colored by nose angle)",
                 "Board nose angle to water [°] (drift-corrected)",
-                "Board height above water [m] — mast = 0.80 m (baro 10 s min-reference)",
+                "Board height above water [m] — mast = 0.80 m · baro is temperature-drift limited, see README",
                 "Speed [km/h] (position-derived, 5 s median, capped at 30)",
             ),
         )
@@ -261,7 +330,7 @@ def build_figure(t_s, nose_1hz, alt_1hz, gps_1hz, title, subtitle,
             vertical_spacing=0.08,
             subplot_titles=(
                 "Board nose angle to water [°] (drift-corrected)",
-                "Board height above water [m] — mast = 0.80 m (baro 10 s min-reference)",
+                "Board height above water [m] — mast = 0.80 m · baro is temperature-drift limited, see README",
             ),
         )
 
@@ -472,15 +541,19 @@ def build_figure(t_s, nose_1hz, alt_1hz, gps_1hz, title, subtitle,
                    hovertemplate='t=%{x:.0f}s<br>height=%{y:.2f} m<extra></extra>'),
         row=2 + ts_row_offset, col=1,
     )
-    # Mast-length reference line at 0.80 m (physical ceiling) + locked
-    # y-range so the panel always reads as "cm of board above the water".
+    # Mast-length reference line at 0.80 m (physical ceiling).
+    # y-range is auto-scaled: this baro on this hardware has residual
+    # thermal drift (~0.5–3 m over a 5-min ride even with GPS-anchored
+    # baseline), so clipping to [0, 0.95] would leave the panel empty
+    # during real flight. The 0.80 m dotted line is still drawn so the
+    # reader can see how far above the mast ceiling the drift pushes.
     fig.add_trace(
         go.Scatter(x=zero_x, y=[0.80, 0.80], mode='lines',
                    line=dict(color='rgba(200,0,0,0.5)', width=1, dash='dot'),
-                   hoverinfo='skip', showlegend=False),
+                   hoverinfo='skip', showlegend=False,
+                   name='0.80 m mast'),
         row=2 + ts_row_offset, col=1,
     )
-    fig.update_yaxes(range=[-0.05, 0.95], row=2 + ts_row_offset, col=1)
 
     if have_map:
         fig.add_trace(
@@ -697,76 +770,37 @@ def build_html_for_slice(sensor_df, quat_df, gps_df, sample_hz,
     qdf = quat_df.iloc[s_idx:e_idx]
     t_ms = sdf['Time [mS]'].values
     press = sdf['P [mB]'].values
+    temp  = sdf["T ['C]"].values
     if len(t_ms) == 0:
         print(f"  empty slice, skipping {out_path}")
         return
     base_ms = t_ms[0]
 
     nose = nose_angle_degrees(qdf, sample_hz)
-    alt = baro_altitude_m(press, p0=press[0])
-    # Height above water: water-reference = rolling minimum of baro
-    # altitude. The 80 cm mast is the physical ceiling, so any height
-    # estimate much above that is either weather-drift noise or a baseline
-    # window too long to catch transient touch-downs.
-    #
-    # Window choices:
-    #   - Too short (< 2 s): gets biased upward during sustained flight
-    #     because every sample in the window is "up" → false heights of 0
-    #   - Too long (> 30 s): misses intra-ride touches and weather drift
-    #     accumulates (up to ~1 hPa = 8 m over 2 h)
-    # 10 s is enough to include at least one touch per typical
-    # pump-then-glide cycle while rejecting weather drift.
-    ALT_WINDOW_S = 10
-    MAST_CEILING_M = 0.80   # physical ceiling of the board height
-    alt_series = pd.Series(alt)
-    water_ref = alt_series.rolling(ALT_WINDOW_S * sample_hz,
-                                    center=True, min_periods=1).min()
-    alt_detrended = alt - water_ref.bfill().ffill().values
-    # Clamp: physically impossible → NaN (line break in plot), and small
-    # noise below zero (baro jitter) → 0 so the axis reads as "m above water"
-    alt_detrended = np.where(alt_detrended < 0, 0, alt_detrended)
-    alt_detrended = np.where(alt_detrended > MAST_CEILING_M + 0.1,
-                              np.nan, alt_detrended)
 
-    # Sensor display at 10 Hz (100 ms buckets) — fine enough to show the
-    # ~1 Hz pump oscillation without drowning the browser in 100 Hz points.
-    SENSOR_BUCKET_MS = 100
-    t_s_nose, nose_hz = bin_to_resolution(t_ms, nose, base_ms,
-                                           bucket_ms=SENSOR_BUCKET_MS)
-    t_s_alt, alt_hz = bin_to_resolution(t_ms, alt_detrended, base_ms,
-                                         bucket_ms=SENSOR_BUCKET_MS)
-    if not np.array_equal(t_s_nose, t_s_alt):
-        alt_hz = np.interp(t_s_nose, t_s_alt, alt_hz)
-    t_s = t_s_nose
-    # Legacy variable names preserved below (build_figure still uses them)
-    nose_1hz, alt_1hz = nose_hz, alt_hz
-
-    # Align GPS on the same second axis
+    # GPS first — we need speed to anchor the baro water-reference.
     gps_1hz = None
+    gps_sub = None
+    speed_for_baro = None
     if gps_df is not None and len(gps_df) > 0:
         gt_ticks = gps_df['Time [mS]'].values
         gt_s = ((gt_ticks - base_ms) / TICKS_PER_SEC).astype(int)
-        mask = (gt_s >= 0) & (gt_s <= t_s.max())
+        mask = (gt_s >= 0) & (gt_s <= (t_ms[-1] - base_ms) / TICKS_PER_SEC)
         sub = gps_df[mask].copy()
         sub['s'] = gt_s[mask]
-        # Drop no-fix rows (Fix 0 = invalid)
         sub = sub[sub['Fix'].astype(int) >= 1]
         if len(sub) > 0:
-            # If multiple fixes in the same second, take the first
             sub = sub.drop_duplicates(subset='s', keep='first').reset_index(drop=True)
             # Override the module's reported Speed with position-derived
             # speed (haversine) — the u-blox MAX-M10S's Doppler Speed field
             # was wildly unreliable on this recording (median 0.12 km/h
             # while position deltas showed sustained 10-30 km/h flight).
             raw_speed = position_derived_speed(sub)
-            # Drop multipath glitches — anything > 60 km/h on a pumpfoil is
-            # a bad fix, not real motion. NaN'd values get bridged by the
-            # median filter below so the line plot stays smooth.
             clipped = np.where(raw_speed > 60.0, np.nan, raw_speed)
             clipped = pd.Series(clipped).interpolate(limit_direction='both').fillna(0).values
-            # 5 s rolling median: absorbs the remaining single-sample spikes
-            # from coastline multipath without biasing sustained speed runs.
             speed_smooth = pd.Series(clipped).rolling(5, center=True, min_periods=1).median().values
+            gps_sub = sub
+            speed_for_baro = speed_smooth
             gps_1hz = pd.DataFrame({
                 's':     sub['s'].values,
                 'lat':   sub['Lat'].astype(float).values,
@@ -776,6 +810,31 @@ def build_html_for_slice(sensor_df, quat_df, gps_df, sample_hz,
                 'fix':   sub['Fix'].astype(int).values,
                 'utc':   sub['UTC'].astype(str).values,
             })
+
+    # Height above water: temperature-compensate pressure (baro sits in a
+    # semi-sealed enclosure, P couples to T via ideal gas), then anchor the
+    # water-reference at GPS-stationary moments (speed < 3 km/h = board in
+    # water, knee-start, between rides). Residual drift on this hardware is
+    # ~0.5–3 m over a 5-min ride — see `height_above_water_m` for details.
+    # The old rolling-min approach collapsed to ~0 m during sustained flight
+    # because every sample in the window was "up", leaving the panel empty.
+    height_m = height_above_water_m(
+        t_ms, press, temp,
+        gps_sub, base_ms, speed_for_baro,
+        stationary_threshold_kmh=3.0)
+
+    # Sensor display at 10 Hz (100 ms buckets) — fine enough to show the
+    # ~1 Hz pump oscillation without drowning the browser in 100 Hz points.
+    SENSOR_BUCKET_MS = 100
+    t_s_nose, nose_hz = bin_to_resolution(t_ms, nose, base_ms,
+                                           bucket_ms=SENSOR_BUCKET_MS)
+    t_s_alt, alt_hz = bin_to_resolution(t_ms, height_m, base_ms,
+                                         bucket_ms=SENSOR_BUCKET_MS)
+    if not np.array_equal(t_s_nose, t_s_alt):
+        alt_hz = np.interp(t_s_nose, t_s_alt, alt_hz)
+    t_s = t_s_nose
+    # Legacy variable names preserved below (build_figure still uses them)
+    nose_1hz, alt_1hz = nose_hz, alt_hz
 
     # Clip each session to the slice and convert sample indices to seconds
     # relative to the slice start.
