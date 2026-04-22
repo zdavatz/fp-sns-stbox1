@@ -331,7 +331,10 @@ static void fx_thread_entry(ULONG thread_input)
 
   UINT status;
   MessageData_t *RMsg;
-  CHAR header[] = "Time [mS], AccX [mg], AccY [mg], AccZ [mg], GyroX [mdps], GyroY [mdps], GyroZ [mdps],MagX [mgauss],MagY [mgauss],MagZ [mgauss],P [mB],T ['C]\r\n";
+  /* Time column is `tx_time_get()` — ThreadX ticks (1 tick = 10 ms).
+     Header is "Time [10ms]" so downstream tools don't misread it as
+     milliseconds. Scripts divide by 100 to get seconds. */
+  CHAR header[] = "Time [10ms], AccX [mg], AccY [mg], AccZ [mg], GyroX [mdps], GyroY [mdps], GyroZ [mdps],MagX [mgauss],MagY [mgauss],MagZ [mgauss],P [mB],T ['C]\r\n";
 
   SHORT SDCardCounter = 0;
   CHAR file_name[30];
@@ -483,7 +486,8 @@ static void fx_thread_entry(ULONG thread_input)
              or fails, we still want GPS to be logging. --- */
           if (GpsFileOpen == 0)
           {
-            CHAR gps_header[] = "Time [mS], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP\r\n";
+            /* Time column is ThreadX ticks (see sensor header) */
+            CHAR gps_header[] = "Time [10ms], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP\r\n";
             sprintf(file_name, "Gps%03d.csv", SDCardCounter - 1);
 
             status = fx_file_create(&sdio_disk, file_name);
@@ -533,7 +537,8 @@ static void fx_thread_entry(ULONG thread_input)
 
           if (BatteryInitOk && BatteryFileOpen == 0)
           {
-            CHAR bat_header[] = "Time [mS], Voltage [mV], SOC [0.1%], Current [100uA]\r\n";
+            /* Time column is ThreadX ticks (see sensor header) */
+            CHAR bat_header[] = "Time [10ms], Voltage [mV], SOC [0.1%], Current [100uA]\r\n";
             sprintf(file_name, "Bat%03d.csv", SDCardCounter - 1);
 
             status = fx_file_create(&sdio_disk, file_name);

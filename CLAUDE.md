@@ -153,10 +153,11 @@ Python scripts in `Utilities/scripts/` for plotting sensor data:
 - `visualize_sensors.py` — sensor CSV + optional quaternion CSV plotting (auto-detects SD card vs BLE format)
 - `sensor_fusion.py` — Madgwick AHRS filter: computes quaternions from raw acc+gyro data (6DOF IMU-only default, `--use-mag` for 9DOF)
 - `visualize_pumpfoil.py` — pumpfoil session analysis (cadence spectrogram, movement phases)
+- `visualize_combined.py` — **interactive HTML** per session: Plotly Scattermap with OSM-style Carto tiles (no auth/Referer required) + synchronised board-angle, board-height-above-water, and speed time-series. Rides are auto-isolated from sustained GPS movement; each gets a URL anchor (`html/viz_<stem>.html#s3`) that isolates that ride's track and zooms the time-series on page load. Defaults assume `Time [mS]` column is actually ThreadX ticks (1 tick = 10 ms) — both the old mislabelled header and the new `Time [10ms]` header are accepted.
 - `animate_board_3d.py` — animated board side-view GIF per session from quaternion data
 
 Two CSV formats are supported (auto-detected from header):
-- **SD card**: `Time [mS], AccX [mg], ...` — raw sensor data, quaternions computed via 6DOF Madgwick fusion at 100 Hz (no magnetometer by default, LIS2MDL drifts over time and corrupts roll/pitch via coupled gradient descent)
+- **SD card**: `Time [10ms], AccX [mg], ...` (or older `Time [mS]` — same semantics, header renamed in the 22.4.2026 firmware) — raw sensor data, quaternions computed via 6DOF Madgwick fusion at 100 Hz (no magnetometer by default, LIS2MDL drifts over time and corrupts roll/pitch via coupled gradient descent)
 - **BLE**: `dd/mm/yyyy, hh:mm:ss.ms, IMU accX[mg], ...` — with separate quaternion CSV at 120 Hz (legacy)
 
 Generated plots go to `png/` with filenames derived from the input CSV (e.g. `plot_quaternions_mirco_7.3.2026.png`).
@@ -168,7 +169,23 @@ Nose angle uses rotated sensor Y-axis (Breitachse mounting), 1s median filter (r
 60s rolling median baseline (crash-masked). Drop-in (green dashed line) and end crash (red shaded area) are marked.
 Combined nose angle plot includes FFT frequency analysis per session (pump frequency ~1 Hz vs magnetometer drift ~0.1 Hz).
 Mast is carbon (non-magnetic), but small metal screws next to sensor box cause hard/soft iron magnetometer interference. Use plastic screws instead. Session drift caused by gyro bias + stale mag calibration without restart.
-Raw CSV data lives in `csv/`. GPS CSV (`GpsNNN.csv`) lives next to `SensNNN.csv` when the GPS module is connected; no visualization script exists for it yet.
+Raw CSV data lives in `csv/`. GPS CSV (`GpsNNN.csv`) lives next to `SensNNN.csv` when the GPS module is connected; `visualize_combined.py` consumes both to produce `html/viz_<stem>.html`.
+
+### Combined HTML Visualisation (`visualize_combined.py`)
+
+Single interactive HTML per recording (saved to `html/`) with:
+- **Plotly Scattermap** on `carto-positron` tiles (works from `file://` — OSM's tile servers require a Referer and block cross-origin requests). Full grey track + per-ride coloured markers, coloured by nose angle. Hover shows speed, nose angle, and height-above-water for every point.
+- **Board nose angle** time-series (drift-corrected as in the per-session PNG).
+- **Board height above water** from the **LPS22DF baro** using a 10 s rolling-minimum baseline as the water surface reference; values above the 80 cm mast ceiling (+10 cm tolerance) are NaN'd and the y-axis is pinned to [−0.05, 0.95 m] with a dotted red mast-line. GPS altitude is deliberately not used — the MAX-M10S's ~5–10 m vertical error can't resolve a pump stroke.
+- **Speed** time-series, **position-derived** (haversine on 1 Hz fixes) because the module's Doppler Speed column is unreliable on this board (observed median 0.12 km/h while position deltas showed sustained 10–30 km/h). Clamped at 60 km/h (multipath glitches → NaN + linear interp), 5 s rolling median, y-axis pinned to 0–30 km/h.
+
+**Ride detection**: sustained GPS movement above 3 km/h for ≥10 s, merging gaps <30 s, padded by 3 s. The pitch-oscillation detector used by `visualize_sensors.py` misses smooth flying (board barely pitches); GPS-based detection catches every real ride and skips on-shore activity.
+
+**Rider classification**: defaults to halves rule (first half = Peter, second half = Ayano). Override with `--rider-split-utc HH:MM:SS` when video evidence shows the actual handoff moment (for the 22.4.2026 Ermioni session that's `07:04:30`, the moment Ayano ran along the harbour wall in `IMG_1716.MOV`). A knee-start mid-second-half (e.g. session 11, UTC 08:09:29, 8 km/h) is Peter not Ayano; single-split is a blunt tool, a per-session override flag is a future addition.
+
+**URL anchors**: every ride has a stable fragment ID (`#s1`…`#sN`). Sharing `html/viz_<stem>.html#s3` both scrolls the TOC to that entry and auto-calls `Plotly.update` to hide all other ride traces + zoom the time-series to that ride's window + recenter the map. The Plotly toolbar also exposes the same isolation via button clicks.
+
+**`Time [mS]` header**: misnomer in older firmware — the column carries ThreadX ticks (1 tick = 10 ms), divide by 100 for wall-clock seconds. New firmware writes `Time [10ms]` to avoid the confusion; scripts accept both via `_canonicalize_time_column`.
 
 ### Board Animation (`animate_board_3d.py`)
 

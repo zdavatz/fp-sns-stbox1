@@ -52,8 +52,10 @@ Logging starts automatically on power-on. Press the user button to stop, press a
 CSV at ~100 Hz with header:
 
 ```
-Time [mS], AccX [mg], AccY [mg], AccZ [mg], GyroX [mdps], GyroY [mdps], GyroZ [mdps],MagX [mgauss],MagY [mgauss],MagZ [mgauss],P [mB],T ['C]
+Time [10ms], AccX [mg], AccY [mg], AccZ [mg], GyroX [mdps], GyroY [mdps], GyroZ [mdps],MagX [mgauss],MagY [mgauss],MagZ [mgauss],P [mB],T ['C]
 ```
+
+The `Time` column is the raw `tx_time_get()` value — **ThreadX ticks, 1 tick = 10 ms**. Divide by 100 for wall-clock seconds. Older recordings use the header `Time [mS]` with the same semantics; it was renamed to `Time [10ms]` in the 22.4.2026 firmware to match reality. Viz scripts accept both.
 
 | Column | Unit | Resolution | Sensor |
 |--------|------|------------|--------|
@@ -75,7 +77,7 @@ Audio logging is **disabled by default** via `STBOX1_LOG_AUDIO 0` in `stbox1_con
 CSV at 10 Hz with header:
 
 ```
-Time [mS], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP
+Time [10ms], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP
 ```
 
 | Column | Unit | Source |
@@ -84,11 +86,13 @@ Time [mS], UTC, Lat, Lon, Alt [m], Speed [km/h], Course [deg], Fix, NumSat, HDOP
 | UTC | `hhmmss.ss` | `$GNRMC` |
 | Lat/Lon | decimal degrees, signed (N/E = +, S/W = −) | `$GNRMC` |
 | Alt | metres above mean sea level | `$GNGGA` |
-| Speed | km/h (knots × 1.852) | `$GNRMC` |
+| Speed | km/h (knots × 1.852, **unreliable — see below**) | `$GNRMC` |
 | Course | degrees true | `$GNRMC` |
 | Fix | 0 = no fix, 1 = GPS, 2 = DGPS | `$GNGGA` |
 | NumSat | satellites used | `$GNGGA` |
 | HDOP | horizontal dilution of precision | `$GNGGA` |
+
+**Note on the `Speed` column**: the u-blox MAX-M10S's Doppler-based speed measurement was observed to wildly under-report real motion on this board — median 0.12 km/h during the 22.4.2026 Ermioni recording while position-derived speed (haversine on lat/lon deltas) showed sustained 10–30 km/h pumpfoil flight. Root cause not yet isolated (antenna placement, UBX-NAV-PVT mode, or multipath over water). `visualize_combined.py` ignores this column and recomputes speed from position deltas; when writing your own analysis, prefer position-derived speed until the module's speed output is verified against a known reference.
 
 The GPS module (SparkFun u-blox MAX-M10S) connects via UART4 at 38400 baud, 8N1, NMEA:
 
@@ -121,7 +125,7 @@ Once the first `$GNRMC` with a valid date+time arrives, `gps_thread` seeds FileX
 CSV at 1 Hz from the on-board STC3115 fuel gauge on I²C4:
 
 ```
-Time [mS], Voltage [mV], SOC [0.1%], Current [100uA]
+Time [10ms], Voltage [mV], SOC [0.1%], Current [100uA]
 ```
 
 | Column | Unit | Source |
@@ -187,6 +191,17 @@ Python scripts for plotting sensor and quaternion data are in `Utilities/scripts
   ```
   python Utilities/scripts/visualize_pumpfoil.py sensor_data.csv [-o OUTPUT_DIR]
   ```
+- **`visualize_combined.py`** — Interactive HTML page combining the GPS track on an OpenStreetMap-style basemap with synchronised board-angle, baro-derived board-height-above-water, and speed time-series. Rides over water are auto-isolated from sustained GPS movement (not pitch oscillation, so smooth flights don't get missed), classified by rider via a UTC split point, and exposed as URL anchors — share e.g. `html/viz_<stem>.html#s3` to point at a specific ride. Click a ride button or anchor to hide all other rides and auto-zoom the map + time-series to that ride.
+  ```
+  python Utilities/scripts/visualize_combined.py sensor_data.csv [gps.csv] \
+    [-o html/] [--rider-split-utc HH:MM:SS] [--per-session]
+  ```
+  Key defaults and conventions:
+  - Speed is **position-derived (haversine)** at 1 Hz, clamped at 60 km/h (multipath glitches), 5 s median-smoothed, y-axis pinned to 0–30 km/h.
+  - Board height above water uses the **LPS22DF barometer** with a 10 s rolling-minimum baseline as water reference. Values above 80 cm (mast length) + 10 cm tolerance → NaN; y-axis pinned to [−0.05, 0.95 m] with a dotted red mast-ceiling line. GPS altitude is not used — its 5–10 m vertical error cannot resolve pump motion.
+  - Hover on any GPS marker shows speed, nose angle, and height-above-water together.
+  - Firmware rider assignment: halves rule by default (first half = Peter, second half = Ayano). Override with `--rider-split-utc 07:04:30` when video evidence points elsewhere.
+
 - **`animate_board_3d.py`** — Animated board side-view GIF per session, with optional combined side-by-side MOV output synchronized with camera footage. Auto-detects CSV format (SD card raw sensors or BLE quaternions).
   ```
   # GIF only (all sessions)
