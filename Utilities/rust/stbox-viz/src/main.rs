@@ -11,6 +11,7 @@ mod animate_cmd;
 mod baro;
 mod bin_util;
 mod butter;
+mod compass_cmd;
 mod euler;
 mod fusion;
 mod fusion_height;
@@ -58,6 +59,14 @@ enum Cmd {
         #[arg(short, long, default_value = "png")]
         output: PathBuf,
     },
+    /// Compass-validity PNG: tilt-compensated magnetometer heading vs
+    /// GPS course over ground. Residual exposes hard/soft-iron
+    /// interference on the LIS2MDL from nearby metal screws.
+    Compass {
+        sensor_csv: PathBuf,
+        #[arg(short, long, default_value = "png")]
+        output: PathBuf,
+    },
     /// Animated GIF of board orientation per session, with optional
     /// side-by-side camera-video MOV combine (needs ffmpeg in PATH).
     Animate {
@@ -90,6 +99,8 @@ fn main() -> Result<()> {
             sensors_cmd::run(&sensor_csv, &output),
         Cmd::Pumpfoil { sensor_csv, output } =>
             pumpfoil_cmd::run(&sensor_csv, &output),
+        Cmd::Compass { sensor_csv, output } =>
+            compass_cmd::run(&sensor_csv, &output),
         Cmd::Animate { sensor_csv, output, fps, session, video,
                        video_offset, sensor_offset, title, subtitle } => {
             animate_cmd::run(&animate_cmd::AnimateArgs {
