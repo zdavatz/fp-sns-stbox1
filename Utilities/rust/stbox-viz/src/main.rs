@@ -13,6 +13,7 @@ mod bin_util;
 mod butter;
 mod euler;
 mod fusion;
+mod fusion_height;
 mod gps;
 mod html;
 mod io;
@@ -187,10 +188,17 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
         Vec::new()
     };
 
+    // Fuse baro with double-integrated vertical acceleration. Makes the
+    // 1 Hz pump oscillation visible at cm-scale; the baro alone has a
+    // ~10–20 cm noise floor that swallows pump strokes.
+    let fused_m = fusion_height::fused_height_m(&sensors, &quats, &height_m, SAMPLE_HZ as f64);
+
     let (nose_t, nose_binned) =
         bin_util::bin_to_resolution(&t_sensor_s, &nose_deg, 100, bin_util::Agg::Mean);
     let (_, height_binned) =
         bin_util::bin_to_resolution(&t_sensor_s, &height_m, 100, bin_util::Agg::Mean);
+    let (_, fused_binned) =
+        bin_util::bin_to_resolution(&t_sensor_s, &fused_m, 100, bin_util::Agg::Mean);
 
     let title = format!("{} — {:.1} min · {} ride{}",
         stem, dur_s / 60.0, rides.len(),
@@ -199,6 +207,7 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
         t_sensor_s: &nose_t,
         nose_deg: &nose_binned,
         height_m: &height_binned,
+        fused_height_m: &fused_binned,
         gps: &gps_rows,
         gps_speed_kmh: &gps_speed,
         gps_t_s: &gps_t_s,

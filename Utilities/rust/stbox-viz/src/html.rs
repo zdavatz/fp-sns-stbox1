@@ -16,6 +16,10 @@ pub struct PanelData<'a> {
     pub t_sensor_s: &'a [f64],
     pub nose_deg: &'a [f64],
     pub height_m: &'a [f64],
+    /// Baro + accelerometer complementary-filter height, aligned to
+    /// `t_sensor_s`. Makes the 1 Hz pump oscillation visible at cm scale
+    /// while inheriting the baro's absolute level (and its thermal drift).
+    pub fused_height_m: &'a [f64],
     pub gps: &'a [GpsRow],
     pub gps_speed_kmh: &'a [f64],
     pub gps_t_s: &'a [f64],
@@ -138,17 +142,34 @@ pub fn render(data: &PanelData) -> String {
         "showlegend": false,
     }));
 
-    // Height above water time-series
+    // Baro height (green, thin) — long-term drift-limited, but its slow
+    // behaviour anchors the fused trace below.
     traces.push(json!({
         "type": "scatter",
         "mode": "lines",
         "x": data.t_sensor_s,
         "y": data.height_m,
         "line": {"color": "#2ca02c", "width": 1},
-        "name": "Height [m]",
+        "name": "Baro [m]",
         "xaxis": "x",
         "yaxis": "y2",
-        "hovertemplate": "t=%{x:.0f}s<br>height=%{y:.2f} m<extra></extra>",
+        "hovertemplate": "t=%{x:.0f}s<br>baro=%{y:.2f} m<extra></extra>",
+        "showlegend": false,
+    }));
+
+    // Fused baro+acc (blue, slightly thicker) — dominant trace for
+    // reading pump oscillations. Inherits absolute level from baro but
+    // gets the fast dynamics from double-integrated accelerometer.
+    traces.push(json!({
+        "type": "scatter",
+        "mode": "lines",
+        "x": data.t_sensor_s,
+        "y": data.fused_height_m,
+        "line": {"color": "#1f77b4", "width": 1.5},
+        "name": "Fused [m]",
+        "xaxis": "x",
+        "yaxis": "y2",
+        "hovertemplate": "t=%{x:.0f}s<br>fused=%{y:.2f} m<extra></extra>",
         "showlegend": false,
     }));
 
@@ -306,7 +327,10 @@ pub fn render(data: &PanelData) -> String {
         "title": {"text": data.title, "x": 0.5, "xanchor": "center"},
         "height": if have_map { 1000 } else { 600 },
         "margin": {"t": 90, "r": 40, "b": 40, "l": 90},
-        "hovermode": "closest",
+        // "x unified" groups hover tooltips across all traces at the same
+        // x — one mouse position shows nose/height/speed values together.
+        // "closest" remains for the map (lat/lon space).
+        "hovermode": "x unified",
         "showlegend": false,
         "updatemenus": [{
             "type": "buttons",
@@ -341,7 +365,7 @@ pub fn render(data: &PanelData) -> String {
     let panel_titles: Vec<&str> = if have_map {
         vec![
             "Board nose angle to water [°]",
-            "Board height above water [m] — green = baro (TC), orange = GPS alt (zeroed at stationary median) · mast = 0.80 m",
+            "Board height above water [m] ±2 m — blue = fused (baro+acc), green = baro only, orange = GPS alt · mast = 0.80 m",
             "Speed [km/h] (position-derived, 5 s median)",
         ]
     } else {
@@ -377,6 +401,15 @@ pub fn render(data: &PanelData) -> String {
             "title": {"text": unit_label, "standoff": 4},
             "automargin": true,
         });
+        // Fixed y-ranges where it helps the reader. Height is clamped
+        // to ±2 m (Peter S.: auto-scale to 20 m "zeigt zu wenig" —
+        // pump strokes are cm-scale, the thermal drift drowns them);
+        // the baro/GPS traces can still wander off the top but the
+        // pump signal fills the visible window. Speed 0–30 km/h.
+        let height_panel = (have_map && r == 1) || (!have_map && r == 1);
+        if height_panel {
+            ax["range"] = json!([-2.0, 2.0]);
+        }
         if r == n_ts_rows - 1 && have_map {
             ax["range"] = json!([0, 30]);
         }
@@ -399,11 +432,21 @@ pub fn render(data: &PanelData) -> String {
     // Shared x-axis across all TS rows, label only at the bottom.
     // Initial range = first ride's window, matching the default visible
     // map trace; user switches via the ride buttons.
+    //
+    // Spike lines draw a vertical rule through every subplot at the
+    // cursor x — combined with hovermode "x unified" this gives
+    // cross-panel correlation at a glance.
     layout_obj.insert("xaxis".into(), json!({
         "domain": [0.0, 1.0],
         "anchor": format!("y{}", n_ts_rows),
         "title": {"text": "t [s]"},
         "range": [init_x_lo, init_x_hi],
+        "showspikes": true,
+        "spikemode": "across",
+        "spikesnap": "cursor",
+        "spikethickness": 1,
+        "spikecolor": "rgba(120,120,120,0.6)",
+        "spikedash": "solid",
     }));
 
     // Attach the panel annotations to the layout.
@@ -430,6 +473,10 @@ pub fn render(data: &PanelData) -> String {
     let traces_json = serde_json::to_string(&traces).unwrap();
     let layout_json = serde_json::to_string(&layout).unwrap();
 
+    // Paper-y extent of the combined time-series region — click markers
+    // span from the x-axis at the bottom up to just below the map.
+    let ts_top_paper = 1.0 - if have_map { 0.45 } else { 0.0 };
+
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -440,11 +487,75 @@ pub fn render(data: &PanelData) -> String {
 </head>
 <body style="margin: 0; background: #fafafa;">
   {toc}
+  <div style="margin: 4px 20px;">
+    <button id="clearMarks" style="
+        font: 12px sans-serif;
+        padding: 4px 10px;
+        border: 1px solid #888;
+        background: #fff;
+        border-radius: 3px;
+        cursor: pointer;">Clear click-marks</button>
+    <span style="font-size: 12px; color: #666; margin-left: 10px;">
+      Tip: hover = vertical line + unified tooltip across all panels.
+      Click a time-series point to pin a numbered marker.
+    </span>
+  </div>
   <div id="plot" style="width: 100%; height: 1040px;"></div>
   <script>
     const data = {traces};
     const layout = {layout};
-    Plotly.newPlot('plot', data, layout, {{responsive: true}});
+    Plotly.newPlot('plot', data, layout, {{responsive: true, scrollZoom: false}});
+
+    // Cross-panel click markers: clicking a point on any time-series trace
+    // pins a vertical dashed red line through every time-series panel at
+    // that x-coordinate, with a numbered label at the top. Map clicks are
+    // ignored because scattermap uses lat/lon, not the time axis.
+    const plotEl = document.getElementById('plot');
+    const tsTop = {ts_top_paper};
+    const baseAnnotCount = (plotEl.layout.annotations || []).length;
+    let clickCount = 0;
+
+    plotEl.on('plotly_click', function(ev) {{
+      const pt = ev.points && ev.points[0];
+      if (!pt) return;
+      if (pt.data && pt.data.type === 'scattermap') return;
+
+      clickCount++;
+      const x = pt.x;
+
+      const shapes = (plotEl.layout.shapes || []).slice();
+      shapes.push({{
+        type: 'line',
+        xref: 'x', yref: 'paper',
+        x0: x, x1: x,
+        y0: 0.0, y1: tsTop - 0.005,
+        line: {{color: '#e22', width: 1.5, dash: 'dash'}},
+        name: 'click-mark',
+      }});
+
+      const annotations = (plotEl.layout.annotations || []).slice();
+      annotations.push({{
+        x: x, xref: 'x',
+        y: tsTop - 0.015, yref: 'paper',
+        text: String(clickCount),
+        showarrow: false,
+        font: {{size: 13, color: '#e22'}},
+        bgcolor: 'rgba(255,255,255,0.95)',
+        bordercolor: '#e22',
+        borderwidth: 1,
+        borderpad: 3,
+        name: 'click-mark',
+      }});
+
+      Plotly.relayout(plotEl, {{shapes: shapes, annotations: annotations}});
+    }});
+
+    document.getElementById('clearMarks').addEventListener('click', function() {{
+      clickCount = 0;
+      const annotations = (plotEl.layout.annotations || [])
+        .slice(0, baseAnnotCount);  // drop the click-marks we appended
+      Plotly.relayout(plotEl, {{shapes: [], annotations: annotations}});
+    }});
   </script>
 </body>
 </html>
@@ -453,6 +564,7 @@ pub fn render(data: &PanelData) -> String {
         toc = ride_toc,
         traces = traces_json,
         layout = layout_json,
+        ts_top_paper = ts_top_paper,
     )
 }
 
