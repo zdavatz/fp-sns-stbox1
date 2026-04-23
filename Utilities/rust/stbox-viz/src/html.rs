@@ -38,6 +38,10 @@ pub struct PanelData<'a> {
 /// Produce the full HTML for one combined report.
 pub fn render(data: &PanelData) -> String {
     let have_map = !data.gps.is_empty();
+    // Map occupies the top 45 % of the plot when present. Hoisted to
+    // the top of this function so the map-colorbar positioning
+    // expressions can use it.
+    let map_frac_f: f64 = if have_map { 0.45 } else { 0.0 };
 
     // --- Map trace (Scattermap, coloured by nose-angle at each fix) ---
     // To colour by nose angle at each GPS moment, we interpolate the
@@ -115,7 +119,25 @@ pub fn render(data: &PanelData) -> String {
                     "colorscale": "Viridis",
                     "cmin": 0.0,
                     "cmax": 25.0,
-                    "colorbar": {"title": {"text": "Speed [km/h]"}, "thickness": 10, "x": 0.99, "y": 0.78, "len": 0.35},
+                    // Aligned with the map's vertical extent: map
+                    // domain is y=[1-map_frac, 1.0], so its centre is
+                    // at 1 - map_frac/2 in paper coords. Colorbar
+                    // sits at that same centre with len ≈ map_frac × 0.9
+                    // so the top and bottom of the bar line up with
+                    // the top and bottom of the map.
+                    "colorbar": {
+                        "title": {"text": "km/h", "side": "top", "font": {"size": 11}},
+                        "thickness": 8,
+                        "x": 0.99,
+                        "xanchor": "right",
+                        "y": 1.0 - map_frac_f / 2.0,
+                        "yanchor": "middle",
+                        "len": map_frac_f * 0.9,
+                        "tickfont": {"size": 10},
+                        "bgcolor": "rgba(255,255,255,0.9)",
+                        "bordercolor": "#888",
+                        "borderwidth": 1,
+                    },
                     "showscale": is_first,
                 },
                 "line": {"color": "rgba(80,80,80,0.45)", "width": 2},
@@ -142,14 +164,17 @@ pub fn render(data: &PanelData) -> String {
         "showlegend": false,
     }));
 
-    // Baro height (green, thin) — long-term drift-limited, but its slow
-    // behaviour anchors the fused trace below.
+    // Baro height — GPS-anchored water reference + temperature-
+    // compensated. Single primary trace; earlier α-β fusion with
+    // accelerometer is stashed away because the user found its
+    // aggressive detrending hid the slow component that correlates
+    // with the nose angle.
     traces.push(json!({
         "type": "scatter",
         "mode": "lines",
         "x": data.t_sensor_s,
         "y": data.height_m,
-        "line": {"color": "#2ca02c", "width": 1},
+        "line": {"color": "#2ca02c", "width": 1.5},
         "name": "Baro [m]",
         "xaxis": "x",
         "yaxis": "y2",
@@ -157,21 +182,22 @@ pub fn render(data: &PanelData) -> String {
         "showlegend": false,
     }));
 
-    // Fused baro+acc (blue, slightly thicker) — dominant trace for
-    // reading pump oscillations. Inherits absolute level from baro but
-    // gets the fast dynamics from double-integrated accelerometer.
-    traces.push(json!({
-        "type": "scatter",
-        "mode": "lines",
-        "x": data.t_sensor_s,
-        "y": data.fused_height_m,
-        "line": {"color": "#1f77b4", "width": 1.5},
-        "name": "Fused [m]",
-        "xaxis": "x",
-        "yaxis": "y2",
-        "hovertemplate": "t=%{x:.0f}s<br>fused=%{y:.2f} m<extra></extra>",
-        "showlegend": false,
-    }));
+    // Optional fused trace (blue) — drawn only when fused_height_m is
+    // non-empty. Call sites that aren't using fusion leave it empty.
+    if !data.fused_height_m.is_empty() {
+        traces.push(json!({
+            "type": "scatter",
+            "mode": "lines",
+            "x": data.t_sensor_s,
+            "y": data.fused_height_m,
+            "line": {"color": "#1f77b4", "width": 1.0},
+            "name": "Fused [m]",
+            "xaxis": "x",
+            "yaxis": "y2",
+            "hovertemplate": "t=%{x:.0f}s<br>fused=%{y:.2f} m<extra></extra>",
+            "showlegend": false,
+        }));
+    }
 
     // Mast reference line at 0.80 m
     if !data.t_sensor_s.is_empty() {
@@ -227,15 +253,15 @@ pub fn render(data: &PanelData) -> String {
 
     // --- Layout ---
     // Rows: map (if have_map) + nose + height + speed (if have_map).
-    // Each time-series row has a small title strip above it for the
-    // horizontal panel caption — the old rotated-y-axis title couldn't
-    // fit at 180 px panel height.
+    // All time-series rows get equal height. Each has a small title
+    // strip above it for the horizontal panel caption.
     let n_ts_rows: usize = if have_map { 3 } else { 2 };
-    let map_frac = if have_map { 0.45 } else { 0.0 };
+    let map_frac = map_frac_f;
     let title_h = 0.03;
     let ts_total = 1.0 - map_frac;
-    let ts_slot_h = ts_total / n_ts_rows as f64;    // one row + title strip
-    let ts_row_h = (ts_slot_h - title_h).max(0.05); // panel height only
+    let row_heights: Vec<f64> = (0..n_ts_rows)
+        .map(|_| ts_total / n_ts_rows as f64 - title_h)
+        .collect();
 
     // Per-ride x-axis ranges (relative to sensor time) for the zoom buttons.
     // Rides carry GPS row indices, which we translate into the sensor-time
@@ -365,7 +391,7 @@ pub fn render(data: &PanelData) -> String {
     let panel_titles: Vec<&str> = if have_map {
         vec![
             "Board nose angle to water [°]",
-            "Board height above water [m] ±2 m — blue = fused (baro+acc), green = baro only, orange = GPS alt · mast = 0.80 m",
+            "Board height above water [m] — green = baro (TC + GPS-anchored), orange = GPS altitude · mast = 0.80 m, but baro thermal drift can push values beyond that over a ride",
             "Speed [km/h] (position-derived, 5 s median)",
         ]
     } else {
@@ -377,13 +403,15 @@ pub fn render(data: &PanelData) -> String {
 
     let mut annotations: Vec<serde_json::Value> = Vec::new();
 
+    // Walk down from the top of the time-series area (just under the
+    // map), stacking each row's title strip + panel.
+    let mut cursor = 1.0 - map_frac;
     for r in 0..n_ts_rows {
-        // Slot = title strip on top, panel below. Slots stack from the
-        // bottom of the map (y = 1.0 - map_frac) downwards.
-        let slot_top = 1.0 - map_frac - (r as f64) * ts_slot_h;
+        let slot_top = cursor;
         let panel_top = slot_top - title_h;
-        let panel_bot = panel_top - ts_row_h;
+        let panel_bot = panel_top - row_heights[r];
         let title_y = panel_top + title_h * 0.5;
+        cursor = panel_bot; // next slot starts here
 
         let idx = r + 1; // y1, y2, y3
         let axis_name = if idx == 1 { "yaxis".to_string() } else { format!("yaxis{}", idx) };
@@ -401,14 +429,16 @@ pub fn render(data: &PanelData) -> String {
             "title": {"text": unit_label, "standoff": 4},
             "automargin": true,
         });
-        // Fixed y-ranges where it helps the reader. Height is clamped
-        // to ±2 m (Peter S.: auto-scale to 20 m "zeigt zu wenig" —
-        // pump strokes are cm-scale, the thermal drift drowns them);
-        // the baro/GPS traces can still wander off the top but the
-        // pump signal fills the visible window. Speed 0–30 km/h.
+        // Height range matches the physical mast: 80 cm. Show a
+        // little headroom and a small negative margin for noise
+        // (the board can't really go below water, but baro noise
+        // near 0 would otherwise clip the signal). Labels every
+        // 10 cm. Speed 0–30 km/h.
         let height_panel = (have_map && r == 1) || (!have_map && r == 1);
         if height_panel {
-            ax["range"] = json!([-2.0, 2.0]);
+            ax["range"] = json!([-0.1, 0.9]);
+            ax["dtick"] = json!(0.10);
+            ax["tickformat"] = json!(".1f");
         }
         if r == n_ts_rows - 1 && have_map {
             ax["range"] = json!([0, 30]);

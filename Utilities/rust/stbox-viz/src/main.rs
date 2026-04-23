@@ -199,17 +199,38 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
         Vec::new()
     };
 
-    // Fuse baro with double-integrated vertical acceleration. Makes the
-    // 1 Hz pump oscillation visible at cm-scale; the baro alone has a
-    // ~10–20 cm noise floor that swallows pump strokes.
-    let fused_m = fusion_height::fused_height_m(&sensors, &quats, &height_m, SAMPLE_HZ as f64);
+    // Reverted to the simplest form: the GPS-anchored TC-corrected baro
+    // height on its own. Earlier iterations added α-β fusion with the
+    // accelerometer, 30 s rolling-mean detrending, and 0.5 s
+    // post-smoothing — each intended to kill the baro's thermal drift,
+    // but they also stripped out the slow-trend component that visibly
+    // correlates with the nose angle.
+    //
+    // One concession: a mild 250 ms rolling mean on the raw baro before
+    // binning, to kill the ~10 Hz sensor-noise floor. Without this,
+    // when thermal drift pushes the signal near the ±1 m y-axis clip,
+    // the noise constantly crosses the boundary and Plotly draws
+    // saturated vertical bars at ±1 m ("Zacken"). 250 ms preserves the
+    // 1 Hz pump oscillation almost entirely (sinusoidal attenuation
+    // ≈ 4 %) and the slow trends that correlate with nose angle.
+    let height_m_smooth = rolling_mean(&height_m, 25);
+    let fused_m: Vec<f64> = vec![];  // keep the slot, render path skips empty
 
     let (nose_t, nose_binned) =
         bin_util::bin_to_resolution(&t_sensor_s, &nose_deg, 100, bin_util::Agg::Mean);
-    let (_, height_binned) =
-        bin_util::bin_to_resolution(&t_sensor_s, &height_m, 100, bin_util::Agg::Mean);
-    let (_, fused_binned) =
-        bin_util::bin_to_resolution(&t_sensor_s, &fused_m, 100, bin_util::Agg::Mean);
+    let (_, height_binned_raw) =
+        bin_util::bin_to_resolution(&t_sensor_s, &height_m_smooth, 100, bin_util::Agg::Mean);
+    // Physical range: the mast is 0.8 m, so board height is in [0, 0.8]
+    // (plus a tiny margin to account for noise and momentary
+    // submersion). Anything outside that is baro thermal drift — show
+    // as a gap rather than a line saturated at the axis boundary, so
+    // the graph only plots values that make physical sense. Does not
+    // affect bin length (NaN replaces value, slot stays) so the
+    // hover interpolation in html.rs still works.
+    let height_binned: Vec<f64> = height_binned_raw.iter()
+        .map(|&v| if v >= -0.15 && v <= 0.95 { v } else { f64::NAN })
+        .collect();
+    let fused_binned: Vec<f64> = Vec::new();
 
     let title = format!("{} — {:.1} min · {} ride{}",
         stem, dur_s / 60.0, rides.len(),
@@ -252,6 +273,62 @@ fn dedupe_by_second(rows: Vec<io::GpsRow>, base_ticks: f64) -> Vec<io::GpsRow> {
             last_sec = s;
             out.push(r);
         }
+    }
+    out
+}
+
+/// Subtract a centred rolling mean from each sample. Removes slow
+/// drift (thermal baro drift) while preserving oscillations. Mean is
+/// used over median because median has step-like response when the
+/// sample distribution shifts — produces visible sharp corners in
+/// the output; mean is C¹-smooth as long as the input is.
+fn subtract_rolling_mean(x: &[f64], window: usize) -> Vec<f64> {
+    let n = x.len();
+    if n == 0 || window == 0 { return x.to_vec(); }
+    let half = window / 2;
+    // Cumulative sum + finite-count for O(n) rolling mean.
+    let mut csum = vec![0.0; n + 1];
+    let mut ccount = vec![0usize; n + 1];
+    for i in 0..n {
+        let v = if x[i].is_finite() { x[i] } else { 0.0 };
+        csum[i + 1] = csum[i] + v;
+        ccount[i + 1] = ccount[i] + if x[i].is_finite() { 1 } else { 0 };
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let lo = i.saturating_sub(half);
+        let hi = (i + half + 1).min(n);
+        let cnt = ccount[hi] - ccount[lo];
+        if cnt == 0 {
+            out.push(x[i]);
+        } else {
+            let mean = (csum[hi] - csum[lo]) / cnt as f64;
+            out.push(x[i] - mean);
+        }
+    }
+    out
+}
+
+/// Centred rolling mean (no subtraction) — used as a light post-
+/// smoothing pass to take the edge off the alpha-beta filter's
+/// high-frequency baro-noise injection.
+fn rolling_mean(x: &[f64], window: usize) -> Vec<f64> {
+    let n = x.len();
+    if n == 0 || window <= 1 { return x.to_vec(); }
+    let half = window / 2;
+    let mut csum = vec![0.0; n + 1];
+    let mut ccount = vec![0usize; n + 1];
+    for i in 0..n {
+        let v = if x[i].is_finite() { x[i] } else { 0.0 };
+        csum[i + 1] = csum[i] + v;
+        ccount[i + 1] = ccount[i] + if x[i].is_finite() { 1 } else { 0 };
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let lo = i.saturating_sub(half);
+        let hi = (i + half + 1).min(n);
+        let cnt = ccount[hi] - ccount[lo];
+        out.push(if cnt == 0 { x[i] } else { (csum[hi] - csum[lo]) / cnt as f64 });
     }
     out
 }

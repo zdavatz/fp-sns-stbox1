@@ -192,6 +192,9 @@ Rust crate at `Utilities/rust/stbox-viz/` — single binary, no Python/venv requ
 # Animated GIF of board side view per session (needs pumping pitch oscillation)
 ./Utilities/rust/stbox-viz/target/release/stbox-viz animate csv/mirco_7.3.2026.csv -o gif/ --session 1
 
+# Compass vs GPS course sanity check (LIS2MDL iron-distortion diagnostic)
+./Utilities/rust/stbox-viz/target/release/stbox-viz compass csv/peter_22.4.2026_1250.csv -o png/
+
 # Combined camera + sensor MOV (needs ffmpeg in PATH)
 ./Utilities/rust/stbox-viz/target/release/stbox-viz animate csv/mirco_7.3.2026.csv -o mov/ \
     --session 1 --fps 15 \
@@ -203,7 +206,9 @@ Rust crate at `Utilities/rust/stbox-viz/` — single binary, no Python/venv requ
 
 The speed panel uses an **acceleration-gated** position-derived speed (haversine on GPS lat/lon deltas). Samples where `|Δspeed|/Δt > 15 km/h/s` (≈4 m/s²) and `v > 15 km/h` are rejected as multipath-induced position jumps before the 5 s rolling median. SUPfoil paddle strokes produce 1–3 m/s², anything above ~4 m/s² implies a ≥4 m position jump inside the module's ~5–10 m horizontal-error envelope. Measured effect on the 22.4.2026 Ermioni session: raw max 83.7 km/h → after gate 29.5 km/h → after smoothing 17.6 km/h. Without the gate the 5 s median alone couldn't suppress 30 km/h multipath spikes.
 
-The height panel shows both the baro-derived height (green line, temperature-compensated + GPS-anchored water reference) and a GPS altitude overlay (orange dots, zeroed at the stationary-period median). The GPS overlay can't resolve individual pumps (MAX-M10S vertical scatter ~3–10 m) but makes fix dropouts visible when the board lies flat on water and the antenna loses reception.
+The height panel shows the baro-derived height (green line, temperature-compensated + GPS-anchored water reference, 250 ms pre-smoothed to kill sensor noise) and a GPS altitude overlay (orange dots, zeroed at the stationary-period median). Y-axis is clamped to the physical mast range `[-0.1, 0.9] m` (0.80 m mast + small noise/overshoot margins); values outside `[-0.15, 0.95] m` are NaN'd so baro thermal drift shows as **gaps** rather than as a line saturated at the axis edge — an honest "here the baro is trustworthy, here it isn't" view. Labels every 10 cm. The GPS overlay can't resolve individual pumps (MAX-M10S vertical scatter ~3–10 m) but makes fix dropouts visible when the board lies flat on water and the antenna loses reception.
+
+Cross-panel inspection: hovering shows a vertical spike line through every panel with a unified tooltip (nose / baro / GPS-alt / speed at the same x). Clicking a time-series point pins a dashed red numbered marker (1, 2, 3, …) across all panels; a "Clear click-marks" button above the chart resets them. A `compass` subcommand (`stbox-viz compass <sensor.csv>`) compares tilt-compensated mag heading against GPS course over ground — a quick quality check for the LIS2MDL on this hardware (currently poor, ~300° p5–p95 span, due to iron distortion from metal mounting screws near the sensor).
 
 `sensors` / `pumpfoil` write 2100×2400 and 2400×1800 PNGs via `plotters` + `rustfft` — sub-second end-to-end for a full 23-minute session.
 
