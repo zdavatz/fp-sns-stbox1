@@ -153,6 +153,8 @@ Implementation in `Core/Src/gps_nmea.c`. With only two sentences enabled, 10 Hz 
 
 The firmware parses only `$GNRMC` and `$GNGGA` sentences. All other NMEA sentences from the module are silently ignored.
 
+**UART4 IRQ → GPS-thread split (24.4.2026)**: NMEA line assembly + sentence parsing (`nmea_checksum_ok`, `nmea_split`, `parse_rmc`/`parse_gga` with `atof`/`strtod`) used to run directly inside `HAL_UART_RxCpltCallback` at NVIC priority 6. SDMMC1 sits at priority 14, so every UART4 byte IRQ preempted in-progress SD transfers. At 1 Hz GPS (~400 IRQ/s) this was tolerated. At 10 Hz GPS (~4000 IRQ/s with variable-length parse spikes per completed sentence) the SDMMC timing budget blew out after ~90 s: the FileX writer backed up, `MessageQueue` filled to its 100-slot cap, the sensor thread blocked on `tx_queue_send(TX_WAIT_FOREVER)`, and sampled rate collapsed from 100 Hz to ~7.7 Hz. Signature in the CSV is a sustained run of Δtick = 13 after ~9 400 rows (Ayano 23.4.2026 s2: 9 371 rows Δ1 then 54 473 rows Δ13). The IRQ now only pushes incoming bytes into a 1 KB ring buffer (`RxRing[]` in `gps_nmea.c`) — no parsing in IRQ context. `gps_thread_entry` calls `GPS_Process()` once per poll cycle (after the `tx_thread_sleep(gps_poll_ticks)`) to drain the ring, assemble lines, and call the sentence parsers at thread priority 11. UART IRQ now completes in < 10 µs per byte regardless of GPS rate.
+
 Data collected via the ST BLE Sensor app uses a slightly different format (date/time columns instead of raw ms timestamp).
 
 ## Visualization
@@ -190,6 +192,8 @@ Page loads with ride 1 selected by default (button `active: 0`).
 **Map colorbar alignment**: positioned with `y = 1 - map_frac/2`, `yanchor: "middle"`, `len = map_frac × 0.9` so its top + bottom line up with the map's top + bottom in paper coordinates — prevents it from spilling into the time-series area below.
 
 **Ride detection**: sustained GPS movement above 3 km/h for ≥10 s, merging gaps <30 s, padded by 3 s. The pitch-oscillation detector used by `animate` misses smooth flying (board barely pitches); GPS-based detection catches every real ride and skips on-shore activity.
+
+**GPS loader does not decimate** (fixed 23.4.2026). An earlier `dedupe_by_second()` call kept only the first GPS row per second, which silently threw away 9 of every 10 fixes once the firmware moved to 10 Hz — visible as `9 / 76 ≈ 55 / 543 ≈ 10 %` fix retention in the loader's "{n} GPS fixes" log line. The haversine-based speed calculation then looked at 1-Hz-spaced positions and reported near-zero km/h even for actual rides. Now all fix rows from the CSV are kept, and position-derived speed is computed over the native sample interval.
 
 **Display rate reduction**: sensor series at 100 Hz are binned to 100 ms buckets (10 Hz display rate) before emission so the HTML stays ~1.2 MB. `bin_to_resolution` uses a `BTreeMap` keyed by bucket index — not a "if bucket != last_bucket" running-index loop — so any non-monotonic or duplicate input time can't emit the same bucket twice and make Plotly draw ghost zig-zags past the data end. Plotly.js is CDN-linked (`cdn.plot.ly/plotly-2.35.2.min.js`) — matches the Python version's `include_plotlyjs='cdn'`.
 

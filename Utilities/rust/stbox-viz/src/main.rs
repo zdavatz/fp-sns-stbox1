@@ -146,7 +146,6 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
         println!("loading {}", p.file_name().unwrap().to_string_lossy());
         let mut rows = io::load_gps_csv(p)?;
         rows.retain(|g| g.fix >= 1);
-        rows = dedupe_by_second(rows, base_ticks);
         println!("  {} GPS fixes", rows.len());
         let raw = gps::position_derived_speed_kmh(&rows);
         // Reject multipath-induced position jumps: anything where the
@@ -262,19 +261,6 @@ fn guess_gps_path(sensor_path: &Path) -> Option<PathBuf> {
     let parent = sensor_path.parent()?;
     let gps = parent.join(format!("{}_gps.csv", stem));
     if gps.exists() { Some(gps) } else { None }
-}
-
-fn dedupe_by_second(rows: Vec<io::GpsRow>, base_ticks: f64) -> Vec<io::GpsRow> {
-    let mut last_sec: i64 = i64::MIN;
-    let mut out = Vec::with_capacity(rows.len());
-    for r in rows {
-        let s = ((r.ticks - base_ticks) / gps::TICKS_PER_SEC).round() as i64;
-        if s != last_sec {
-            last_sec = s;
-            out.push(r);
-        }
-    }
-    out
 }
 
 /// Subtract a centred rolling mean from each sample. Removes slow

@@ -19,6 +19,23 @@ extern UART_HandleTypeDef hcom_uart[];
 
 #define NMEA_LINE_MAX 96
 
+/* UART4 RX byte goes into a ring buffer from the IRQ; the GPS thread drains
+   the ring and runs NMEA line assembly + parsing at thread priority. Before
+   this split, parse_rmc/parse_gga ran inside HAL_UART_RxCpltCallback at
+   NVIC priority 6, which preempted the SDMMC1 IRQ (priority 14). At 10 Hz
+   GPS (4000 bytes/s = 4000 UART IRQs/s with variable-length parse work per
+   completed sentence) the SD transfers stalled, MessageQueue filled, and
+   the sensor thread fell from 100 Hz to ~7.7 Hz — see the 23.4.2026 Ayano
+   data for the signature (9371 rows at Δtick=1, then 54473 rows at Δtick=13). */
+/* Sized for > 1 poll cycle of 10 Hz UBX output: GGA (~80 B) + RMC (~80 B)
+   per cycle = ~160 B / 100 ms. 1 kB gives ~6× headroom so a jittered poll
+   cycle (or a brief UART error burst) still fits. */
+#define GPS_RX_RING_SIZE 1024
+static volatile uint8_t  RxRing[GPS_RX_RING_SIZE];
+static volatile uint16_t RxRingHead;   /* IRQ writes */
+static volatile uint16_t RxRingTail;   /* GPS thread reads */
+static volatile uint32_t RxRingDropped; /* diagnostic counter for ring overflow */
+
 static uint8_t  RxByte;
 static char     LineBuf[NMEA_LINE_MAX];
 static uint16_t LineLen;
@@ -97,8 +114,9 @@ static void parse_rmc(char *fields[], int n)
 
   if (status[0] != 'A') return;   /* 'V' = void */
 
-  UINT primask = tx_interrupt_control(TX_INT_DISABLE);
-
+  /* No tx_interrupt_control needed: both parse_rmc (via GPS_Process) and
+     the sole consumers (GPS_GetLatestFix / GPS_GetWallClock) run in the
+     same GPS thread context since the IRQ-to-thread split. */
   strncpy(LatestFix.Utc, utc, sizeof(LatestFix.Utc) - 1);
   LatestFix.Utc[sizeof(LatestFix.Utc) - 1] = '\0';
   LatestFix.Lat = nmea_latlon(lat, ns[0], 1);
@@ -122,8 +140,6 @@ static void parse_rmc(char *fields[], int n)
     WallClockYear  = (uint32_t)(2000 + (date[4]-'0')*10 + (date[5]-'0'));
     WallClockValid = 1;
   }
-
-  tx_interrupt_control(primask);
 }
 
 /* Parse $GNGGA: time, lat, N/S, lon, E/W, quality, num-sat, HDOP, alt, M, ... */
@@ -135,15 +151,11 @@ static void parse_gga(char *fields[], int n)
   const char *hdop    = fields[8];
   const char *alt     = fields[9];
 
-  UINT primask = tx_interrupt_control(TX_INT_DISABLE);
-
   LatestFix.Fix    = (uint8_t)atoi(quality);
   LatestFix.NumSat = (uint8_t)atoi(numsat);
   LatestFix.Hdop   = (float)strtod(hdop, NULL);
   LatestFix.Alt    = (float)strtod(alt, NULL);
   FixUpdated       = 1;
-
-  tx_interrupt_control(primask);
 }
 
 static void nmea_handle_line(char *line)
@@ -167,31 +179,60 @@ static void nmea_handle_line(char *line)
 /* UART4 reception                                                    */
 /* ------------------------------------------------------------------ */
 
+/* IRQ-only: drop the byte into the ring buffer. No line assembly, no
+   parsing — those run in GPS_Process() at thread priority so UART4 IRQ
+   can complete in <10 µs and not preempt the SDMMC1 IRQ. */
 void GPS_UART_RxByte(uint8_t byte)
 {
-  if (byte == '\n' || byte == '\r')
+  uint16_t next = (uint16_t)((RxRingHead + 1) % GPS_RX_RING_SIZE);
+  if (next != RxRingTail)
   {
-    if (LineLen > 0 && LineLen < NMEA_LINE_MAX)
-    {
-      LineBuf[LineLen] = '\0';
-      nmea_handle_line(LineBuf);
-    }
-    LineLen = 0;
-    return;
-  }
-  if (byte == '$')
-  {
-    /* new sentence start -> reset buffer */
-    LineLen = 0;
-  }
-  if (LineLen < NMEA_LINE_MAX - 1)
-  {
-    LineBuf[LineLen++] = (char)byte;
+    RxRing[RxRingHead] = byte;
+    RxRingHead = next;
   }
   else
   {
-    /* overrun: drop the line, wait for next '$' */
-    LineLen = 0;
+    /* Ring full — thread fell behind. At 10 Hz GPS with only GGA+RMC
+       enabled we see ~4 kB/s peak, so a 512-byte ring buffers > 100 ms,
+       well above the typical GPS poll cadence. Count drops for diagnostics. */
+    RxRingDropped++;
+  }
+}
+
+/* Drain the ring and feed bytes through the NMEA line-assembly + parser.
+   Call from the GPS thread (thread priority), once per poll cycle. */
+void GPS_Process(void)
+{
+  for (;;)
+  {
+    if (RxRingHead == RxRingTail) return;  /* empty */
+    uint8_t b = RxRing[RxRingTail];
+    RxRingTail = (uint16_t)((RxRingTail + 1) % GPS_RX_RING_SIZE);
+
+    if (b == '\n' || b == '\r')
+    {
+      if (LineLen > 0 && LineLen < NMEA_LINE_MAX)
+      {
+        LineBuf[LineLen] = '\0';
+        nmea_handle_line(LineBuf);
+      }
+      LineLen = 0;
+      continue;
+    }
+    if (b == '$')
+    {
+      /* new sentence start -> reset buffer */
+      LineLen = 0;
+    }
+    if (LineLen < NMEA_LINE_MAX - 1)
+    {
+      LineBuf[LineLen++] = (char)b;
+    }
+    else
+    {
+      /* overrun: drop the line, wait for next '$' */
+      LineLen = 0;
+    }
   }
 }
 
@@ -208,12 +249,13 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == UART4)
   {
-    /* Clear any pending error flags and re-arm RX */
+    /* Clear any pending error flags and re-arm RX. LineLen belongs to
+       the thread now — don't touch it from the IRQ; the next '$' in the
+       stream will reset it on its own. */
     __HAL_UART_CLEAR_OREFLAG(huart);
     __HAL_UART_CLEAR_NEFLAG(huart);
     __HAL_UART_CLEAR_FEFLAG(huart);
     __HAL_UART_CLEAR_PEFLAG(huart);
-    LineLen = 0;
     HAL_UART_Receive_IT(GPS_UART, &RxByte, 1);
   }
 }

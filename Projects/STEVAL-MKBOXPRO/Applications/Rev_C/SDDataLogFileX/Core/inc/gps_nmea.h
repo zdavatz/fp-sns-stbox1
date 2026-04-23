@@ -66,8 +66,18 @@ uint8_t GPS_GetWallClock(uint32_t *year, uint32_t *month, uint32_t *day,
    to read. Example: "rate=OK(10Hz) msg=OK save=OK". */
 const char *GPS_GetInitLog(void);
 
-/* Called from UART4_IRQHandler via HAL_UART_IRQHandler -> RxCpltCallback */
+/* Called from UART4_IRQHandler via HAL_UART_IRQHandler -> RxCpltCallback.
+   Pushes the incoming byte into the UART RX ring buffer. NMEA line
+   assembly + sentence parsing is deferred to GPS_Process(), which must
+   run at thread priority — this keeps the UART4 IRQ short enough to not
+   preempt the SDMMC1 IRQ during SD card writes. */
 void GPS_UART_RxByte(uint8_t byte);
+
+/* Drain the UART RX ring buffer, assemble NMEA lines, and call the
+   sentence parsers for complete $GNRMC / $GNGGA lines. Call once per
+   GPS thread poll cycle, before GPS_GetLatestFix. Cheap when the ring
+   is empty (~3 instructions). */
+void GPS_Process(void);
 
 /* Direct IRQ hook for UART4 */
 void GPS_UART_IRQHandler(void);

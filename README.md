@@ -120,6 +120,8 @@ Values outside `[1, 25]` trip a compile-time `#error` in `stbox1_config.h`. IDE 
 
 Once the first `$GNRMC` with a valid date+time arrives, `gps_thread` seeds FileX's wall-clock base with the GPS UTC — every file created or flushed after that moment gets today's real FAT timestamp (`gps_nmea.c: GPS_GetWallClock`, `app_filex.c: SetClockBaseFromGPS`). Files written before GPS lock still carry the compile-date fallback. The moment of seeding is logged to the SD error log as `clock: seeded from GPS YYYY-MM-DD HH:MM:SS UTC`. The error-log filename itself is built once at boot from `__DATE__` and is not renamed — only FAT directory entries on new files migrate to GPS time.
 
+NMEA line assembly + sentence parsing runs in `gps_thread` (priority 11), not inside the UART4 RX ISR. The IRQ just pushes incoming bytes into a 1 KB ring buffer (`RxRing[]` in `gps_nmea.c`) and the thread calls `GPS_Process()` once per poll cycle to drain it. Before this split (fixed 24.4.2026), parsing ran in the UART4 IRQ at NVIC priority 6 and preempted the SDMMC1 IRQ (priority 14); at 10 Hz GPS that starved the SD writer enough to drop the sensor rate from 100 Hz to ~7.7 Hz after ~90 s. Now the IRQ path is O(1) per byte and SD transfers are uninterrupted.
+
 ### Battery CSV: `BatNNN.csv` (on by default)
 
 CSV at 1 Hz from the on-board STC3115 fuel gauge on I²C4:

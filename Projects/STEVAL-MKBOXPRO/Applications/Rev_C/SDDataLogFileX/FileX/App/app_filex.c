@@ -1771,6 +1771,13 @@ static void gps_thread_entry(ULONG thread_input)
   {
     tx_thread_sleep(gps_poll_ticks);
 
+    /* Drain the UART4 RX ring and parse any complete $GNRMC / $GNGGA
+       sentences at thread priority. Previously this work happened inside
+       the UART4 IRQ (priority 6), which preempted SDMMC1 (priority 14)
+       and at 10 Hz GPS starved the FileX writer — the sensor thread then
+       fell from 100 Hz to ~7.7 Hz after ~90 s of logging. */
+    GPS_Process();
+
     /* Seed FileX's wall-clock base from GPS UTC, once. Runs independently
        of GpsFileOpen so the base is ready as soon as the first fix lands
        — subsequent fx_media_flush calls (which run UpdateFileXClock) then
