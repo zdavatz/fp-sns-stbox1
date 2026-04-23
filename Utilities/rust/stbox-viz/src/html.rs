@@ -19,6 +19,14 @@ pub struct PanelData<'a> {
     pub gps: &'a [GpsRow],
     pub gps_speed_kmh: &'a [f64],
     pub gps_t_s: &'a [f64],
+    /// GPS altitude, aligned 1:1 with `gps`. Plotted as a second trace
+    /// in the height panel after subtracting the stationary-period
+    /// median so it's directly comparable to the baro height.
+    /// MAX-M10S vertical accuracy is ~5–10 m, so individual pump strokes
+    /// (0.8 m) are invisible — the trace is useful mostly for spotting
+    /// GPS dropouts when the board lies flat on the water and the
+    /// antenna loses fix quality.
+    pub gps_height_m: &'a [f64],
     pub rides: &'a [Ride],
     pub title: &'a str,
 }
@@ -157,6 +165,25 @@ pub fn render(data: &PanelData) -> String {
             "xaxis": "x",
             "yaxis": "y2",
             "name": "0.80 m mast",
+            "showlegend": false,
+        }));
+    }
+
+    // GPS altitude overlay in the height panel (when available). Drawn
+    // as orange dots so the reader can distinguish the 1–10 Hz GPS
+    // samples from the dense baro trace. Dropouts (= missing points /
+    // sparse stretches) are visible at a glance.
+    if !data.gps_height_m.is_empty() && have_map {
+        traces.push(json!({
+            "type": "scatter",
+            "mode": "markers",
+            "x": data.gps_t_s,
+            "y": data.gps_height_m,
+            "marker": {"color": "#ff7f0e", "size": 4, "opacity": 0.8},
+            "name": "GPS alt",
+            "xaxis": "x",
+            "yaxis": "y2",
+            "hovertemplate": "t=%{x:.0f}s<br>GPS alt=%{y:+.2f} m<extra></extra>",
             "showlegend": false,
         }));
     }
@@ -314,7 +341,7 @@ pub fn render(data: &PanelData) -> String {
     let panel_titles: Vec<&str> = if have_map {
         vec![
             "Board nose angle to water [°]",
-            "Board height above water [m] — mast = 0.80 m · baro is temperature-drift limited",
+            "Board height above water [m] — green = baro (TC), orange = GPS alt (zeroed at stationary median) · mast = 0.80 m",
             "Speed [km/h] (position-derived, 5 s median)",
         ]
     } else {

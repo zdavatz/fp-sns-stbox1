@@ -137,7 +137,12 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
         rows = dedupe_by_second(rows, base_ticks);
         println!("  {} GPS fixes", rows.len());
         let raw = gps::position_derived_speed_kmh(&rows);
-        let smooth = gps::smooth_speed_kmh(&raw);
+        // Reject multipath-induced position jumps: anything where the
+        // implied longitudinal acceleration exceeds 15 km/h/s (≈4 m/s²)
+        // is almost certainly a bad fix, not a real paddle stroke.
+        // SUPfoil paddle-starts produce 1–3 m/s² per stroke.
+        let gated = gps::reject_acc_outliers(&rows, &raw, 15.0);
+        let smooth = gps::smooth_speed_kmh(&gated);
         let t_s: Vec<f64> = rows.iter()
             .map(|g| (g.ticks - base_ticks) / gps::TICKS_PER_SEC).collect();
         (rows, smooth, t_s)
@@ -160,6 +165,28 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
 
     let height_m = baro::height_above_water_m(&sensors, &gps_rows, &gps_speed, base_ticks);
 
+    // GPS altitude, zeroed at the median of stationary samples (speed
+    // < 3 km/h) so it lines up with the baro height axis. MAX-M10S
+    // vertical scatter is ~3–10 m — the trace won't resolve pumps, but
+    // makes fix dropouts visible when the board lies flat on water.
+    let gps_height_m: Vec<f64> = if !gps_rows.is_empty() {
+        let alt: Vec<f64> = gps_rows.iter().map(|g| g.alt_m).collect();
+        let mut stationary: Vec<f64> = alt.iter().zip(gps_speed.iter())
+            .filter(|&(_, &s)| s < 3.0)
+            .map(|(&a, _)| a)
+            .collect();
+        let baseline = {
+            let pool = if !stationary.is_empty() { &mut stationary } else {
+                &mut alt.clone()
+            };
+            pool.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            pool[pool.len() / 2]
+        };
+        alt.iter().map(|a| a - baseline).collect()
+    } else {
+        Vec::new()
+    };
+
     let (nose_t, nose_binned) =
         bin_util::bin_to_resolution(&t_sensor_s, &nose_deg, 100, bin_util::Agg::Mean);
     let (_, height_binned) =
@@ -175,6 +202,7 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
         gps: &gps_rows,
         gps_speed_kmh: &gps_speed,
         gps_t_s: &gps_t_s,
+        gps_height_m: &gps_height_m,
         rides: &rides,
         title: &title,
     });

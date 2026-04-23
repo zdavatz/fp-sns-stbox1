@@ -34,12 +34,56 @@ pub fn position_derived_speed_kmh(gps: &[GpsRow]) -> Vec<f64> {
     out
 }
 
+/// Reject unphysical jumps by comparing |Δspeed| against a maximum
+/// plausible longitudinal acceleration. Pumpfoil/SUPfoil paddle-starts
+/// produce ~1–3 m/s² over a stroke — anything above ~4 m/s² is almost
+/// certainly a multipath-induced position jump rather than real motion
+/// (on a 1 Hz fix interval, 15 km/h/s = 4.16 m/s² = 4.16 m position
+/// delta over 1 s, which is inside the module's ~5–10 m horizontal
+/// error envelope).
+///
+/// Returns a copy of `raw` with glitch samples set to NaN. Keeps the
+/// previous valid sample as the "baseline" for the next comparison so
+/// a glitch doesn't poison everything downstream of it.
+pub fn reject_acc_outliers(
+    gps: &[GpsRow],
+    raw_kmh: &[f64],
+    max_accel_kmh_per_s: f64,
+) -> Vec<f64> {
+    let n = raw_kmh.len();
+    let mut out = raw_kmh.to_vec();
+    if n == 0 { return out; }
+
+    let mut prev_t: Option<f64> = None;
+    let mut prev_v: Option<f64> = None;
+    for i in 0..n {
+        let t = gps[i].ticks / TICKS_PER_SEC;
+        let v = out[i];
+        if let (Some(tp), Some(vp)) = (prev_t, prev_v) {
+            let dt = (t - tp).max(0.05);
+            let accel = (v - vp).abs() / dt;
+            // Only flag high-speed jumps — a Δspeed from 0 to 10 km/h in
+            // 1 s is 10 km/h/s (2.8 m/s²), plausible for a paddle stroke.
+            // The pathological case is Δspeed from 5 to 35 km/h in 1 s.
+            if accel > max_accel_kmh_per_s && v > 15.0 {
+                out[i] = f64::NAN;
+                continue;
+            }
+        }
+        prev_t = Some(t);
+        prev_v = Some(v);
+    }
+    out
+}
+
 /// Clamp implausible multipath glitches (>60 km/h on a pumpfoil is always
-/// a bad fix), linearly interpolate the NaN'd values, then apply a
-/// 5-sample rolling median to absorb remaining single-sample spikes.
+/// a bad fix) and NaN-marked acceleration outliers, linearly interpolate
+/// the rejected values, then apply a 5-sample rolling median to absorb
+/// remaining single-sample spikes.
 pub fn smooth_speed_kmh(raw: &[f64]) -> Vec<f64> {
-    let mut clipped: Vec<Option<f64>> =
-        raw.iter().map(|&v| if v > 60.0 { None } else { Some(v) }).collect();
+    let mut clipped: Vec<Option<f64>> = raw.iter()
+        .map(|&v| if !v.is_finite() || v > 60.0 { None } else { Some(v) })
+        .collect();
     linear_interpolate(&mut clipped);
     let interpolated: Vec<f64> = clipped.iter().map(|o| o.unwrap_or(0.0)).collect();
     rolling_median(&interpolated, 5)
