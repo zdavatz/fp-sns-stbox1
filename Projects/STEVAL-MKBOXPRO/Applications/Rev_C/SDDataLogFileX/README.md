@@ -56,9 +56,22 @@ No manual setup needed — `GPS_Init()` auto-configures the module on every boot
 4. UBX-CFG-MSG × 4 to disable GLL, GSA, GSV, VTG (only $GNRMC + $GNGGA remain enabled)
 5. UBX-CFG-CFG to persist the config in BBR + Flash + EEPROM
 
-The ACK status of every command is logged to a static buffer and emitted to the SD error log on the first START_LOG as `gps: rate=OK(10Hz) msg=OK save=OK` — post-session we can immediately see whether the module accepted the rate command or silently ignored it. Earlier versions sent the same commands without ACK parsing, so a dropped UBX packet would leave the module on its persisted 1 Hz config with no signal in the logs.
+The ACK status of every command is logged to a static buffer and emitted to the SD error log on the first START_LOG as `gps: rate=OK(10Hz) msg=OK save=OK` — post-session we can immediately see whether the module accepted the rate command or silently ignored it. Earlier versions sent the same commands without ACK parsing, so a dropped UBX packet would leave the module on its persisted 1 Hz config with no signal in the logs. `save=NAK` from UBX-CFG-CFG is non-blocking — the RAM layer of the config takes effect immediately, so 10 Hz output works even without successful flash persistence; flash persistence just means the config survives the next power cycle.
+
+`gps_thread` polls the fix buffer at the module rate (`GPS_MEAS_PERIOD_MS / 10` ticks — for `GPS_RATE_HZ=10` that's 10 ticks = 100 ms between reads). Before this change the thread was hard-coded to `tx_thread_sleep(100) = 1 s`, which silently dropped 9 of every 10 fixes when the module was pushed to 10 Hz (observed symptom: `rate=OK(10Hz)` in the error log but GpsNNN.csv still showing 100-tick row deltas).
 
 The firmware parses only `$GNRMC` and `$GNGGA` NMEA sentences and logs them to `GpsNNN.csv` (timestamp, UTC, lat, lon, alt, speed km/h, course, fix, num-sat, HDOP). With only two sentences enabled, 10 Hz fits in ~1.5 kB/s on the 38400-baud UART (well under the ~3.8 kB/s ceiling). `STBOX1_ENABLE_PRINTF` is disabled while the GPS occupies UART4 — fatal errors still land in the SD error log.
+
+### <b>Firmware fingerprint in error log</b>
+
+On boot the error log now includes a second line with the exact firmware identity, useful post-session for telling which binary ran:
+
+```
+--- Boot Apr 23 2026 10:15:02 ---
+fw: build Apr 23 2026 10:15:02 | GPS 10Hz | AUDIO=0 BATTERY=1 | flash ~116KB
+```
+
+Flash footprint is computed at runtime from the `_sidata`/`_sdata`/`_edata` linker symbols. The compile-date `--- Boot ---` marker alone was identical across builds on the same day, so the `fw:` line is the one that disambiguates.
 
 The GPS fix rate is a build-time option. The Makefile exposes `GPS_RATE_HZ`:
 
