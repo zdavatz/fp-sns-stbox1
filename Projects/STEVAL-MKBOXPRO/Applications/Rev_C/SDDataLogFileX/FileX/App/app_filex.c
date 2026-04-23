@@ -1140,9 +1140,24 @@ static void ErrorLog_Open(void)
 
   ErrorLogFileOpen = 1;
 
-  /* Write boot marker */
-  CHAR boot_msg[128];
+  /* Write boot marker + firmware fingerprint so we can tell post-session
+     exactly which binary produced the data. Flash footprint is computed
+     from linker symbols: _sidata is the Flash load-address of .data (the
+     last thing placed in Flash), so _sidata + sizeof(.data) is the total
+     flash used by the application. */
+  extern uint32_t _sidata, _sdata, _edata;
+  ULONG flash_end_addr = (ULONG)&_sidata + ((ULONG)&_edata - (ULONG)&_sdata);
+  ULONG flash_kb = (flash_end_addr - 0x08000000UL + 1023) / 1024;
+
+  CHAR boot_msg[256];
   INT len = sprintf(boot_msg, "--- Boot %s %s ---\r\n", __DATE__, __TIME__);
+  fx_file_write(&ErrorLogFxFile, boot_msg, len);
+  len = sprintf(boot_msg,
+    "fw: build %s %s | GPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    __DATE__, __TIME__,
+    (unsigned)GPS_RATE_HZ,
+    STBOX1_LOG_AUDIO, STBOX1_LOG_BATTERY,
+    (unsigned long)flash_kb);
   fx_file_write(&ErrorLogFxFile, boot_msg, len);
   fx_media_flush(&sdio_disk);
 
@@ -1744,9 +1759,17 @@ static void gps_thread_entry(ULONG thread_input)
      contents before acknowledging, so overwriting next tick is safe. */
   static MessageData_t GpsMsg;
 
+  /* Poll the GPS fix buffer at the module's output rate. 1 tick = 10 ms,
+     so for GPS_RATE_HZ = 10 (100 ms period) this sleeps 10 ticks = 100 ms.
+     Before this change the sleep was hard-coded to 100 ticks (= 1 s) and
+     silently dropped 9 of every 10 fixes when the module was pushed to
+     10 Hz — the NMEA parser filled LatestFix 10×/s but the thread only
+     read once per second. */
+  const ULONG gps_poll_ticks = (GPS_MEAS_PERIOD_MS / 10) > 0 ? (GPS_MEAS_PERIOD_MS / 10) : 1;
+
   while (1)
   {
-    tx_thread_sleep(100);   /* 1 s @ 10 ms/tick */
+    tx_thread_sleep(gps_poll_ticks);
 
     /* Seed FileX's wall-clock base from GPS UTC, once. Runs independently
        of GpsFileOpen so the base is ready as soon as the first fix lands
