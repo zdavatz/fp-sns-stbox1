@@ -2231,16 +2231,21 @@ static void I2C4_MspInit(I2C_HandleTypeDef* i2cHandle)
     PD12     ------> I2C4_SCL
     PD13     ------> I2C4_SDA
     */
+    /* STC3115 on I2C4 (PD12/PD13): enable internal pull-ups. Diagnostic probe
+       24.4.2026 returned halerr=0x20 (HAL_I2C_ERROR_TIMEOUT) on ping_0xE0 —
+       bus never releases high between bits, symptom of missing/weak external
+       pull-ups on this Rev_C board. STM32U5 internal pull-ups (~40 kOhm) are
+       marginal for Fast-Mode but adequate at the 145 kHz we run I2C4 at. */
     GPIO_InitStruct.Pin = BUS_I2C4_SCL_GPIO_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = BUS_I2C4_SCL_GPIO_AF;
     HAL_GPIO_Init(BUS_I2C4_SCL_GPIO_PORT, &GPIO_InitStruct);
 
     GPIO_InitStruct.Pin = BUS_I2C4_SDA_GPIO_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = BUS_I2C4_SDA_GPIO_AF;
     HAL_GPIO_Init(BUS_I2C4_SDA_GPIO_PORT, &GPIO_InitStruct);
