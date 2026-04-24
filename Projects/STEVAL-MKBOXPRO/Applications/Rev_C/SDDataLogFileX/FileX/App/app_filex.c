@@ -1266,6 +1266,21 @@ static INT CheckAndApplyFirmwareUpdate(void)
   STBOX1_PRINTF("\r\n*** SD Firmware Update ***\r\n");
   STBOX1_PRINTF("Found firmware.bin (%lu bytes)\r\n", fw_size);
 
+  /* Distinct "firmware detected" signal: alternate green+red 10x rapid,
+     ~2 s total. Easy to distinguish from the normal 1/2/3 green-blink
+     boot sequence — tells the field tester immediately that an SD-based
+     update was picked up (vs "no firmware.bin, boot straight to logging"). */
+  for (int i = 0; i < 10; i++) {
+    BSP_LED_On(LED_GREEN);
+    BSP_LED_Off(LED_RED);
+    HAL_Delay(100);
+    BSP_LED_Off(LED_GREEN);
+    BSP_LED_On(LED_RED);
+    HAL_Delay(100);
+  }
+  BSP_LED_Off(LED_GREEN);
+  BSP_LED_Off(LED_RED);
+
   if (fw_size == 0 || fw_size > (1024 * 1024 - 8192))
   {
     /* Empty or too large (max ~1016 KB, leave room for FW ID page) */
@@ -1392,6 +1407,17 @@ static INT CheckAndApplyFirmwareUpdate(void)
 
   STBOX1_PRINTF("Swapping banks and resetting...\r\n");
   BSP_LED_Off(LED_RED);
+
+  /* "Firmware flashed successfully" signal: 3 slow green blinks (~1.8 s
+     total) before the reset triggers. Clear "we succeeded" feedback for
+     the field tester — distinct from both the rapid "detected" signal
+     above and the single solid-green "logging active" post-boot state. */
+  for (int i = 0; i < 3; i++) {
+    BSP_LED_On(LED_GREEN);
+    HAL_Delay(300);
+    BSP_LED_Off(LED_GREEN);
+    HAL_Delay(300);
+  }
   BSP_LED_On(LED_GREEN);
 
   /* Swap flash banks via option bytes — triggers system reset */

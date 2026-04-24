@@ -567,7 +567,7 @@ vpath %.c $(sort $(dir $(C_SOURCES)))
 vpath %.s $(sort $(dir $(ASM_SOURCES)))
 vpath %.S $(sort $(dir $(ASM_SOURCES_S)))
 
-all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin
+all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/firmware.bin
 
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
@@ -584,6 +584,12 @@ $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS)
 
 $(BUILD_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf
 	$(CP) -O binary $< $@
+
+# Copy also as firmware.bin so it can be dropped onto the SD card
+# as-is — the SD-flash code in app_filex.c looks for exactly that name.
+# Saves the field-tester from renaming every build manually.
+$(BUILD_DIR)/firmware.bin: $(BUILD_DIR)/$(TARGET).bin
+	cp $< $@
 
 $(BUILD_DIR):
 	mkdir -p $@
