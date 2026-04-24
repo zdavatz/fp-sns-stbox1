@@ -76,6 +76,14 @@ reset: POR (CSR=0x0C000000)
 
 Flash footprint is computed at runtime from the `_sidata`/`_sdata`/`_edata` linker symbols. The compile-date `--- Boot ---` marker alone was identical across builds on the same day, so the `fw:` line is the one that disambiguates.
 
+### <b>Checking which firmware is running</b>
+
+Three ways, from trivial to definitive — useful in the field when verifying that an SD firmware update actually landed:
+
+1. **Error log on the SD card (definitive).** Pull the card, open `Error_Log_Pump_Tsueri_dd.mm.yyyy.log`, read the `fw: build <date> <time> | ...` line — compare against the build you intended to flash. The filename itself carries the compile date for a quick first glance without opening the file.
+2. **LED patterns during the SD update (live, build ≥ 24.4.2026 13:26).** If a `firmware.bin` is present on the card at boot, the 10× rapid green+red alternation (~2 s) confirms "detected + flashing", then 3× slow green blinks (~1.8 s) confirm "flash successful". These patterns only exist in builds from 24.4.2026 13:26 onward — seeing them proves you're at least on that build. See *LED behavior* below for details.
+3. **Feature presence (indirect).** `BatNNN.csv` appearing on the card means the I²C4 timing fix is in (build ≥ 24.4.2026 12:53). If `BatNNN.csv` is missing and the error log shows `gas gauge init FAIL - continuing without battery log`, you're either on a pre-12:53 build or the STC3115 genuinely isn't answering.
+
 ### <b>Reset-reason in error log</b>
 
 The third boot-marker line decodes `RCC->CSR` — set by the STM32U5 hardware to mark what caused the most recent reset — so field-test reboots can be told apart from user-initiated power-ups. `main()` snapshots `RCC->CSR` into `BootResetCsr` right after `HAL_Init()` and calls `__HAL_RCC_CLEAR_RESET_FLAGS()` so the *next* reset's flags are captured cleanly. `ErrorLog_Open()` decodes the snapshot into one of:
