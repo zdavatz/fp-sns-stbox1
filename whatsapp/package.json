@@ -1,0 +1,17 @@
+{
+  "name": "fp-sns-stbox1-whatsapp",
+  "version": "1.0.0",
+  "description": "WhatsApp CLI for sending SensorTile.box firmware and plots",
+  "main": "send.mjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

@@ -26,3 +26,8 @@ __pycache__/
 
 # Temp video frames
 png/video_frames/
+
+# WhatsApp CLI (Baileys) — session credentials + node deps stay local
+whatsapp/auth/
+whatsapp/node_modules/
+whatsapp/package-lock.json

@@ -256,6 +256,19 @@ Both Makefiles include `config.mk` via `-include $(ROOT)/config.mk` with a fallb
 
 SDDataLogFileX Makefile also exposes `GPS_RATE_HZ` (default 10) that gets passed into `stbox1_config.h` as `-DGPS_RATE_HZ=<n>` and drives `UBX-CFG-RATE` in `gps_nmea.c`. Override per invocation, e.g. `make GPS_RATE_HZ=5` for 5 Hz or `make GPS_RATE_HZ=25` for the max rate. The header has a `[1, 25]` `#error` guard (UART ceiling at 38400 baud with only GGA + RMC enabled). IDE builds that don't define the macro get the 10 Hz default.
 
+## WhatsApp CLI
+
+`whatsapp/` contains a small Baileys-based Node.js CLI for sending firmware binaries (and plots) to contacts or groups without opening the WhatsApp app. Four scripts, identical session store (`whatsapp/auth/`):
+
+| Script | Purpose |
+|---|---|
+| `login.mjs` | Pair the CLI with your phone (QR scan, once per auth reset). `--force` wipes the existing session. |
+| `list-groups.mjs` | Dump JIDs of every group the paired account is in — needed to find the target JID before the first `send.mjs` call. |
+| `send.mjs <jid-or-phone> <file> [caption]` | Auto-detects by extension: `.png/.jpg/.jpeg` → image (with caption), everything else → document. So the same tool sends `build/SDDataLogFileX.bin` to Peter and `png/plot_combined_*.png` to the pumpfoil group. Phone-number shorthand (`41791234567`) is expanded to `<num>@s.whatsapp.net`. |
+| `leave-group.mjs <jid>[,…]` | Leave one or more groups (comma-separated). |
+
+Setup: `cd whatsapp && npm install`, then `node login.mjs`. Session is persisted in `whatsapp/auth/` — git-ignored (together with `node_modules/` and the regenerable `package-lock.json`). Adapted from `~/software/pegelstand/whatsapp/`. Primary use case on this repo: ship a fresh firmware `.bin` to the field-tester (Peter) right after a build, without Airdrop/email round-trips.
+
 ## Known Limitations
 
 - Some Android devices have issues with BLE secure PIN connections — disable `STBOX1_BLE_SECURE_CONNECTION` as workaround

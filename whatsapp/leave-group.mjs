@@ -1,0 +1,91 @@
+#!/usr/bin/env node
+// Leave a WhatsApp group
+// Usage: node leave-group.mjs <group-jid>[,<group-jid>,...]
+
+import makeWASocket, {
+  useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
+  fetchLatestBaileysVersion,
+} from "@whiskeysockets/baileys";
+import pino from "pino";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const AUTH_DIR = resolve(__dirname, "auth");
+const logger = pino({ level: "silent" });
+
+const rawJids = process.argv.slice(2).join(",").split(",").filter(Boolean);
+
+if (rawJids.length === 0) {
+  console.error("Usage: node leave-group.mjs <jid>[,<jid>,...]");
+  console.error("Example: node leave-group.mjs 120363401234567890@g.us");
+  process.exit(1);
+}
+
+const jids = rawJids.map(j => j.includes("@") ? j : `${j}@g.us`);
+
+async function main() {
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { version } = await fetchLatestBaileysVersion();
+
+  const sock = makeWASocket({
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, logger),
+    },
+    version,
+    logger,
+    browser: ["FP-SNS-STBOX1", "CLI", "1.0"],
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      sock.end();
+      reject(new Error("Connection timeout (60s)"));
+    }, 60000);
+
+    sock.ev.on("connection.update", async (update) => {
+      const { connection } = update;
+
+      if (connection === "open") {
+        clearTimeout(timeout);
+        try {
+          for (const jid of jids) {
+            console.log(`Leaving ${jid}...`);
+            try {
+              await sock.groupLeave(jid);
+              console.log(`  Done.`);
+            } catch (err) {
+              console.error(`  Failed: ${err.message}`);
+            }
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+          console.log(`\n${jids.length} groups processed.`);
+          await new Promise((r) => setTimeout(r, 1000));
+          sock.end();
+          resolve();
+        } catch (err) {
+          sock.end();
+          reject(err);
+        }
+      }
+
+      if (connection === "close") {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+  });
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error("Error:", err.message);
+    process.exit(1);
+  });
