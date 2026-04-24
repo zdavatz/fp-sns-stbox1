@@ -69,9 +69,28 @@ On boot the error log now includes a second line with the exact firmware identit
 ```
 --- Boot Apr 23 2026 10:15:02 ---
 fw: build Apr 23 2026 10:15:02 | GPS 10Hz | AUDIO=0 BATTERY=1 | flash ~116KB
+reset: POR (CSR=0x0C000000)
 ```
 
 Flash footprint is computed at runtime from the `_sidata`/`_sdata`/`_edata` linker symbols. The compile-date `--- Boot ---` marker alone was identical across builds on the same day, so the `fw:` line is the one that disambiguates.
+
+### <b>Reset-reason in error log</b>
+
+The third boot-marker line decodes `RCC->CSR` — set by the STM32U5 hardware to mark what caused the most recent reset — so field-test reboots can be told apart from user-initiated power-ups. `main()` snapshots `RCC->CSR` into `BootResetCsr` right after `HAL_Init()` and calls `__HAL_RCC_CLEAR_RESET_FLAGS()` so the *next* reset's flags are captured cleanly. `ErrorLog_Open()` decodes the snapshot into one of:
+
+| Stamp | Meaning |
+|---|---|
+| `reset: POR` | clean power-on (both `BORRSTF` + `PINRSTF` set — battery just plugged in or main switch turned on) |
+| `reset: BOR` | brown-out (supply dipped below the BOR threshold mid-session — typically weak battery under SD-write load, loose power connector) |
+| `reset: PIN` | external NRST pulled low (reset button, glitch on the NRST net) |
+| `reset: SOFTWARE` | firmware called `NVIC_SystemReset()` — or equivalent path from a HardFault via the default handler |
+| `reset: IWDG` / `WWDG` | watchdog fired (both are disabled in this build, so should never appear) |
+| `reset: LPWR` | illegal low-power mode exit |
+| `reset: OBL` | option-byte loader reset (bank swap via firmware update) |
+
+Multiple flags can set simultaneously — e.g. `POR` on a clean power-up. The raw `CSR=0x...` is appended so unusual combinations are still readable.
+
+Motivation: on 23.4.2026 two field test sessions aborted after 53 s with no Error_Handler trace and a second `--- Boot ---` marker appearing immediately in the same log. Without reset-reason decoding we couldn't distinguish "user turned it off then on" from "battery brown-out killed us mid-session" from "firmware crashed". A `BOR` stamp on the second boot marker in the next such incident immediately pins the cause on the power supply (Task #24 STC3115 gauge init FAIL on the same session supports the weak-battery hypothesis).
 
 The GPS fix rate is a build-time option. The Makefile exposes `GPS_RATE_HZ`:
 

@@ -1149,6 +1149,8 @@ static void ErrorLog_Open(void)
   ULONG flash_end_addr = (ULONG)&_sidata + ((ULONG)&_edata - (ULONG)&_sdata);
   ULONG flash_kb = (flash_end_addr - 0x08000000UL + 1023) / 1024;
 
+  extern uint32_t BootResetCsr;  /* snapshotted in main() after HAL_Init() */
+
   CHAR boot_msg[256];
   INT len = sprintf(boot_msg, "--- Boot %s %s ---\r\n", __DATE__, __TIME__);
   fx_file_write(&ErrorLogFxFile, boot_msg, len);
@@ -1159,6 +1161,31 @@ static void ErrorLog_Open(void)
     STBOX1_LOG_AUDIO, STBOX1_LOG_BATTERY,
     (unsigned long)flash_kb);
   fx_file_write(&ErrorLogFxFile, boot_msg, len);
+
+  /* Reset-reason stamp. BootResetCsr was snapshotted in main() right after
+     HAL_Init(). Multiple flags can be set simultaneously (e.g. BOR+PIN on
+     a clean power-up from dead batteries), so we list all that are present.
+     POR is inferred: the STM32U5 sets BORRSTF on every power-on as well as
+     on brown-out, but on a true cold boot PINRSTF is also set alongside it
+     — on a brown-out mid-session, PINRSTF is absent. */
+  CHAR reason[80] = "";
+  INT rlen = 0;
+  if (BootResetCsr & RCC_CSR_LPWRRSTF) rlen += sprintf(reason+rlen, " LPWR");
+  if (BootResetCsr & RCC_CSR_WWDGRSTF) rlen += sprintf(reason+rlen, " WWDG");
+  if (BootResetCsr & RCC_CSR_IWDGRSTF) rlen += sprintf(reason+rlen, " IWDG");
+  if (BootResetCsr & RCC_CSR_SFTRSTF)  rlen += sprintf(reason+rlen, " SOFTWARE");
+  if (BootResetCsr & RCC_CSR_BORRSTF) {
+    if (BootResetCsr & RCC_CSR_PINRSTF) rlen += sprintf(reason+rlen, " POR");
+    else                                rlen += sprintf(reason+rlen, " BOR");
+  } else if (BootResetCsr & RCC_CSR_PINRSTF) {
+    rlen += sprintf(reason+rlen, " PIN");
+  }
+  if (BootResetCsr & RCC_CSR_OBLRSTF) rlen += sprintf(reason+rlen, " OBL");
+  if (rlen == 0) sprintf(reason, " UNKNOWN");
+  len = sprintf(boot_msg, "reset:%s (CSR=0x%08lX)\r\n",
+                reason, (unsigned long)BootResetCsr);
+  fx_file_write(&ErrorLogFxFile, boot_msg, len);
+
   fx_media_flush(&sdio_disk);
 
   STBOX1_PRINTF("Error log: %s\r\n", log_name);

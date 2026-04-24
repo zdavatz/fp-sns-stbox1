@@ -82,6 +82,13 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+/* Snapshot of RCC->CSR reset-reason flags, captured before the flags are
+   cleared. Read by app_filex.c::ErrorLog_Open() to stamp the boot marker
+   with the reset cause (POR / BOR / SOFTWARE / PIN / IWDG / WWDG / LPWR /
+   OBL). Distinguishes "user turned it on" from "brown-out killed us mid
+   session" from "we crashed" — the 53s-abort signature we couldn't tell
+   apart before. */
+uint32_t BootResetCsr;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -116,7 +123,14 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  /* Snapshot the reset-reason flags before anything else touches RCC->CSR,
+     then clear them so the *next* reset's flags are fresh. The flags are
+     sticky across resets (except POR clears them), so at this moment they
+     describe what woke us up this boot. app_filex.c::ErrorLog_Open()
+     renders BootResetCsr into a human-readable "reset: BOR" / "reset:
+     SOFTWARE" / etc. line in the error log. */
+  BootResetCsr = RCC->CSR;
+  __HAL_RCC_CLEAR_RESET_FLAGS();
   /* USER CODE END Init */
 
   /* Configure the system clock */
