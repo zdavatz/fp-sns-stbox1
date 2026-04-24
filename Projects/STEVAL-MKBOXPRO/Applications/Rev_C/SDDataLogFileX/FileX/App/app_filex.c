@@ -30,6 +30,7 @@
 #include "SensorTileBoxPro_motion_sensors.h"
 #include "SensorTileBoxPro_audio.h"
 #include "SensorTileBoxPro_gg.h"
+#include "SensorTileBoxPro_bus.h"
 #include "main.h"
 #include "gps_nmea.h"
 /* USER CODE END Includes */
@@ -537,6 +538,24 @@ static void fx_thread_entry(ULONG thread_input)
           if (!BatteryInitAttempted)
           {
             BatteryInitAttempted = 1;
+
+            /* Diagnostic probe before the opaque ST driver call: the
+               BSP_GG_Init path only returns COMPONENT_OK/ERROR without
+               telling us where on the I2C path it failed. Capture:
+               (1) bus init rc, (2) whether the STC3115 ACKs at 0xE0 at
+               all, and (3) the HAL I2C error code so we can tell NAK
+               (HAL_I2C_ERROR_AF=0x04, chip not answering) from BUS
+               ERROR / TIMEOUT (wiring / pull-ups / stuck bus). */
+            int32_t i2c4_rc = BSP_I2C4_Init();
+            HAL_StatusTypeDef ping = HAL_I2C_IsDeviceReady(&hi2c4, 0xE0, 3, 200);
+            uint32_t hal_err = HAL_I2C_GetError(&hi2c4);
+            CHAR probe[96];
+            sprintf(probe, "gauge: i2c4_init=%ld ping_0xE0=%s halerr=0x%08lX",
+                    (long)i2c4_rc,
+                    (ping == HAL_OK) ? "ACK" : "NAK",
+                    (unsigned long)hal_err);
+            ErrorLog_Write(probe);
+
             DrvStatusTypeDef gg_st = BSP_GG_Init(&HandleGGComponent);
             if (gg_st == COMPONENT_OK || gg_st == COMPONENT_BATT_FAIL)
             {

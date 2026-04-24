@@ -39,7 +39,22 @@ The gauge is initialised once per boot on the first START_LOG (`BSP_GG_Init`); a
 
 Gated by `STBOX1_LOG_BATTERY 1` in `stbox1_config.h`. Set to `0` if the gauge ever hangs like the MIC did on hardware-modified boards — same non-fatal pattern, the rest of the logger keeps running. If gauge init returns an I²C error, an error-log marker (`start: gas gauge init FAIL - continuing without battery log`) is written and battery logging is skipped for the rest of the boot.
 
-**I²C4 timing fix for STC3115 (24.4.2026).** Every field test from 22.–24.4.2026 logged `gas gauge init FAIL` on every boot. Peter confirmed the same STC3115 IC had worked cleanly under pre-v2.0.0 firmware, which ruled out a hardware issue and pointed at the firmware upgrade. Root cause: ST's v1.6.0 → v2.0.0 update replaced the I²C4 timing `0xA040184A` (~145 kHz at `PCLK1=160 MHz`, **explicitly chosen to stay below the STC3115's 400 kHz Fast-Mode ceiling**) with `0x00F07BFF` (~421 kHz) across all four I²C instances. The gauge NAKs every init at 421 kHz. Reverted `MX_I2C4_Init` in `SensorTileBoxPro_bus.c` to `0xA040184A`; `I2C1/2/3` (MEMS sensors, all Fast-Mode Plus capable) keep the newer timing untouched. Expected new marker: `gas gauge init ok` + `start: battery XXXX mV XX.X%`.
+**I²C4 timing investigation (24.4.2026) — hypothesis falsified.** Every field test from 22.–24.4.2026 logged `gas gauge init FAIL` on every boot. ST's v1.6.0 → v2.0.0 update replaced the I²C4 timing `0xA040184A` (~145 kHz at `PCLK1=160 MHz`, explicitly chosen to stay below the STC3115's 400 kHz Fast-Mode ceiling) with `0x00F07BFF` (~421 kHz) — above spec, so we reverted `MX_I2C4_Init` in `SensorTileBoxPro_bus.c` to `0xA040184A`. Peter's test of the reverted build (13:26) still logged `gas gauge init FAIL` — **the timing was not the root cause.** We left the revert in place (safer value within the STC3115 spec) but the real issue is elsewhere.
+
+**Diagnostic probe (24.4.2026, 16:59 build).** `BSP_GG_Init` only returns `COMPONENT_OK`/`COMPONENT_ERROR` without telling us which I²C step failed. To disambiguate between hardware (chip not on the bus) and driver (chip ACKs but ST driver fails), `app_filex.c` now calls `BSP_I2C4_Init()` and `HAL_I2C_IsDeviceReady(&hi2c4, 0xE0, 3, 200)` right before the opaque `BSP_GG_Init` call and writes a diagnostic line to the error log:
+
+```
+gauge: i2c4_init=0 ping_0xE0=NAK halerr=0x00000004
+```
+
+| halerr code | Meaning | Likely cause |
+|---|---|---|
+| `0x00000004` (`HAL_I2C_ERROR_AF`) | Address NAK | Chip not responding at 0xE0 — dead chip, wrong address, or unpowered |
+| `0x00000020` (`HAL_I2C_ERROR_TIMEOUT`) | Bus timeout | Pull-up weak or bus stuck low |
+| `0x00000001` (`HAL_I2C_ERROR_BERR`) | Bus error | Misplaced start/stop, layout glitch |
+| `HAL_OK` + still fails later | Chip ACKs but init fails | ST driver bug, register-value mismatch |
+
+Ping happens once per boot (gated by `BatteryInitAttempted`), 3 retries × 200 ms timeout → worst case 600 ms, negligible against the other init steps. Next field test will pin the category definitively instead of us re-guessing.
 
 ### <b>GPS module (u-blox MAX-M10S)</b>
 
