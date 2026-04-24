@@ -116,6 +116,14 @@ On every boot the firmware emits a green-LED progress sequence (main.c `BootStag
 
 If boot stops before the 3rd blink, one of the init steps hung — useful for narrowing down hardware/driver issues when `STBOX1_PRINTF` is compiled out. Red LED solid = either an SD firmware update in progress (`firmware.bin` on the card) or an early hang (clock / crystal / floating GPIO). Red LED blinking at ~2.5 Hz = `Error_Handler` — see `Error_Log_Pump_Tsueri_*.log` on the SD card for the source-file and line.
 
+**SD firmware update visual feedback (24.4.2026).** Two distinct LED patterns frame `CheckAndApplyFirmwareUpdate()` so the field tester has direct confirmation that the update ran without needing serial or SD-log access:
+
+- **Firmware detected**: 10× rapid green+red alternation (~2 s total), fired the moment `firmware.bin` is successfully opened. Very distinct from the 1/2/3-green `BootStageBlink` pattern, so you can tell at a glance whether the board is entering an SD-update or booting straight into logging.
+- **During programming**: red LED toggles every ~512 B chunk read from the SD card (progress).
+- **Flash successful**: 3× slow green blinks (~1.8 s) after the programming loop finishes, right before the option-byte bank-swap + reset. Clear "it worked" signal distinct from both the rapid detected pattern and the steady post-boot green "logging active".
+
+**`firmware.bin` built directly (24.4.2026).** The Makefile `all` target now emits `build/firmware.bin` alongside `build/SDDataLogFileX.bin`. The SD-update code in `app_filex.c` looks for exactly that filename, so the build output can be dropped onto the SD card as-is without renaming. Peter was hitting the rename step on every flash and missed it at least once, which left him testing the previous firmware version for an entire session.
+
 ### <b>Keywords</b>
 
 NFC, SPI, I2C, UART, MEMS, BLE, BLE_Manager, STM32WB07KC, GPS

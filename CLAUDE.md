@@ -125,6 +125,13 @@ The user-button pin (PC13, EXTI13 at NVIC priority 0) is configured in the BSP w
 
 SD card firmware update: On boot, the app checks for `firmware.bin` on the SD card. If found, it programs the inactive flash bank (dual-bank STM32U585), renames the file to `firmware.done`, swaps banks via option bytes, and resets. No BLE/JTAG/ST-Link needed. Max firmware size ~1016 KB. Implementation in `CheckAndApplyFirmwareUpdate()` in `app_filex.c`.
 
+**LED signals during SD update (24.4.2026)**: two distinct patterns make the flash process visible without serial access — motivated by Peter's "kein direktes Feedback ob es funktioniert hat" after the field tests.
+- **"Firmware detected"**: 10× rapid green+red alternation (~2 s total) the moment `firmware.bin` is opened. Very distinct from the 1/2/3-green `BootStageBlink` pattern so you can tell immediately whether an SD-update is starting vs a plain boot into logging.
+- **During programming**: red LED toggles every ~512 B read from SD (existing behavior).
+- **"Flash successful"**: 3× slow green blinks (~1.8 s) after the programming loop completes, right before the bank-swap/reset. Clear "we succeeded" feedback — distinct from both the rapid detected signal above and the single solid-green "logging active" post-boot state.
+
+**Makefile builds `firmware.bin` directly (24.4.2026)**: the `all` target now emits `build/firmware.bin` alongside `build/SDDataLogFileX.bin` via a simple `cp`. The SD-update path looks for exactly that filename, so the binary can be dropped onto the SD card as-is — no renaming step, which Peter had been hitting on every flash (and missing at least once, leaving him on the old firmware for a full test).
+
 An error log file `Error_Log_Pump_Tsueri_dd.mm.yyyy.log` (compile date) is created on the SD card alongside the sensor data. It logs boot markers and fatal errors with timestamps. The `Error_Handler` writes the error location to this file before halting.
 
 ### GPS module (u-blox MAX-M10S) — wiring
