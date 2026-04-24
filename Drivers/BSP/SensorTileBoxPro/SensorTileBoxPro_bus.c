@@ -2179,7 +2179,14 @@ __weak HAL_StatusTypeDef MX_I2C4_Init(I2C_HandleTypeDef* hi2c)
   HAL_StatusTypeDef ret = HAL_OK;
 
   hi2c->Instance = I2C4;
-  hi2c->Init.Timing = 0x00F07BFF;
+  /* STC3115 fuel gauge on I2C4 tops out at 400 kHz (Fast Mode). The ST
+     v2.0.0 update replaced the v1.6.0 timing 0xA040184A (~145 kHz at
+     PCLK1=160 MHz, explicitly chosen for the STC3115) with 0x00F07BFF,
+     which yields ~421 kHz — just above the spec and enough to make the
+     gauge NAK every init on marginal pull-ups. Restored to the original
+     safe value; other I2C buses (MEMS on I2C1/I2C2/I2C3, all Fast-Mode
+     Plus capable) keep the newer timing untouched. */
+  hi2c->Init.Timing = 0xA040184A;
   hi2c->Init.OwnAddress1 = 0;
   hi2c->Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c->Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
