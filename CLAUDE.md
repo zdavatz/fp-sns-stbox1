@@ -92,6 +92,8 @@ Each application follows the same layout:
 - `STBOX1_LOG_AUDIO` (SDDataLogFileX only) — gates all `BSP_AUDIO_IN_*` calls and `.wav` file creation. Default `0`. Set to `1` only on unmodified hardware. On the 3.3V-modded board `BSP_AUDIO_IN_Init` blocks with no return, which hangs `fx_thread` mid-START_LOG before it can write sensor or GPS samples. Keep it off unless you actively need the on-board microphone.
 - `STBOX1_LOG_BATTERY` (SDDataLogFileX only) — gates the STC3115 fuel-gauge path and `BatNNN.csv` file creation. Default `1`. Gauge init (`BSP_GG_Init`) runs once per boot on first START_LOG; I²C failure is non-fatal — writes a marker to the error log and skips battery logging for the remainder of the boot, without taking sensor/GPS logging down. Set to `0` only if the STC3115 ever hangs the way the MIC did on hardware-modified boards.
 
+**I²C4 timing fix for STC3115 (24.4.2026)**: the ST v1.6.0 → v2.0.0 update replaced the I²C4 timing `0xA040184A` (~145 kHz at PCLK1=160 MHz, explicitly chosen to stay under the STC3115's 400 kHz Fast-Mode ceiling) with `0x00F07BFF` (~421 kHz) across all four I²C instances. 421 kHz is above the STC3115 spec — the gauge NAKs every init since the battery-logging feature was added. Peter's "it used to work on the same hardware" was the crucial hint that ruled out soldering / the 3.3V mod / pull-ups and pointed at the timing. Reverted `MX_I2C4_Init` in `Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_bus.c` only; `I2C1/2/3` (MEMS sensors on Fast-Mode Plus) keep the newer timing. Expected post-fix markers: `gas gauge init ok` + `start: battery XXXX mV XX.X%`.
+
 ## SD Card Data Format (SDDataLogFileX)
 
 The data logging application creates up to four files per session on the SD card:

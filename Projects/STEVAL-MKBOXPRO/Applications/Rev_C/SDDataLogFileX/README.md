@@ -39,6 +39,8 @@ The gauge is initialised once per boot on the first START_LOG (`BSP_GG_Init`); a
 
 Gated by `STBOX1_LOG_BATTERY 1` in `stbox1_config.h`. Set to `0` if the gauge ever hangs like the MIC did on hardware-modified boards — same non-fatal pattern, the rest of the logger keeps running. If gauge init returns an I²C error, an error-log marker (`start: gas gauge init FAIL - continuing without battery log`) is written and battery logging is skipped for the rest of the boot.
 
+**I²C4 timing fix for STC3115 (24.4.2026).** Every field test from 22.–24.4.2026 logged `gas gauge init FAIL` on every boot. Peter confirmed the same STC3115 IC had worked cleanly under pre-v2.0.0 firmware, which ruled out a hardware issue and pointed at the firmware upgrade. Root cause: ST's v1.6.0 → v2.0.0 update replaced the I²C4 timing `0xA040184A` (~145 kHz at `PCLK1=160 MHz`, **explicitly chosen to stay below the STC3115's 400 kHz Fast-Mode ceiling**) with `0x00F07BFF` (~421 kHz) across all four I²C instances. The gauge NAKs every init at 421 kHz. Reverted `MX_I2C4_Init` in `SensorTileBoxPro_bus.c` to `0xA040184A`; `I2C1/2/3` (MEMS sensors, all Fast-Mode Plus capable) keep the newer timing untouched. Expected new marker: `gas gauge init ok` + `start: battery XXXX mV XX.X%`.
+
 ### <b>GPS module (u-blox MAX-M10S)</b>
 
 UART4 (PA0/PA1) is wired to the GPS module instead of debug-printf:
