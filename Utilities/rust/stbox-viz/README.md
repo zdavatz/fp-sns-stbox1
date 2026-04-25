@@ -72,9 +72,11 @@ Flags:
   carry phase is plotted as a flat constant at this height, the
   push-off transition crosses 0 m via a 2-sec linear ramp, and the
   foiling phase uses baro re-anchored at the detected push-off
-  moment. Recovers physically-correct heights for dock-launched
-  sessions where the bare baro algorithm would otherwise treat the
-  dock itself as water reference. Default 0 (raw baro).
+  moment, clamped to the physical [-0.1, 0.9 m] range and outlier-
+  rejected (Δp > 1 hPa per sample → NaN gap). Recovers physically-
+  correct heights for dock-launched sessions where the bare baro
+  algorithm would otherwise treat the dock itself as water
+  reference. Default 0 (raw baro).
 - `--tz-offset-h`, `--date` — same semantics as `combined`.
 
 The GIF has 6 panels when GPS is available (top row: board side view
