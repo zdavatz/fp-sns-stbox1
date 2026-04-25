@@ -371,32 +371,63 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             let ramp_half = sample_hz; // ±1 sec around wt → 2-sec ramp
             let ramp_lo = wt_idx.saturating_sub(ramp_half);
             let ramp_hi = (wt_idx + ramp_half).min(n);
+            // Outlier-reject: any pressure sample whose 10-ms delta to
+            // its neighbour exceeds 1 hPa is treated as a glitch (we
+            // observed a 3.3 hPa one-sample spike at end-of-window
+            // that translated into an apparent −25 m drop). Replace
+            // with NaN so the trace shows a gap instead.
+            let outlier_dp = 1.0_f64;
+            let raw_p_tc: Vec<f64> = (0..n).map(|i| {
+                samples[at_s + i].pressure_hpa * (ref_k / tk_all[at_s + i])
+            }).collect();
+            let mut p_clean: Vec<f64> = raw_p_tc.clone();
+            for i in 1..n {
+                let dp = (raw_p_tc[i] - raw_p_tc[i - 1]).abs();
+                if dp > outlier_dp { p_clean[i] = f64::NAN; }
+            }
             for i in 0..n {
                 if i < ramp_lo {
                     h[i] = dock_h;
                 } else if i > ramp_hi {
-                    // Foiling phase: baro re-anchored.
-                    let p_tc = samples[at_s + i].pressure_hpa * (ref_k / tk_all[at_s + i]);
-                    h[i] = 8434.0 * (1.0 - p_tc / p_water);
+                    // Foiling phase: baro re-anchored. Clamp to the
+                    // physical range [-0.1, 0.9] m (mast = 0.8 m) so
+                    // accumulated thermal drift can't push the trace
+                    // into unphysical territory (we saw +2.5 m at
+                    // end-of-window when the real lift was ~0.5 m).
+                    let p = p_clean[i];
+                    if p.is_finite() {
+                        let baro_h = 8434.0 * (1.0 - p / p_water);
+                        h[i] = baro_h.clamp(-0.1, 0.9);
+                    } else {
+                        h[i] = f64::NAN;
+                    }
                 } else {
                     // Linear ramp from dock_h to baro foil-phase value.
-                    let p_tc = samples[at_s + i].pressure_hpa * (ref_k / tk_all[at_s + i]);
-                    let baro_h = 8434.0 * (1.0 - p_tc / p_water);
+                    let p = p_clean[i];
+                    let baro_h = if p.is_finite() {
+                        (8434.0 * (1.0 - p / p_water)).clamp(-0.1, 0.9)
+                    } else { 0.0 };
                     let alpha = (i - ramp_lo) as f64 /
                                 (ramp_hi - ramp_lo).max(1) as f64;
                     h[i] = dock_h * (1.0 - alpha) + baro_h * alpha;
                 }
             }
-            // Light 0.5-sec smoothing.
+            // Light 0.5-sec smoothing (NaN-aware).
             let win = sample_hz / 2;
             let half = win / 2;
             let mut csum = vec![0.0; n + 1];
-            for i in 0..n { csum[i + 1] = csum[i] + h[i]; }
+            let mut ccnt = vec![0usize; n + 1];
+            for i in 0..n {
+                csum[i + 1] = csum[i] + if h[i].is_finite() { h[i] } else { 0.0 };
+                ccnt[i + 1] = ccnt[i] + if h[i].is_finite() { 1 } else { 0 };
+            }
             let mut out = vec![0.0; n];
             for i in 0..n {
                 let lo = i.saturating_sub(half);
                 let hi = (i + half + 1).min(n);
-                out[i] = (csum[hi] - csum[lo]) / (hi - lo) as f64;
+                let cnt = ccnt[hi] - ccnt[lo];
+                out[i] = if cnt > 0 { (csum[hi] - csum[lo]) / cnt as f64 }
+                         else { f64::NAN };
             }
             out
         } else {
@@ -1446,3 +1477,4 @@ mod tempfile {
 // rebuild 1777126856557418000
 // rebuild 1777127224116348000
 // rebuild 1777127360631995000
+// rebuild 1777128088273981000
