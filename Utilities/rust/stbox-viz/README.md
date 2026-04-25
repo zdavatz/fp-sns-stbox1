@@ -67,17 +67,43 @@ Flags:
   value back as `--at HH:MM:SS` for millisecond-precise alignment.
 - `--auto-skip` — advance both video and GIF past the carry/transition
   seconds before sustained pitch oscillation begins. Off by default.
+- `--dock-height-m <h>` — height of the launch dock above water in
+  metres (e.g. `0.75` for the Ermioni harbour wall). When set, the
+  carry phase is plotted as a flat constant at this height, the
+  push-off transition crosses 0 m via a 2-sec linear ramp, and the
+  foiling phase uses baro re-anchored at the detected push-off
+  moment. Recovers physically-correct heights for dock-launched
+  sessions where the bare baro algorithm would otherwise treat the
+  dock itself as water reference. Default 0 (raw baro).
 - `--tz-offset-h`, `--date` — same semantics as `combined`.
 
-The GIF has 5 panels when GPS is available (board side view + pump
-detail + height-over-water + speed + nasenwinkel), 3 otherwise. Each
-panel's y-axis grows with the running max — no wasted vertical space
-above the data. The board side view scrolls a sinusoidal waterline
-backward at 0.6 m/s so the board appears to be travelling forward
-over the water while it pumps; lift comes from the smoothed baro
-height. Panel titles are horizontal (their own title strip above
-each chart). The Nasenwinkel panel uses a 95th-percentile-based
-y-limit so single-outlier pumps don't stretch the axis.
+The GIF has 6 panels when GPS is available (top row: board side view
++ GPS-track map; below: pump detail, height-over-water, speed,
+nasenwinkel), 3 otherwise. Each panel's y-axis grows with the running
+max — no wasted vertical space above the data. Phase backgrounds
+(gray/yellow/green) shade the time-series panels for Tragen /
+Anschieben/Rennen / Foilen so you see at a glance when the rider
+pushed off and got on the foil. Push-off is detected by a 1-sec
+rolling mean of raw position-derived speed crossing 4 km/h
+sustainedly for 0.5 s — short lag (sub-1-sec) compared to the 5-sec
+rolling median that drives the speed panel. The push-off-Winkel
+flash for 2 s shows the steepest negative pitch in a ±1 s window
+around that moment.
+
+The at-window slicing is anchored by the GPS row whose UTC matches
+the requested `--at` time, not by linear extrapolation from the
+first GPS sample of the session. ThreadX runs on HSI (±1 % accuracy)
+and drifts ~7 s over a 21-min session — extrapolation would slice
+the wrong sensor range. Frame generation uses float-step indexing so
+the encoded GIF length exactly matches the data window length, which
+matters when paired with a `--video` of the same wall-clock length.
+
+The board side view scrolls a sinusoidal waterline backward at 0.6
+m/s so the board appears to be travelling forward over the water
+while it pumps; lift comes from the smoothed baro height. Panel
+titles are horizontal (their own 40-px title strip above each
+chart). The Nasenwinkel panel uses a 95th-percentile-based y-limit
+so single-outlier pumps don't stretch the axis.
 
 ## Why Rust
 

@@ -122,6 +122,16 @@ enum Cmd {
         /// look discontinuous.
         #[arg(long, default_value_t = false)]
         auto_skip: bool,
+        /// Height of the launch dock above water in metres. Baro
+        /// height anchors its "water reference" to stationary periods
+        /// (speed < 3 km/h). When the rider starts on a dock, the
+        /// only stationary anchor in a short --at window IS the dock,
+        /// so heights end up dock-relative instead of water-relative.
+        /// Pass `--dock-height-m 0.75` to shift the displayed height
+        /// up by 0.75 m → dock shows +0.75 m, water = 0 m, foiling =
+        /// actual lift above water. Default 0 (no offset).
+        #[arg(long, default_value_t = 0.0)]
+        dock_height_m: f64,
     },
 }
 
@@ -138,7 +148,8 @@ fn main() -> Result<()> {
             compass_cmd::run(&sensor_csv, &output),
         Cmd::Animate { sensor_csv, output, fps, session, video,
                        video_offset, sensor_offset, title, subtitle,
-                       at, duration, tz_offset_h, date, auto_skip } => {
+                       at, duration, tz_offset_h, date, auto_skip,
+                       dock_height_m } => {
             animate_cmd::run(&animate_cmd::AnimateArgs {
                 sensor_csv: &sensor_csv,
                 output_dir: &output,
@@ -154,6 +165,7 @@ fn main() -> Result<()> {
                 tz_offset_h,
                 date: date.as_deref(),
                 auto_skip,
+                dock_height_m,
             })
         }
     }

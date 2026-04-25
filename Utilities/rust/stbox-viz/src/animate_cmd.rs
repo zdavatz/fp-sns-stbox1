@@ -49,6 +49,10 @@ pub struct AnimateArgs<'a> {
     /// In `--at` mode, skip carry/transition seconds at the start until
     /// sustained pitch oscillation begins. Off by default.
     pub auto_skip: bool,
+    /// Dock height above water in metres. Added to all baro-derived
+    /// heights so that dock-anchored windows display dock = +dock_h,
+    /// water = 0, foiling = actual lift. 0 by default.
+    pub dock_height_m: f64,
 }
 
 pub fn run(args: &AnimateArgs) -> Result<()> {
@@ -80,11 +84,13 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
         .map(|(s, b)| s - b).collect();
 
 
-    // GPS-derived height + speed (sample-aligned with sensors). Loaded
-    // once for the whole session; the --at mode slices it later. Fails
-    // gracefully if no GPS CSV is next to the sensor file.
+    // GPS-derived height + speed (sample-aligned with sensors), plus
+    // raw lat/lon/time for the map panel. Loaded once for the whole
+    // session; the --at mode slices it later. Fails gracefully if no
+    // GPS CSV is next to the sensor file.
     let base_ticks_session = samples[0].ticks;
-    let (height_full, speed_at_sensor): (Vec<f64>, Vec<f64>) = {
+    let (height_full, speed_at_sensor, gps_lat_full, gps_lon_full, gps_t_full):
+        (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) = {
         let gps_path = guess_gps_path(args.sensor_csv);
         if let Some(gp) = gps_path {
             let mut gps_rows = load_gps_csv(&gp)?;
@@ -138,9 +144,18 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
                 .map(|s| (s.ticks - base_ticks_session) / gps_mod::TICKS_PER_SEC)
                 .collect();
             let speed_aligned = baro::interp_linear(&sensor_t_s, &gps_t_s, &smooth);
-            (height, speed_aligned)
+            let lats: Vec<f64> = gps_rows.iter().map(|g| g.lat).collect();
+            let lons: Vec<f64> = gps_rows.iter().map(|g| g.lon).collect();
+            // Note: height re-anchoring (water_set_t-based) happens
+            // later inside the --at branch, after phase detection.
+            // The legacy session-detection path can use --dock-height-m
+            // as a manual override.
+            let height_offset: Vec<f64> = if args.dock_height_m != 0.0 {
+                height.iter().map(|h| h + args.dock_height_m).collect()
+            } else { height };
+            (height_offset, speed_aligned, lats, lons, gps_t_s)
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
         }
     };
 
@@ -195,6 +210,203 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
         let speed_slice: Option<&[f64]> = if !speed_at_sensor.is_empty() {
             Some(&speed_at_sensor[at_s..at_e])
         } else { None };
+        // GPS rows that fall within the at-window time range.
+        let win_t0 = at_s as f64 / sample_hz as f64;
+        let win_t1 = at_e as f64 / sample_hz as f64;
+        let gps_indices: Vec<usize> = gps_t_full.iter().enumerate()
+            .filter(|(_, t)| **t >= win_t0 && **t < win_t1)
+            .map(|(i, _)| i).collect();
+        let gps_lat_w: Vec<f64> = gps_indices.iter().map(|&i| gps_lat_full[i]).collect();
+        let gps_lon_w: Vec<f64> = gps_indices.iter().map(|&i| gps_lon_full[i]).collect();
+        let gps_t_w: Vec<f64> = gps_indices.iter()
+            .map(|&i| gps_t_full[i] - win_t0).collect();
+        let map_data = if !gps_lat_w.is_empty() {
+            Some((gps_lat_w.as_slice(), gps_lon_w.as_slice(), gps_t_w.as_slice()))
+        } else { None };
+
+        // Phase detection inside the window (seconds since window start):
+        //   "Tragen"  — GPS speed < 1 km/h sustained (stationary on
+        //               dock / shore), regardless of board pitch
+        //   "Anschieben/Rennen" — speed has risen above 2 km/h but
+        //               height is still < 0.15 m (board on water,
+        //               paddling/running, not yet on the foil)
+        //   "Foilen"  — 3-sec mean height ≥ 0.15 m (sustained foil
+        //               lift, not just a single pump peak)
+        //
+        // GPS speed is the right discriminator for "in water" vs
+        // "on land": pitch alone is unreliable because the rider
+        // holds the board at varying angles on the dock. Speed jumps
+        // from ~0 to a few km/h the moment they actually push off.
+        let (water_set_t, foil_start_t): (Option<f64>, Option<f64>) = {
+            // Push-off detection: first index where raw position-
+            // derived speed (no smoothing!) is ≥ 3 km/h sustained
+            // for 0.5 s. Raw speed reacts in < 100 ms when the
+            // rider actually leaves the dock; the previous 5 m
+            // displacement threshold + smoothed-speed pipeline
+            // added ~1-2 s of lag, so the push-off flash triggered
+            // after she was already on the foil instead of at
+            // feet-on-board.
+            let wset = if !gps_lat_full.is_empty() && !gps_t_full.is_empty() {
+                let win_t0 = at_s as f64 / sample_hz as f64;
+                let win_t1 = at_e as f64 / sample_hz as f64;
+                let in_win: Vec<usize> = gps_t_full.iter().enumerate()
+                    .filter(|(_, t)| **t >= win_t0 && **t < win_t1)
+                    .map(|(i, _)| i).collect();
+                if in_win.len() < 12 {
+                    None
+                } else {
+                    let mut raw_kmh: Vec<f64> = vec![0.0; in_win.len()];
+                    for k in 1..in_win.len() {
+                        let i_prev = in_win[k - 1];
+                        let i_curr = in_win[k];
+                        let dt = gps_t_full[i_curr] - gps_t_full[i_prev];
+                        if dt <= 0.0 { continue; }
+                        let lat0 = gps_lat_full[i_prev];
+                        let cos_lat = (lat0 * std::f64::consts::PI / 180.0).cos();
+                        let dlat = gps_lat_full[i_curr] - gps_lat_full[i_prev];
+                        let dlon = (gps_lon_full[i_curr] - gps_lon_full[i_prev]) * cos_lat;
+                        let dist_m = ((dlat * dlat + dlon * dlon).sqrt() * 111_000.0).abs();
+                        raw_kmh[k] = (dist_m / dt) * 3.6;
+                    }
+                    // 1-sec rolling mean (≈10 GPS samples) suppresses
+                    // multipath jitter (which can spike raw speed to
+                    // 5-15 km/h even when stationary) while keeping
+                    // much shorter lag than the 5-sec rolling median
+                    // used in `speed_at_sensor` (which lags ~2.5 s).
+                    let win_g = 10usize;
+                    let half_g = win_g / 2;
+                    let n = raw_kmh.len();
+                    let mut csum = vec![0.0; n + 1];
+                    for k in 0..n { csum[k + 1] = csum[k] + raw_kmh[k]; }
+                    let smooth_kmh: Vec<f64> = (0..n).map(|k| {
+                        let lo = k.saturating_sub(half_g);
+                        let hi = (k + half_g + 1).min(n);
+                        (csum[hi] - csum[lo]) / (hi - lo) as f64
+                    }).collect();
+                    // 4 km/h threshold on the 1-sec mean: above the
+                    // ~2 km/h GPS noise floor, well below the 6-10 km/h
+                    // a moving rider has.
+                    let consec = 5usize;
+                    let mut found: Option<usize> = None;
+                    for k in 0..smooth_kmh.len().saturating_sub(consec) {
+                        if smooth_kmh[k..k + consec].iter().all(|&s| s >= 4.0) {
+                            found = Some(k); break;
+                        }
+                    }
+                    found.map(|k| {
+                        let t_rel = gps_t_full[in_win[k]] - win_t0;
+                        (t_rel * sample_hz as f64).round() as usize
+                    })
+                }
+            } else { None };
+            let wset_idx = wset.unwrap_or(0);
+            // First index after wset_idx where the 3-sec mean height
+            // exceeds 0.15 m → sustainedly on the foil.
+            let foil_win = 3 * sample_hz;
+            let foil = if !height_full.is_empty()
+                && height_full.len() >= at_s + foil_win {
+                let h_w = &height_full[at_s..at_e];
+                let mut found: Option<usize> = None;
+                if h_w.len() > foil_win {
+                    for i in wset_idx..h_w.len().saturating_sub(foil_win) {
+                        let mut sum = 0.0; let mut cnt = 0;
+                        for v in &h_w[i..i + foil_win] {
+                            if v.is_finite() { sum += *v; cnt += 1; }
+                        }
+                        if cnt > 0 && sum / cnt as f64 > 0.15 {
+                            found = Some(i); break;
+                        }
+                    }
+                }
+                found.map(|i| i as f64 / sample_hz as f64)
+            } else { None };
+            (wset.map(|i| i as f64 / sample_hz as f64), foil)
+        };
+        if let Some(t) = water_set_t {
+            println!("  phase: Push-off ab +{:.1} s (raw Speed ≥ 3 km/h, 0.5 s sustained)", t);
+        } else {
+            println!("  phase: Push-off — kein Übergang im Fenster gefunden");
+        }
+        if let Some(t) = foil_start_t {
+            println!("  phase: Foilen ab +{:.1} s (3-Sek-Mean Höhe > 0.15 m)", t);
+        }
+
+        // Hybrid height construction. Baro alone is too thermal-drift-
+        // prone over a 39-sec window to give a meaningful absolute
+        // dock-period altitude (we observed the trace crashing to
+        // −30 m at the end of a window because of accumulating
+        // pressure noise). What the user actually wants:
+        //   1. Dock phase  → flat at the harbour-wall height
+        //                    (`--dock-height-m`, e.g. 0.75 m at Ermioni)
+        //   2. Water-set    → smooth crossing through 0 m
+        //   3. Foiling      → real mast lift, baro re-anchored to
+        //                     pressure at water_set_t
+        // We synthesise the dock-phase as a constant (no baro), and
+        // splice in baro for the foiling phase. The water-set
+        // moment is filled with a linear ramp from dock_height_m
+        // down to 0 over 1 sec to avoid a vertical step.
+        let dock_h = args.dock_height_m;
+        let height_window: Vec<f64> = if let Some(wt) = water_set_t {
+            let n = at_e - at_s;
+            let wt_idx = (wt * sample_hz as f64).round() as usize;
+            // Anchor pressure: average TC'd pressure ±0.5 s around wt.
+            let tk_all: Vec<f64> = samples.iter()
+                .map(|s| s.temperature_c + 273.15).collect();
+            let mut sorted_tk = tk_all.clone();
+            sorted_tk.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let ref_k = sorted_tk[sorted_tk.len() / 2];
+            let lo_anchor = (at_s + wt_idx).saturating_sub(sample_hz / 2);
+            let hi_anchor = (at_s + wt_idx + sample_hz / 2 + 1).min(samples.len());
+            let mut sum = 0.0; let mut cnt = 0;
+            for i in lo_anchor..hi_anchor {
+                let p = samples[i].pressure_hpa * (ref_k / tk_all[i]);
+                if p.is_finite() { sum += p; cnt += 1; }
+            }
+            let p_water = if cnt > 0 { sum / cnt as f64 } else { 1013.25 };
+            println!("  height: P_water = {:.2} hPa @ +{:.1} s, dock = {:.2} m",
+                     p_water, wt, dock_h);
+
+            let mut h = vec![0.0; n];
+            // 1-sec ramp window centred on water_set_t.
+            let ramp_half = sample_hz; // ±1 sec around wt → 2-sec ramp
+            let ramp_lo = wt_idx.saturating_sub(ramp_half);
+            let ramp_hi = (wt_idx + ramp_half).min(n);
+            for i in 0..n {
+                if i < ramp_lo {
+                    h[i] = dock_h;
+                } else if i > ramp_hi {
+                    // Foiling phase: baro re-anchored.
+                    let p_tc = samples[at_s + i].pressure_hpa * (ref_k / tk_all[at_s + i]);
+                    h[i] = 8434.0 * (1.0 - p_tc / p_water);
+                } else {
+                    // Linear ramp from dock_h to baro foil-phase value.
+                    let p_tc = samples[at_s + i].pressure_hpa * (ref_k / tk_all[at_s + i]);
+                    let baro_h = 8434.0 * (1.0 - p_tc / p_water);
+                    let alpha = (i - ramp_lo) as f64 /
+                                (ramp_hi - ramp_lo).max(1) as f64;
+                    h[i] = dock_h * (1.0 - alpha) + baro_h * alpha;
+                }
+            }
+            // Light 0.5-sec smoothing.
+            let win = sample_hz / 2;
+            let half = win / 2;
+            let mut csum = vec![0.0; n + 1];
+            for i in 0..n { csum[i + 1] = csum[i] + h[i]; }
+            let mut out = vec![0.0; n];
+            for i in 0..n {
+                let lo = i.saturating_sub(half);
+                let hi = (i + half + 1).min(n);
+                out[i] = (csum[hi] - csum[lo]) / (hi - lo) as f64;
+            }
+            out
+        } else {
+            // No water_set detected — use raw baro slice.
+            height_full[at_s..at_e].to_vec()
+        };
+        let height_slice_anchored: Option<&[f64]> = if !height_window.is_empty() {
+            Some(&height_window)
+        } else { None };
+
         render_session_gif(
             &nose_corrected[at_s..at_e],
             0,
@@ -203,9 +415,12 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             args.fps,
             &gif_path,
             Some(start_local),
-            height_slice,
+            height_slice_anchored,
             speed_slice,
             None,
+            map_data,
+            water_set_t,
+            foil_start_t,
         )?;
         println!("Saved {}", gif_path.display());
 
@@ -255,6 +470,9 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             h_slice,
             v_slice,
             None,
+            None,  // legacy session-detection mode skips the map panel
+            None,  // and the phase boundaries
+            None,
         )?;
         println!("Saved {}", gif_path.display());
 
@@ -292,30 +510,15 @@ fn resolve_at_window(
     tz_offset_h: f64,
     date_arg: Option<&str>,
 ) -> Result<(usize, usize, NaiveDateTime)> {
-    let gps_path = guess_gps_path(sensor_path);
-    let utc_at_t0_sec = if let Some(p) = gps_path.as_deref() {
-        let mut rows = load_gps_csv(p)?;
-        rows.retain(|g| g.fix >= 1);
-        let g = rows.first().ok_or_else(|| anyhow!(
-            "GPS CSV has no valid fixes; --at needs GPS to anchor wall-clock time"))?;
-        let utc_sec = parse_utc_hhmmss(&g.utc).ok_or_else(|| anyhow!(
-            "could not parse GPS UTC '{}'", g.utc))?;
-        let base_ticks = samples[0].ticks;
-        utc_sec - (g.ticks - base_ticks) / 100.0
-    } else {
-        anyhow::bail!("no GPS CSV next to {}; --at needs GPS to anchor wall-clock time",
-                      sensor_path.display());
-    };
+    let gps_path = guess_gps_path(sensor_path)
+        .ok_or_else(|| anyhow!("no GPS CSV next to {}; --at needs GPS to anchor wall-clock time",
+                               sensor_path.display()))?;
+    let mut rows = load_gps_csv(&gps_path)?;
+    rows.retain(|g| g.fix >= 1);
+    if rows.is_empty() {
+        anyhow::bail!("GPS CSV has no valid fixes; --at needs GPS to anchor wall-clock time");
+    }
 
-    let date_utc = resolve_session_date(date_arg, sensor_path)?;
-    let base_utc = NaiveDateTime::new(date_utc, NaiveTime::from_hms_opt(0, 0, 0).unwrap())
-        + ChronoDuration::milliseconds((utc_at_t0_sec * 1000.0).round() as i64);
-
-    // --at value (in local time) is the authoritative anchor. If the
-    // user wants finer alignment, they can pass `--at HH:MM:SS`. We
-    // also probe the video's creation_time for diagnostics — printing
-    // it lets the user see if their --at value matches the actual
-    // record start, but we do not override --at automatically.
     if let Some(vt) = video.and_then(ffprobe_creation_time) {
         let local = vt + ChronoDuration::milliseconds((tz_offset_h * 3600.0 * 1000.0) as i64);
         println!("  video creation_time: {} local (override --at to align precisely)",
@@ -325,28 +528,47 @@ fn resolve_at_window(
         .ok_or_else(|| anyhow!("could not parse --at '{}', expected HH:MM[:SS]", at_str))?;
     let at_utc_sec_of_day = at_local_sec - tz_offset_h * 3600.0;
 
-    // Sensor t (seconds since first sample) at the requested wall-clock.
-    let base_utc_sec_of_day = base_utc.time().num_seconds_from_midnight() as f64
-        + base_utc.time().nanosecond() as f64 / 1e9;
-    let t_at = at_utc_sec_of_day - base_utc_sec_of_day;
-    if t_at < 0.0 || t_at >= samples.len() as f64 / sample_hz as f64 {
-        anyhow::bail!(
-            "--at {} (local) maps to t = {:.1} s, which is outside the recording window [0, {:.1} s]",
-            at_str, t_at, samples.len() as f64 / sample_hz as f64);
+    // ThreadX runs on HSI (internal RC, ±1 % accuracy) so ticks drift
+    // ~7 s over a 21-min session — linear extrapolation from the
+    // first GPS sample is unreliable. Instead, find the GPS row whose
+    // UTC is closest to the target and use ITS tick directly as the
+    // anchor. Both GPS and sensor rows share the same ThreadX tick
+    // counter, so they line up locally even when the tick-vs-wall-
+    // clock relationship has drifted.
+    let mut best_idx = 0usize;
+    let mut best_diff = f64::INFINITY;
+    for (i, row) in rows.iter().enumerate() {
+        if let Some(u) = parse_utc_hhmmss(&row.utc) {
+            let d = (u - at_utc_sec_of_day).abs();
+            if d < best_diff { best_diff = d; best_idx = i; }
+        }
     }
+    if best_diff > 5.0 {
+        anyhow::bail!("no GPS row within 5 s of --at {} (closest was off by {:.1} s) — \
+                       check --tz-offset-h / --date / GPS coverage",
+                      at_str, best_diff);
+    }
+    let anchor_tick = rows[best_idx].ticks;
+    let anchor_utc_sec = parse_utc_hhmmss(&rows[best_idx].utc).unwrap_or(at_utc_sec_of_day);
 
     // Window length: explicit --duration → ffprobe video length → 60 s.
     let dur = duration_arg.or_else(|| {
         video.and_then(|v| ffprobe_duration(v).ok())
     }).unwrap_or(60.0);
 
-    let s = (t_at * sample_hz as f64).round() as usize;
-    let e = ((t_at + dur) * sample_hz as f64).round() as usize;
+    // Sensor sample indices by tick (samples are at 100 Hz nominal but
+    // the relationship is exact tick → sample lookup, not seconds).
+    let dur_ticks = dur * 100.0;
+    let s = samples.iter().position(|r| r.ticks >= anchor_tick).unwrap_or(0);
+    let e = samples.iter().position(|r| r.ticks >= anchor_tick + dur_ticks)
+        .unwrap_or(samples.len());
 
-    // Local-time anchor at the start of the GIF window (= base UTC at
-    // sensor-t=0 + t_at + tz offset).
-    let start_local = base_utc
-        + ChronoDuration::milliseconds(((t_at + tz_offset_h * 3600.0) * 1000.0).round() as i64);
+    // Local-time anchor for display = the GPS UTC at the anchor row,
+    // shifted by tz_offset_h. Date comes from CLI / file mtime / today.
+    let date_utc = resolve_session_date(date_arg, sensor_path)?;
+    let local_secs = anchor_utc_sec + tz_offset_h * 3600.0;
+    let start_local = NaiveDateTime::new(date_utc, NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+        + ChronoDuration::milliseconds((local_secs * 1000.0).round() as i64);
 
     Ok((s.min(samples.len()), e.min(samples.len()), start_local))
 }
@@ -484,24 +706,51 @@ fn render_session_gif(
     height_m: Option<&[f64]>,
     speed_kmh: Option<&[f64]>,
     nose_abs: Option<&[f64]>,
+    map: Option<(&[f64], &[f64], &[f64])>,  // (lat, lon, time_s) within window
+    water_set_t: Option<f64>,   // seconds when board enters water
+    foil_start_t: Option<f64>,  // seconds when foiling begins
 ) -> Result<()> {
-    // Subsample so animation runs at `fps`.
-    let step = (sample_hz as u32 / fps).max(1) as usize;
-    let frame_indices: Vec<usize> = (0..nose.len()).step_by(step).collect();
-    let n_frames = frame_indices.len();
+    // Subsample so the GIF's wall-clock playback matches the data
+    // window exactly. Integer step (e.g. 100/15 = 6) gave 60 ms of
+    // data per GIF frame; at 15 fps GIF playback (= 67 ms/frame) the
+    // GIF ran 1.117× too long, drifting the GIF behind a paired
+    // video by ~4 s over a 39 s window. Float step + nearest-sample
+    // indexing keeps n_frames = round(samples / (sample_hz/fps)),
+    // and the GIF's encoded frame interval (1000/fps ms) then makes
+    // playback length = n_frames × 1000/fps ≈ data window length.
+    let step_f = sample_hz as f64 / fps as f64;
+    let n_frames = ((nose.len() as f64) / step_f).round() as usize;
+    let frame_indices: Vec<usize> = (0..n_frames)
+        .map(|i| ((i as f64 * step_f).round() as usize).min(nose.len() - 1))
+        .collect();
 
     let t_sess: Vec<f64> = (0..nose.len()).map(|i| i as f64 / sample_hz as f64).collect();
     let duration_s = *t_sess.last().unwrap_or(&0.0);
     let dm = (duration_s / 60.0) as u32;
     let ds = ((duration_s % 60.0) as u32).min(59);
 
-    // Drop-in: steepest (min) nose angle in first 10 s
-    let first10 = &nose[..nose.len().min(10 * sample_hz)];
-    let drop_idx = first10.iter().enumerate()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-        .map(|(i, _)| i).unwrap_or(0);
+    // Drop-in flash: in --at mode trigger at water_set_t (= the moment
+    // the rider's feet land on the board). The drop angle itself is
+    // the steepest negative nose angle in a ±1 s window around that
+    // moment — which captures the actual stepping-down motion. When
+    // no water_set_t is provided (legacy session-detection mode),
+    // fall back to "steepest negative angle in the first 10 s".
+    let (drop_idx, drop_time) = if let Some(wt) = water_set_t {
+        let center = (wt * sample_hz as f64).round() as usize;
+        let lo = center.saturating_sub(sample_hz);
+        let hi = (center + sample_hz + 1).min(nose.len());
+        let local_min = nose[lo..hi].iter().enumerate()
+            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| lo + i).unwrap_or(center.min(nose.len() - 1));
+        (local_min, wt)
+    } else {
+        let first10 = &nose[..nose.len().min(10 * sample_hz)];
+        let i = first10.iter().enumerate()
+            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| i).unwrap_or(0);
+        (i, i as f64 / sample_hz as f64)
+    };
     let drop_angle = nose[drop_idx];
-    let drop_time = drop_idx as f64 / sample_hz as f64;
     let drop_flash_end = drop_time + 2.0;
 
     // Scales are computed PER FRAME inside draw_frame from the
@@ -541,6 +790,9 @@ fn render_session_gif(
             v_hist,
             n_abs_hist,
             h_now,
+            map,
+            water_set_t,
+            foil_start_t,
         )?;
         root.present()?;
         if frame % 100 == 0 {
@@ -567,6 +819,9 @@ fn draw_frame<DB: DrawingBackend>(
     speed_hist: Option<&[f64]>,
     nose_abs_hist: Option<&[f64]>,
     height_now: Option<f64>,
+    map: Option<(&[f64], &[f64], &[f64])>,
+    water_set_t: Option<f64>,
+    foil_start_t: Option<f64>,
 ) -> Result<(), anyhow::Error>
 where
     DB::ErrorType: 'static,
@@ -607,14 +862,14 @@ where
     } else { 30.0 };
     let height_top: f64 = if let Some(s) = height_hist {
         let m = s.iter()
-            .filter(|v| v.is_finite() && **v >= -0.15 && **v <= 0.95)
+            .filter(|v| v.is_finite())
             .copied()
             .fold(0.0f64, |a, b| a.max(b));
         m.max(0.1)
     } else { 0.9 };
     let height_bot: f64 = if let Some(s) = height_hist {
         let m = s.iter()
-            .filter(|v| v.is_finite() && **v >= -0.15 && **v <= 0.95)
+            .filter(|v| v.is_finite())
             .copied()
             .fold(f64::INFINITY, |a, b| a.min(b));
         if m.is_finite() { m.min(0.0) } else { -0.1 }
@@ -629,12 +884,20 @@ where
     // Layout: 5 panels when height + speed are present, 3 panels
     // otherwise (legacy session-detection mode without GPS). The
     // canvas is 900 px tall and the global title needs ~25 px at top.
+    // When `map` is also given, the top row splits horizontally into
+    // board view (left half) + GPS-track map (right half).
     let have_extras = height_hist.is_some() && speed_hist.is_some();
-    let (board_area, rest) = if have_extras {
-        // board=320, rest=580 → split rest into zoom=130, height=145, speed=145, graph=160
+    let (top_area, rest) = if have_extras {
+        // top=320, rest=580 → split rest into zoom=130, height=145, speed=145, graph=160
         root.split_vertically(320)
     } else {
         root.split_vertically(430)
+    };
+    let (board_area, map_area) = if map.is_some() {
+        let (b, m) = top_area.split_horizontally(600);
+        (b, Some(m))
+    } else {
+        (top_area, None)
     };
     let (zoom_area, after_zoom) = if have_extras {
         rest.split_vertically(130)
@@ -743,15 +1006,99 @@ where
         if fade > 0.02 {
             let red = RGBColor(220, 20, 20).mix(fade);
             board_area.draw(&Text::new(
-                format!("Dropwinkel: {:.1}°", drop_angle),
+                format!("Push-off-Winkel: {:.1}°", drop_angle),
                 (bw as i32 / 2 - 160, 90),
                 (FONT, 32).into_font().color(&red),
             )).map_err(|e| anyhow::anyhow!("drop_txt: {e:?}"))?;
         }
     }
 
-    // --- Zoom panel (auto-fit) ---
+    // --- GPS-track map panel (right half of top row) ---
+    if let (Some(area), Some((lats, lons, ts))) = (&map_area, map) {
+        if !lats.is_empty() {
+            let (m_title, m_plot) = area.split_vertically(40);
+            m_title.draw(&Text::new(
+                "GPS-Track".to_string(),
+                (12, 4),
+                (FONT, 22).into_font().color(&BLACK),
+            )).map_err(|e| anyhow::anyhow!("map title: {e:?}"))?;
+
+            // Equirectangular projection scaled by cos(median_lat) so
+            // 1° east covers the same on-screen distance as 1° north.
+            // Without this Greece (37 °N) would show ~1.25× horizontal
+            // stretch.
+            let mut lats_sorted = lats.to_vec();
+            lats_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let med_lat = lats_sorted[lats_sorted.len() / 2];
+            let cos_lat = (med_lat * std::f64::consts::PI / 180.0).cos();
+
+            let xs: Vec<f64> = lons.iter().map(|l| l * cos_lat).collect();
+            let ys: Vec<f64> = lats.to_vec();
+
+            let x_min = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+            let x_max = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let y_min = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+            let y_max = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            // Square the bounds so distances on map are equal in both
+            // axes (the chart is roughly 560 × 280 px after margins,
+            // but plotters' build_cartesian_2d will stretch the data
+            // to fill regardless — equalising the data range matches
+            // the plot pixel ratio approximately).
+            let span_x = (x_max - x_min).max(1e-6);
+            let span_y = (y_max - y_min).max(1e-6);
+            let pad_x = span_x * 0.05;
+            let pad_y = span_y * 0.05;
+
+            let mut mc = ChartBuilder::on(&m_plot)
+                .margin_top(2).margin_bottom(8).margin_left(10).margin_right(20)
+                .x_label_area_size(0)
+                .y_label_area_size(0)
+                .build_cartesian_2d(
+                    (x_min - pad_x)..(x_max + pad_x),
+                    (y_min - pad_y)..(y_max + pad_y),
+                )
+                .map_err(|e| anyhow::anyhow!("map chart: {e:?}"))?;
+            mc.configure_mesh()
+                .disable_x_axis()
+                .disable_y_axis()
+                .light_line_style(RGBColor(235, 235, 235))
+                .draw().map_err(|e| anyhow::anyhow!("map mesh: {e:?}"))?;
+
+            // Find the GPS index closest to t_now → "current position".
+            let mut cur_idx = 0usize;
+            for (i, t) in ts.iter().enumerate() {
+                if *t > t_now { break; }
+                cur_idx = i;
+            }
+
+            // Track travelled so far: solid line up to current index.
+            mc.draw_series(LineSeries::new(
+                xs[..=cur_idx].iter().zip(ys[..=cur_idx].iter())
+                    .map(|(x, y)| (*x, *y)),
+                RGBColor(31, 119, 180).stroke_width(3),
+            )).map_err(|e| anyhow::anyhow!("track line: {e:?}"))?;
+
+            // Current position dot.
+            mc.draw_series(std::iter::once(Circle::new(
+                (xs[cur_idx], ys[cur_idx]),
+                7,
+                RGBColor(220, 20, 20).filled(),
+            ))).map_err(|e| anyhow::anyhow!("track dot: {e:?}"))?;
+        }
+    }
+
+    // --- Phase boundaries (used as background-shaded bands across all
+    // time-series panels) ---
     let x_right = t_now + 2.0;
+    let xr = x_right.max(1.0);
+    let p1_x = water_set_t.map(|t| t.clamp(0.0, xr)).unwrap_or(0.0);
+    let p2_x = foil_start_t.map(|t| t.clamp(0.0, xr)).unwrap_or(p1_x);
+    // Subtle pastels: gray (carry) → yellow (push/run) → green (foiling).
+    let phase_carry = RGBColor(225, 225, 225).mix(0.55);
+    let phase_run   = RGBColor(255, 230, 120).mix(0.55);
+    let phase_foil  = RGBColor(170, 230, 170).mix(0.55);
+
+    // --- Zoom panel (auto-fit) ---
     let (zoom_title, zoom_plot) = zoom_area.split_vertically(40);
     zoom_title.draw(&Text::new(
         format!("Pump-Detail [°] (±{:.0}°)", zoom_lim),
@@ -762,13 +1109,23 @@ where
         .margin_top(2).margin_bottom(8).margin_left(10).margin_right(20)
         .x_label_area_size(30)
         .y_label_area_size(60)
-        .build_cartesian_2d(0.0f64..x_right.max(1.0), -zoom_lim..zoom_lim)
+        .build_cartesian_2d(0.0f64..xr, -zoom_lim..zoom_lim)
         .map_err(|e| anyhow::anyhow!("zoom chart: {e:?}"))?;
     zc.configure_mesh()
         .light_line_style(RGBColor(240, 240, 240))
         .draw().map_err(|e| anyhow::anyhow!("zoom mesh: {e:?}"))?;
+    // Phase backgrounds
+    zc.draw_series(std::iter::once(Rectangle::new(
+        [(0.0, -zoom_lim), (p1_x, zoom_lim)], phase_carry.filled(),
+    ))).ok();
+    zc.draw_series(std::iter::once(Rectangle::new(
+        [(p1_x, -zoom_lim), (p2_x, zoom_lim)], phase_run.filled(),
+    ))).ok();
+    zc.draw_series(std::iter::once(Rectangle::new(
+        [(p2_x, -zoom_lim), (xr, zoom_lim)], phase_foil.filled(),
+    ))).ok();
     zc.draw_series(std::iter::once(PathElement::new(
-        vec![(0.0, 0.0), (x_right.max(1.0), 0.0)],
+        vec![(0.0, 0.0), (xr, 0.0)],
         RGBColor(128, 128, 128).stroke_width(1),
     ))).map_err(|e| anyhow::anyhow!("zero: {e:?}"))?;
     zc.draw_series(LineSeries::new(
@@ -800,15 +1157,26 @@ where
         hc.configure_mesh()
             .light_line_style(RGBColor(240, 240, 240))
             .draw().map_err(|e| anyhow::anyhow!("height mesh: {e:?}"))?;
+        // Phase backgrounds
+        hc.draw_series(std::iter::once(Rectangle::new(
+            [(0.0, height_bot), (p1_x, height_top)], phase_carry.filled(),
+        ))).ok();
+        hc.draw_series(std::iter::once(Rectangle::new(
+            [(p1_x, height_bot), (p2_x, height_top)], phase_run.filled(),
+        ))).ok();
+        hc.draw_series(std::iter::once(Rectangle::new(
+            [(p2_x, height_bot), (xr, height_top)], phase_foil.filled(),
+        ))).ok();
         // Mast reference at 0.80 m
         hc.draw_series(std::iter::once(PathElement::new(
-            vec![(0.0, 0.80), (x_right.max(1.0), 0.80)],
+            vec![(0.0, 0.80), (xr, 0.80)],
             RGBColor(200, 0, 0).mix(0.5).stroke_width(1),
         ))).map_err(|e| anyhow::anyhow!("mast ref: {e:?}"))?;
         hc.draw_series(LineSeries::new(
             t_hist.iter().zip(h_data.iter()).filter_map(|(&t, &h)| {
-                if h.is_finite() && h >= -0.15 && h <= 0.95 { Some((t, h)) }
-                else { None }
+                // Only filter NaN; let height_top auto-fit handle
+                // any thermal-drift excursions visually.
+                if h.is_finite() { Some((t, h)) } else { None }
             }),
             RGBColor(44, 160, 44).stroke_width(2),
         )).map_err(|e| anyhow::anyhow!("height line: {e:?}"))?;
@@ -835,6 +1203,36 @@ where
         vc.configure_mesh()
             .light_line_style(RGBColor(240, 240, 240))
             .draw().map_err(|e| anyhow::anyhow!("speed mesh: {e:?}"))?;
+        // Phase backgrounds
+        vc.draw_series(std::iter::once(Rectangle::new(
+            [(0.0, 0.0), (p1_x, speed_top)], phase_carry.filled(),
+        ))).ok();
+        vc.draw_series(std::iter::once(Rectangle::new(
+            [(p1_x, 0.0), (p2_x, speed_top)], phase_run.filled(),
+        ))).ok();
+        vc.draw_series(std::iter::once(Rectangle::new(
+            [(p2_x, 0.0), (xr, speed_top)], phase_foil.filled(),
+        ))).ok();
+        // Phase labels above each band, centred on the band's x-mid.
+        let lbl_y = speed_top * 0.92;
+        if p1_x > 1.0 {
+            vc.draw_series(std::iter::once(Text::new(
+                "Tragen", (p1_x * 0.5, lbl_y),
+                (FONT, 14).into_font().color(&RGBColor(80, 80, 80)),
+            ))).ok();
+        }
+        if p2_x - p1_x > 1.0 {
+            vc.draw_series(std::iter::once(Text::new(
+                "Rennen", ((p1_x + p2_x) * 0.5, lbl_y),
+                (FONT, 14).into_font().color(&RGBColor(120, 90, 0)),
+            ))).ok();
+        }
+        if xr - p2_x > 1.0 {
+            vc.draw_series(std::iter::once(Text::new(
+                "Foilen", ((p2_x + xr) * 0.5, lbl_y),
+                (FONT, 14).into_font().color(&RGBColor(20, 100, 20)),
+            ))).ok();
+        }
         vc.draw_series(LineSeries::new(
             t_hist.iter().zip(v_data.iter()).filter_map(|(&t, &v)| {
                 if v.is_finite() { Some((t, v)) } else { None }
@@ -869,8 +1267,18 @@ where
         .x_desc("Zeit [s]")
         .light_line_style(RGBColor(240, 240, 240))
         .draw().map_err(|e| anyhow::anyhow!("graph mesh: {e:?}"))?;
+    // Phase backgrounds
+    gc.draw_series(std::iter::once(Rectangle::new(
+        [(0.0, -y_lim), (p1_x, y_lim)], phase_carry.filled(),
+    ))).ok();
+    gc.draw_series(std::iter::once(Rectangle::new(
+        [(p1_x, -y_lim), (p2_x, y_lim)], phase_run.filled(),
+    ))).ok();
+    gc.draw_series(std::iter::once(Rectangle::new(
+        [(p2_x, -y_lim), (xr, y_lim)], phase_foil.filled(),
+    ))).ok();
     gc.draw_series(std::iter::once(PathElement::new(
-        vec![(0.0, 0.0), (x_right.max(1.0), 0.0)],
+        vec![(0.0, 0.0), (xr, 0.0)],
         RGBColor(128, 128, 128).stroke_width(1),
     ))).map_err(|e| anyhow::anyhow!("zero: {e:?}"))?;
     let abs_or_corrected: &[f64] = nose_abs_hist.unwrap_or(nose_hist);
@@ -1021,3 +1429,20 @@ mod tempfile {
 // touch 1777116125810961000
 // 1777117177953306000
 // 1777117609989703000
+// 1777119994656819000
+// 1777122036278705000
+// rebuild 1777122077310373000
+// rebuild 1777122255017631000
+// rebuild 1777122374250603000
+// rebuild 1777124058384934000
+// rebuild 1777124194859005000
+// rebuild 1777124232926942000
+// rebuild 1777124477331970000
+// rebuild 1777124858733054000
+// rebuild 1777125293256443000
+// rebuild 1777125736311109000
+// 1777125756543100000
+// rebuild 1777126065139384000
+// rebuild 1777126856557418000
+// rebuild 1777127224116348000
+// rebuild 1777127360631995000
