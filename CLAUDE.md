@@ -191,6 +191,8 @@ Build: `cd Utilities/rust/stbox-viz && cargo build --release`. Binary at `target
 
 ### Combined HTML (`stbox-viz combined`)
 
+**Time-axis flags**: by default the x-axis runs in UTC anchored to the GPS clock. Pass `--tz-offset-h <h>` to shift to local time — `3` for Greek summer (EEST, used at Ermioni), `2` for Swiss summer (CEST), `1` for Swiss winter (CET). The axis title, ride-list times, and hover tooltips all reflect the chosen offset (`Local time (UTC+3)` etc.). The recording date defaults to the sensor file's mtime; override with `--date YYYY-MM-DD` if you've moved files around (`cp` resets mtime to today). Date only affects the rendered date string — time-of-day reads off the GPS clock regardless of date.
+
 Single interactive HTML per recording (saved to `html/`) with:
 - **Plotly Scattermap** on `carto-positron` tiles. **One trace per detected ride**, coloured by GPS speed (Viridis, 0–25 km/h). Only the selected ride's trace is drawn at a time — there is deliberately no "All rides" view, because the on-shore/between-ride GPS points drowned out the actual action and the full-session x-axis made the time-series panels extend past where any ride happened. Hover shows UTC + speed + nose angle + height-above-water at every point.
 - **Board nose angle** time-series (drift-corrected via 1 s + 60 s rolling medians on the rotated sensor Y-axis elevation).

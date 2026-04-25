@@ -9,6 +9,7 @@
 use crate::gps::Ride;
 use crate::gps::TICKS_PER_SEC;
 use crate::io::GpsRow;
+use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime};
 use serde_json::json;
 use std::fmt::Write as _;
 
@@ -33,6 +34,31 @@ pub struct PanelData<'a> {
     pub gps_height_m: &'a [f64],
     pub rides: &'a [Ride],
     pub title: &'a str,
+    /// Date (in UTC) anchoring the x-axis. Combined with `utc_at_t0_sec`
+    /// gives the absolute UTC datetime corresponding to sensor t = 0.
+    pub date_utc: NaiveDate,
+    /// UTC seconds-since-midnight at sensor t = 0, back-extrapolated
+    /// from the first GPS fix. Allows mapping `t_sensor_s` (seconds
+    /// since first sensor sample) to absolute wall-clock time.
+    pub utc_at_t0_sec: f64,
+    /// Local-time offset from UTC in hours (e.g. 3 for Greek summer).
+    /// Added to UTC for x-axis tick labels and hover values.
+    pub tz_offset_h: f64,
+}
+
+/// Convert a seconds-since-sensor-t0 value to an ISO datetime string
+/// in local time, suitable for Plotly's date axis.
+fn t_to_local_iso(t: f64, base_utc: NaiveDateTime, tz_offset_h: f64) -> String {
+    if !t.is_finite() {
+        // Plotly tolerates an empty string as a missing-date marker.
+        return String::new();
+    }
+    let total_ms = (t + tz_offset_h * 3600.0) * 1000.0;
+    let dt = base_utc + Duration::milliseconds(total_ms.round() as i64);
+    // Plotly accepts "YYYY-MM-DD HH:MM:SS.fff"; the .fff resolution
+    // matters for the 100 Hz nose-angle trace where binning lands
+    // points 100 ms apart.
+    dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
 /// Produce the full HTML for one combined report.
@@ -42,6 +68,16 @@ pub fn render(data: &PanelData) -> String {
     // the top of this function so the map-colorbar positioning
     // expressions can use it.
     let map_frac_f: f64 = if have_map { 0.45 } else { 0.0 };
+
+    // Wall-clock anchor for the x-axis. All sensor / GPS / ride time
+    // values are mapped to ISO datetime strings so Plotly renders the
+    // axis as real local time (HH:MM:SS) rather than seconds-since-start.
+    let base_utc = NaiveDateTime::new(data.date_utc, NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+        + Duration::milliseconds((data.utc_at_t0_sec * 1000.0).round() as i64);
+    let to_iso = |t: f64| t_to_local_iso(t, base_utc, data.tz_offset_h);
+
+    let t_sensor_iso: Vec<String> = data.t_sensor_s.iter().copied().map(to_iso).collect();
+    let gps_t_iso: Vec<String> = data.gps_t_s.iter().copied().map(to_iso).collect();
 
     // --- Map trace (Scattermap, coloured by nose-angle at each fix) ---
     // To colour by nose angle at each GPS moment, we interpolate the
@@ -154,13 +190,13 @@ pub fn render(data: &PanelData) -> String {
     traces.push(json!({
         "type": "scatter",
         "mode": "lines",
-        "x": data.t_sensor_s,
+        "x": t_sensor_iso,
         "y": data.nose_deg,
         "line": {"color": "#1f77b4", "width": 1},
         "name": "Nose [°]",
         "xaxis": "x",
         "yaxis": "y",
-        "hovertemplate": "t=%{x:.0f}s<br>nose=%{y:+.2f}°<extra></extra>",
+        "hovertemplate": "%{x|%H:%M:%S}<br>nose=%{y:+.2f}°<extra></extra>",
         "showlegend": false,
     }));
 
@@ -172,13 +208,13 @@ pub fn render(data: &PanelData) -> String {
     traces.push(json!({
         "type": "scatter",
         "mode": "lines",
-        "x": data.t_sensor_s,
+        "x": t_sensor_iso,
         "y": data.height_m,
         "line": {"color": "#2ca02c", "width": 1.5},
         "name": "Baro [m]",
         "xaxis": "x",
         "yaxis": "y2",
-        "hovertemplate": "t=%{x:.0f}s<br>baro=%{y:.2f} m<extra></extra>",
+        "hovertemplate": "%{x|%H:%M:%S}<br>baro=%{y:.2f} m<extra></extra>",
         "showlegend": false,
     }));
 
@@ -188,20 +224,21 @@ pub fn render(data: &PanelData) -> String {
         traces.push(json!({
             "type": "scatter",
             "mode": "lines",
-            "x": data.t_sensor_s,
+            "x": t_sensor_iso,
             "y": data.fused_height_m,
             "line": {"color": "#1f77b4", "width": 1.0},
             "name": "Fused [m]",
             "xaxis": "x",
             "yaxis": "y2",
-            "hovertemplate": "t=%{x:.0f}s<br>fused=%{y:.2f} m<extra></extra>",
+            "hovertemplate": "%{x|%H:%M:%S}<br>fused=%{y:.2f} m<extra></extra>",
             "showlegend": false,
         }));
     }
 
     // Mast reference line at 0.80 m
-    if !data.t_sensor_s.is_empty() {
-        let x_ends = vec![data.t_sensor_s[0], *data.t_sensor_s.last().unwrap()];
+    if !t_sensor_iso.is_empty() {
+        let x_ends = vec![t_sensor_iso.first().cloned().unwrap_or_default(),
+                          t_sensor_iso.last().cloned().unwrap_or_default()];
         traces.push(json!({
             "type": "scatter",
             "mode": "lines",
@@ -224,13 +261,13 @@ pub fn render(data: &PanelData) -> String {
         traces.push(json!({
             "type": "scatter",
             "mode": "markers",
-            "x": data.gps_t_s,
+            "x": gps_t_iso,
             "y": data.gps_height_m,
             "marker": {"color": "#ff7f0e", "size": 4, "opacity": 0.8},
             "name": "GPS alt",
             "xaxis": "x",
             "yaxis": "y2",
-            "hovertemplate": "t=%{x:.0f}s<br>GPS alt=%{y:+.2f} m<extra></extra>",
+            "hovertemplate": "%{x|%H:%M:%S}<br>GPS alt=%{y:+.2f} m<extra></extra>",
             "showlegend": false,
         }));
     }
@@ -240,13 +277,13 @@ pub fn render(data: &PanelData) -> String {
         traces.push(json!({
             "type": "scatter",
             "mode": "lines",
-            "x": data.gps_t_s,
+            "x": gps_t_iso,
             "y": data.gps_speed_kmh,
             "line": {"color": "#d62728", "width": 1},
             "name": "Speed [km/h]",
             "xaxis": "x",
             "yaxis": "y3",
-            "hovertemplate": "t=%{x:.0f}s<br>speed=%{y:.1f} km/h<extra></extra>",
+            "hovertemplate": "%{x|%H:%M:%S}<br>speed=%{y:.1f} km/h<extra></extra>",
             "showlegend": false,
         }));
     }
@@ -268,13 +305,25 @@ pub fn render(data: &PanelData) -> String {
     // base that the time-series x-axis uses.
     let sensor_base = data.t_sensor_s.first().copied().unwrap_or(0.0);
     let gps_base = data.gps.first().map(|g| g.ticks).unwrap_or(0.0);
-    let ride_windows: Vec<(f64, f64)> = data.rides.iter().map(|r| {
+    let ride_windows_s: Vec<(f64, f64)> = data.rides.iter().map(|r| {
         let start_ticks = data.gps.get(r.gps_start).map(|g| g.ticks).unwrap_or(0.0);
         let end_idx = r.gps_end.saturating_sub(1).min(data.gps.len().saturating_sub(1));
         let end_ticks = data.gps.get(end_idx).map(|g| g.ticks).unwrap_or(0.0);
         ((start_ticks - gps_base) / TICKS_PER_SEC + sensor_base,
          (end_ticks - gps_base) / TICKS_PER_SEC + sensor_base)
     }).collect();
+    // ISO datetime equivalents for the ride buttons' xaxis.range.
+    let ride_windows: Vec<(String, String)> = ride_windows_s.iter()
+        .map(|&(a, b)| (to_iso(a), to_iso(b)))
+        .collect();
+
+    let tz_label = if data.tz_offset_h == 0.0 {
+        "UTC".to_string()
+    } else if data.tz_offset_h.fract() == 0.0 {
+        format!("UTC{:+}", data.tz_offset_h as i64)
+    } else {
+        format!("UTC{:+}", data.tz_offset_h)
+    };
 
     // Build one button per ride — each update does three things via the
     // "update" method: (1) toggle trace visibility so only this ride's
@@ -318,7 +367,7 @@ pub fn render(data: &PanelData) -> String {
             "args": [
                 {"visible": visible},
                 {
-                    "xaxis.range": [win.0, win.1],
+                    "xaxis.range": [&win.0, &win.1],
                     "map.center": {"lat": c_lat, "lon": c_lon},
                     "map.zoom": z,
                 }
@@ -329,8 +378,11 @@ pub fn render(data: &PanelData) -> String {
     // Initial view = first ride, matching the map trace that starts
     // visible. Without this the x-axis would autoscale to the full
     // session and the time-series panels would be zoomed out.
-    let (init_x_lo, init_x_hi) = ride_windows.first().copied()
-        .unwrap_or((0.0, data.t_sensor_s.last().copied().unwrap_or(1.0)));
+    let (init_x_lo, init_x_hi) = ride_windows.first().cloned()
+        .unwrap_or_else(|| {
+            (t_sensor_iso.first().cloned().unwrap_or_default(),
+             t_sensor_iso.last().cloned().unwrap_or_default())
+        });
     let (init_c_lat, init_c_lon, init_zoom) = if let Some(r) = data.rides.first() {
         let end = r.gps_end.min(data.gps.len());
         let (mut ls, mut os): (Vec<f64>, Vec<f64>) = data.gps[r.gps_start..end]
@@ -469,8 +521,10 @@ pub fn render(data: &PanelData) -> String {
     layout_obj.insert("xaxis".into(), json!({
         "domain": [0.0, 1.0],
         "anchor": format!("y{}", n_ts_rows),
-        "title": {"text": "t [s]"},
-        "range": [init_x_lo, init_x_hi],
+        "type": "date",
+        "title": {"text": format!("Local time ({})", tz_label)},
+        "range": [&init_x_lo, &init_x_hi],
+        "tickformat": "%H:%M:%S",
         "showspikes": true,
         "spikemode": "across",
         "spikesnap": "cursor",
@@ -494,9 +548,18 @@ pub fn render(data: &PanelData) -> String {
     for (i, r) in data.rides.iter().enumerate() {
         let dur_min = (r.duration_s / 60.0) as u32;
         let dur_sec = ((r.duration_s - dur_min as f64 * 60.0) as u32).min(59);
+        // Format the start time in the same local zone as the x-axis.
+        let local_start = ride_windows_s.get(i)
+            .map(|&(t, _)| {
+                let total_ms = (t + data.tz_offset_h * 3600.0) * 1000.0;
+                let dt = base_utc + Duration::milliseconds(total_ms.round() as i64);
+                dt.format("%H:%M:%S").to_string()
+            })
+            .unwrap_or_else(|| r.utc_start.clone());
         write!(ride_toc,
-            "<li>Session {}: UTC {utc}, duration {m:02}:{s:02}, p90 {p:.1} km/h</li>",
-            i + 1, utc = r.utc_start, m = dur_min, s = dur_sec, p = r.p90_kmh).unwrap();
+            "<li>Session {}: {tz} {time}, duration {m:02}:{s:02}, p90 {p:.1} km/h</li>",
+            i + 1, tz = tz_label, time = local_start,
+            m = dur_min, s = dur_sec, p = r.p90_kmh).unwrap();
     }
     ride_toc.push_str("</ul></div>");
 

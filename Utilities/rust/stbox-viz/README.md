@@ -18,11 +18,24 @@ Binary lands at `target/release/stbox-viz`.
 ## Usage
 
 ```sh
-./target/release/stbox-viz ../../../csv/peter_22.4.2026_1250.csv -o ../../../html/
+./target/release/stbox-viz combined ../../../csv/peter_22.4.2026_1250.csv -o ../../../html/
 ```
 
 The GPS CSV is picked up automatically as `<stem>_gps.csv` next to the
 sensor CSV. Output filename is `viz_<stem>.html`.
+
+### Time-axis options (`combined`)
+
+By default the x-axis runs in UTC anchored to the GPS clock. Use:
+
+- `--tz-offset-h <h>` — shift x-axis to local time. `3` for Ermioni / Greek
+  summer (EEST), `2` for Swiss summer (CEST), `1` for Swiss winter (CET).
+  Axis title and ride-list times reflect the chosen offset.
+- `--date YYYY-MM-DD` — override the recording date. Defaults to the
+  sensor file's mtime; pass this if `cp`/`mv` reset the mtime to today.
+
+Time-of-day always reads off the GPS clock — the `--date` flag only
+affects the rendered date string in datetime tooltips.
 
 Plotly.js is loaded from the CDN (same as the Python version's
 `include_plotlyjs='cdn'`), so the HTML needs internet the first time it's

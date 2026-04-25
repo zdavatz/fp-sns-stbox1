@@ -46,6 +46,16 @@ enum Cmd {
         output: PathBuf,
         #[arg(long, default_value_t = 0.1)]
         beta: f64,
+        /// UTC offset in hours for the x-axis (e.g. 3 for Greek summer
+        /// time, 2 for Swiss summer time). Default 0 = UTC. Determines
+        /// the wall-clock time displayed on the time axis.
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        tz_offset_h: f64,
+        /// Recording date as YYYY-MM-DD. Used as the date for x-axis
+        /// datetimes. If omitted, falls back to the sensor file's
+        /// modification time, then to today.
+        #[arg(long)]
+        date: Option<String>,
     },
     /// Sensor + quaternion PNG plots.
     Sensors {
@@ -93,8 +103,8 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Combined { sensor_csv, output, beta } =>
-            run_combined(&sensor_csv, &output, beta),
+        Cmd::Combined { sensor_csv, output, beta, tz_offset_h, date } =>
+            run_combined(&sensor_csv, &output, beta, tz_offset_h, date.as_deref()),
         Cmd::Sensors { sensor_csv, output } =>
             sensors_cmd::run(&sensor_csv, &output),
         Cmd::Pumpfoil { sensor_csv, output } =>
@@ -118,7 +128,8 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
+fn run_combined(sensor_path: &Path, output: &Path, beta: f64,
+                tz_offset_h: f64, date_arg: Option<&str>) -> Result<()> {
     let sensor_path = sensor_path.canonicalize()
         .with_context(|| format!("canonicalize {}", sensor_path.display()))?;
     let stem = sensor_path.file_stem().and_then(|s| s.to_str())
@@ -231,6 +242,20 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
         .collect();
     let fused_binned: Vec<f64> = Vec::new();
 
+    // Build the wall-clock anchor for the time axis. We anchor sensor
+    // t = 0 to a real datetime by combining: (a) the date (CLI arg or
+    // file mtime or today) with (b) the UTC time-of-day at sensor t = 0,
+    // back-extrapolated from the first GPS fix's UTC + tick. Without
+    // GPS, we anchor to midnight UTC and the axis still plots correctly
+    // — just with a wrong absolute time.
+    let date_utc = resolve_session_date(date_arg, &sensor_path)?;
+    let utc_at_t0_sec = if let Some(g) = gps_rows.first() {
+        let utc_sec = parse_utc_hhmmss(&g.utc).unwrap_or(0.0);
+        utc_sec - (g.ticks - base_ticks) / gps::TICKS_PER_SEC
+    } else {
+        0.0
+    };
+
     let title = format!("{} — {:.1} min · {} ride{}",
         stem, dur_s / 60.0, rides.len(),
         if rides.len() == 1 { "" } else { "s" });
@@ -245,6 +270,9 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64) -> Result<()> {
         gps_height_m: &gps_height_m,
         rides: &rides,
         title: &title,
+        date_utc,
+        utc_at_t0_sec,
+        tz_offset_h,
     });
 
     std::fs::create_dir_all(output)
@@ -261,6 +289,37 @@ fn guess_gps_path(sensor_path: &Path) -> Option<PathBuf> {
     let parent = sensor_path.parent()?;
     let gps = parent.join(format!("{}_gps.csv", stem));
     if gps.exists() { Some(gps) } else { None }
+}
+
+/// Parse a "hhmmss.ss" GPS UTC string into seconds-since-midnight.
+fn parse_utc_hhmmss(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.len() < 6 { return None; }
+    let h: f64 = s[0..2].parse().ok()?;
+    let m: f64 = s[2..4].parse().ok()?;
+    let sec: f64 = s[4..].parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + sec)
+}
+
+/// Pick the recording date. Preference order: explicit CLI arg →
+/// sensor file's mtime (in UTC) → today (UTC). The date is purely
+/// for display — getting it slightly wrong only mislabels the date,
+/// the time-of-day still reads correctly off the GPS clock.
+fn resolve_session_date(arg: Option<&str>, sensor_path: &Path)
+    -> Result<chrono::NaiveDate>
+{
+    use chrono::{NaiveDate, DateTime, Utc};
+    if let Some(s) = arg {
+        return NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .with_context(|| format!("parse --date {}", s));
+    }
+    if let Ok(meta) = std::fs::metadata(sensor_path) {
+        if let Ok(mtime) = meta.modified() {
+            let dt: DateTime<Utc> = mtime.into();
+            return Ok(dt.date_naive());
+        }
+    }
+    Ok(Utc::now().date_naive())
 }
 
 /// Subtract a centred rolling mean from each sample. Removes slow
