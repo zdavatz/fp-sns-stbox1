@@ -97,6 +97,31 @@ enum Cmd {
         title: Option<String>,
         #[arg(long)]
         subtitle: Option<String>,
+        /// Wall-clock start time HH:MM[:SS] in local time. When set,
+        /// bypasses session detection and renders one GIF spanning the
+        /// `--duration` window (or the video's length if --video given).
+        /// Pair with --tz-offset-h and --date so the time anchor matches
+        /// the GPS clock.
+        #[arg(long)]
+        at: Option<String>,
+        /// Duration in seconds for the --at window. Defaults to the
+        /// video's duration when --video is set, else 60 s.
+        #[arg(long)]
+        duration: Option<f64>,
+        /// UTC offset in hours for --at. Default 0 = UTC.
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        tz_offset_h: f64,
+        /// Recording date as YYYY-MM-DD, used with --at. Defaults to
+        /// the sensor file's mtime.
+        #[arg(long)]
+        date: Option<String>,
+        /// In --at mode, auto-skip the carry/transition seconds before
+        /// sustained pitch oscillation begins. Off by default — the
+        /// raw nose-angle stream from --at looks visually right;
+        /// auto-skip can land mid-stroke and make the angle trace
+        /// look discontinuous.
+        #[arg(long, default_value_t = false)]
+        auto_skip: bool,
     },
 }
 
@@ -112,7 +137,8 @@ fn main() -> Result<()> {
         Cmd::Compass { sensor_csv, output } =>
             compass_cmd::run(&sensor_csv, &output),
         Cmd::Animate { sensor_csv, output, fps, session, video,
-                       video_offset, sensor_offset, title, subtitle } => {
+                       video_offset, sensor_offset, title, subtitle,
+                       at, duration, tz_offset_h, date, auto_skip } => {
             animate_cmd::run(&animate_cmd::AnimateArgs {
                 sensor_csv: &sensor_csv,
                 output_dir: &output,
@@ -123,6 +149,11 @@ fn main() -> Result<()> {
                 sensor_offset,
                 title: title.as_deref(),
                 subtitle: subtitle.as_deref(),
+                at: at.as_deref(),
+                duration,
+                tz_offset_h,
+                date: date.as_deref(),
+                auto_skip,
             })
         }
     }

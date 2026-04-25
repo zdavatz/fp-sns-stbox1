@@ -14,13 +14,16 @@
 //! With `--video <path>`, pipes the resulting GIF through ffmpeg into a
 //! side-by-side MOV next to camera footage.
 
+use crate::baro;
 use crate::butter::{butter4_lowpass, filtfilt};
 use crate::euler::quats_to_euler_deg;
 use crate::fusion;
-use crate::io::load_sensor_csv;
+use crate::gps as gps_mod;
+use crate::io::{load_gps_csv, load_sensor_csv};
 use crate::plot_common::FONT;
 use crate::session::detect_sessions;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
+use chrono::{Duration as ChronoDuration, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc, DateTime};
 use plotters::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,6 +38,17 @@ pub struct AnimateArgs<'a> {
     pub sensor_offset: f64,
     pub title: Option<&'a str>,
     pub subtitle: Option<&'a str>,
+    /// Wall-clock start (HH:MM[:SS]) in local time. When set, bypasses
+    /// session detection and renders one GIF for that exact window.
+    pub at: Option<&'a str>,
+    /// Window length in seconds when `at` is set; defaults to the
+    /// video's duration if `video` is given, else 60 s.
+    pub duration: Option<f64>,
+    pub tz_offset_h: f64,
+    pub date: Option<&'a str>,
+    /// In `--at` mode, skip carry/transition seconds at the start until
+    /// sustained pitch oscillation begins. Off by default.
+    pub auto_skip: bool,
 }
 
 pub fn run(args: &AnimateArgs) -> Result<()> {
@@ -53,19 +67,165 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
     let (roll, pitch, _yaw) = quats_to_euler_deg(&quats);
 
     let sample_hz: usize = 100;
+
+    // Nose angle for animation: 0.7 Hz Butterworth + 10 s baseline.
+    // Pump frequency on this hardware is ~0.5 Hz. With a 0.7 Hz cutoff
+    // the pump fundamental sits well inside the passband (~5 % loss)
+    // while 1+ Hz "shake the board" wiggle is sharply attenuated.
+    let nose_raw = nose_angle_deg_raw(&quats);
+    let (b, a) = butter4_lowpass(0.7, sample_hz as f64);
+    let nose_smooth = filtfilt(&b, &a, &nose_raw);
+    let baseline = rolling_median(&nose_smooth, 10 * sample_hz);
+    let nose_corrected: Vec<f64> = nose_smooth.iter().zip(baseline.iter())
+        .map(|(s, b)| s - b).collect();
+
+
+    // GPS-derived height + speed (sample-aligned with sensors). Loaded
+    // once for the whole session; the --at mode slices it later. Fails
+    // gracefully if no GPS CSV is next to the sensor file.
+    let base_ticks_session = samples[0].ticks;
+    let (height_full, speed_at_sensor): (Vec<f64>, Vec<f64>) = {
+        let gps_path = guess_gps_path(args.sensor_csv);
+        if let Some(gp) = gps_path {
+            let mut gps_rows = load_gps_csv(&gp)?;
+            gps_rows.retain(|g| g.fix >= 1);
+            // Same speed pipeline as `combined`: position-derived speed,
+            // multipath-rejection at 4 m/s² (≈ 15 km/h/s), 5 s rolling
+            // median.
+            let raw = gps_mod::position_derived_speed_kmh(&gps_rows);
+            let gated = gps_mod::reject_acc_outliers(&gps_rows, &raw, 15.0);
+            let smooth = gps_mod::smooth_speed_kmh(&gated);
+            let height_raw = baro::height_above_water_m(
+                &samples, &gps_rows, &smooth, base_ticks_session);
+            // Smooth the baro height for visualization. The raw signal
+            // has many short pressure-noise spikes (visible as jagged
+            // peaks in the height panel and, more importantly, as
+            // jitter in the board-view lift). 0.5-sec centred rolling
+            // mean kills the jitter while preserving the slower
+            // foiling-height changes (mast travel is at most ~0.8 m,
+            // pumps are 0.3–0.6 Hz, well-preserved by a 1 Hz-equivalent
+            // smoother).
+            let height: Vec<f64> = {
+                let win = sample_hz / 2;
+                let half = win / 2;
+                let n = height_raw.len();
+                let mut csum = vec![0.0; n + 1];
+                let mut ccnt = vec![0usize; n + 1];
+                for i in 0..n {
+                    let v = height_raw[i];
+                    csum[i + 1] = csum[i] + if v.is_finite() { v } else { 0.0 };
+                    ccnt[i + 1] = ccnt[i] + if v.is_finite() { 1 } else { 0 };
+                }
+                let mut out = vec![0.0; n];
+                for i in 0..n {
+                    let lo = i.saturating_sub(half);
+                    let hi = (i + half + 1).min(n);
+                    let cnt = ccnt[hi] - ccnt[lo];
+                    out[i] = if cnt > 0 {
+                        (csum[hi] - csum[lo]) / cnt as f64
+                    } else {
+                        f64::NAN
+                    };
+                }
+                out
+            };
+            // Interp GPS speed onto the sensor time grid so the speed
+            // panel can use a per-sensor-sample cursor.
+            let gps_t_s: Vec<f64> = gps_rows.iter()
+                .map(|g| (g.ticks - base_ticks_session) / gps_mod::TICKS_PER_SEC)
+                .collect();
+            let sensor_t_s: Vec<f64> = samples.iter()
+                .map(|s| (s.ticks - base_ticks_session) / gps_mod::TICKS_PER_SEC)
+                .collect();
+            let speed_aligned = baro::interp_linear(&sensor_t_s, &gps_t_s, &smooth);
+            (height, speed_aligned)
+        } else {
+            (Vec::new(), Vec::new())
+        }
+    };
+
+    // --at mode: bypass session detection and render exactly one GIF
+    // covering [at, at + duration). The window is computed from the
+    // GPS-anchored UTC clock so it lines up with the same wall-clock
+    // axis as `combined`.
+    if let Some(at_str) = args.at {
+        let (mut at_s, at_e, mut start_local) = resolve_at_window(
+            args.sensor_csv, &samples, sample_hz, at_str, args.duration,
+            args.video, args.tz_offset_h, args.date,
+        )?;
+        if at_e <= at_s {
+            anyhow::bail!("--at window resolves to zero/negative length");
+        }
+
+        // Auto-detect water-entry: skip the carry/transition seconds
+        // before sustained pitch oscillation begins. While the rider
+        // walks the board to the water, pitch flails irregularly; once
+        // pumping starts it oscillates at ~0.3–1 Hz with amplitude
+        // > 5°. Find the first 3-sec window inside [at_s, at_e) with
+        // ≥ 2 zero-crossings of the detrended pitch and amplitude
+        // > 5°. If found, advance both the GIF start and (when paired
+        // with --video) the video by the same number of seconds, so
+        // the side-by-side stays in sync. The carry portion is just
+        // dropped from the output.
+        let mut video_offset = args.video_offset;
+        if args.auto_skip {
+            let pitch_at = &pitch[at_s..at_e];
+            if let Some(skip) = detect_water_entry(pitch_at, sample_hz) {
+                let skip_s = skip as f64 / sample_hz as f64;
+                if skip_s >= 0.5 {
+                    println!("  auto-skip: {:.1} s carry/transition before pumping",
+                             skip_s);
+                    at_s += skip;
+                    start_local = start_local
+                        + ChronoDuration::milliseconds((skip_s * 1000.0).round() as i64);
+                    video_offset += skip_s;
+                }
+            }
+        }
+
+        let dur = (at_e - at_s) as f64 / sample_hz as f64;
+        println!("  --at window: {:.1} s ({} samples), start {} local",
+            dur, at_e - at_s, start_local.format("%H:%M:%S"));
+        let label = at_str.replace(':', "");
+        let gif_path = args.output_dir.join(
+            format!("anim_board_{}_at{}.gif", base, label));
+        let height_slice: Option<&[f64]> = if !height_full.is_empty() {
+            Some(&height_full[at_s..at_e])
+        } else { None };
+        let speed_slice: Option<&[f64]> = if !speed_at_sensor.is_empty() {
+            Some(&speed_at_sensor[at_s..at_e])
+        } else { None };
+        render_session_gif(
+            &nose_corrected[at_s..at_e],
+            0,
+            &base,
+            sample_hz,
+            args.fps,
+            &gif_path,
+            Some(start_local),
+            height_slice,
+            speed_slice,
+            None,
+        )?;
+        println!("Saved {}", gif_path.display());
+
+        if let Some(video_path) = args.video {
+            let mov_path = args.output_dir.join(
+                format!("combined_{}_at{}.mov", base, label));
+            combine_with_ffmpeg(
+                &gif_path, video_path, video_offset, args.sensor_offset,
+                &mov_path, args.title, args.subtitle, args.fps * 2,
+            )?;
+            println!("Saved {}", mov_path.display());
+        }
+        return Ok(());
+    }
+
     let sessions = detect_sessions(&pitch, &roll, sample_hz);
     if sessions.is_empty() {
         anyhow::bail!("no pumping sessions detected");
     }
     println!("found {} pumping session(s)", sessions.len());
-
-    // Nose angle for animation: 2 Hz Butterworth + 10 s baseline.
-    let nose_raw = nose_angle_deg_raw(&quats);
-    let (b, a) = butter4_lowpass(2.0, sample_hz as f64);
-    let nose_smooth = filtfilt(&b, &a, &nose_raw);
-    let baseline = rolling_median(&nose_smooth, 10 * sample_hz);
-    let nose_corrected: Vec<f64> = nose_smooth.iter().zip(baseline.iter())
-        .map(|(s, b)| s - b).collect();
 
     for (i, &(s, e)) in sessions.iter().enumerate() {
         let session_num = i + 1;
@@ -78,6 +238,12 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
 
         let gif_path = args.output_dir.join(
             format!("anim_board_{}_session{}.gif", base, session_num));
+        let h_slice: Option<&[f64]> = if !height_full.is_empty() {
+            Some(&height_full[s..e])
+        } else { None };
+        let v_slice: Option<&[f64]> = if !speed_at_sensor.is_empty() {
+            Some(&speed_at_sensor[s..e])
+        } else { None };
         render_session_gif(
             &nose_corrected[s..e],
             session_num,
@@ -85,6 +251,10 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             sample_hz,
             args.fps,
             &gif_path,
+            None,
+            h_slice,
+            v_slice,
+            None,
         )?;
         println!("Saved {}", gif_path.display());
 
@@ -100,6 +270,184 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolve `--at HH:MM[:SS]` (in local time) + optional `--duration` /
+/// video length into a (start, end) sensor-sample-index pair.
+///
+/// Anchors local time to the sensor sample stream by:
+/// 1. Picking a sensor-side reference tick (sensors[0].ticks).
+/// 2. Pulling the matching wall-clock UTC from the first GPS fix's
+///    UTC time-of-day, back-extrapolated to that reference tick.
+/// 3. Combining with the recording date (CLI arg, then file mtime,
+///    then today) to get an absolute UTC anchor at sensor t = 0.
+/// 4. Adding the local-time offset and computing the requested window.
+fn resolve_at_window(
+    sensor_path: &Path,
+    samples: &[crate::io::SensorRow],
+    sample_hz: usize,
+    at_str: &str,
+    duration_arg: Option<f64>,
+    video: Option<&Path>,
+    tz_offset_h: f64,
+    date_arg: Option<&str>,
+) -> Result<(usize, usize, NaiveDateTime)> {
+    let gps_path = guess_gps_path(sensor_path);
+    let utc_at_t0_sec = if let Some(p) = gps_path.as_deref() {
+        let mut rows = load_gps_csv(p)?;
+        rows.retain(|g| g.fix >= 1);
+        let g = rows.first().ok_or_else(|| anyhow!(
+            "GPS CSV has no valid fixes; --at needs GPS to anchor wall-clock time"))?;
+        let utc_sec = parse_utc_hhmmss(&g.utc).ok_or_else(|| anyhow!(
+            "could not parse GPS UTC '{}'", g.utc))?;
+        let base_ticks = samples[0].ticks;
+        utc_sec - (g.ticks - base_ticks) / 100.0
+    } else {
+        anyhow::bail!("no GPS CSV next to {}; --at needs GPS to anchor wall-clock time",
+                      sensor_path.display());
+    };
+
+    let date_utc = resolve_session_date(date_arg, sensor_path)?;
+    let base_utc = NaiveDateTime::new(date_utc, NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+        + ChronoDuration::milliseconds((utc_at_t0_sec * 1000.0).round() as i64);
+
+    // --at value (in local time) is the authoritative anchor. If the
+    // user wants finer alignment, they can pass `--at HH:MM:SS`. We
+    // also probe the video's creation_time for diagnostics — printing
+    // it lets the user see if their --at value matches the actual
+    // record start, but we do not override --at automatically.
+    if let Some(vt) = video.and_then(ffprobe_creation_time) {
+        let local = vt + ChronoDuration::milliseconds((tz_offset_h * 3600.0 * 1000.0) as i64);
+        println!("  video creation_time: {} local (override --at to align precisely)",
+                 local.format("%H:%M:%S"));
+    }
+    let at_local_sec = parse_hhmm_to_sec(at_str)
+        .ok_or_else(|| anyhow!("could not parse --at '{}', expected HH:MM[:SS]", at_str))?;
+    let at_utc_sec_of_day = at_local_sec - tz_offset_h * 3600.0;
+
+    // Sensor t (seconds since first sample) at the requested wall-clock.
+    let base_utc_sec_of_day = base_utc.time().num_seconds_from_midnight() as f64
+        + base_utc.time().nanosecond() as f64 / 1e9;
+    let t_at = at_utc_sec_of_day - base_utc_sec_of_day;
+    if t_at < 0.0 || t_at >= samples.len() as f64 / sample_hz as f64 {
+        anyhow::bail!(
+            "--at {} (local) maps to t = {:.1} s, which is outside the recording window [0, {:.1} s]",
+            at_str, t_at, samples.len() as f64 / sample_hz as f64);
+    }
+
+    // Window length: explicit --duration → ffprobe video length → 60 s.
+    let dur = duration_arg.or_else(|| {
+        video.and_then(|v| ffprobe_duration(v).ok())
+    }).unwrap_or(60.0);
+
+    let s = (t_at * sample_hz as f64).round() as usize;
+    let e = ((t_at + dur) * sample_hz as f64).round() as usize;
+
+    // Local-time anchor at the start of the GIF window (= base UTC at
+    // sensor-t=0 + t_at + tz offset).
+    let start_local = base_utc
+        + ChronoDuration::milliseconds(((t_at + tz_offset_h * 3600.0) * 1000.0).round() as i64);
+
+    Ok((s.min(samples.len()), e.min(samples.len()), start_local))
+}
+
+fn parse_hhmm_to_sec(s: &str) -> Option<f64> {
+    let parts: Vec<&str> = s.split(':').collect();
+    let h: f64 = parts.first()?.parse().ok()?;
+    let m: f64 = parts.get(1)?.parse().ok()?;
+    let sec: f64 = parts.get(2).map(|x| x.parse().unwrap_or(0.0)).unwrap_or(0.0);
+    Some(h * 3600.0 + m * 60.0 + sec)
+}
+
+fn parse_utc_hhmmss(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.len() < 6 { return None; }
+    let h: f64 = s[0..2].parse().ok()?;
+    let m: f64 = s[2..4].parse().ok()?;
+    let sec: f64 = s[4..].parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + sec)
+}
+
+fn resolve_session_date(arg: Option<&str>, sensor_path: &Path) -> Result<NaiveDate> {
+    if let Some(s) = arg {
+        return NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .with_context(|| format!("parse --date {}", s));
+    }
+    if let Ok(meta) = std::fs::metadata(sensor_path) {
+        if let Ok(mtime) = meta.modified() {
+            let dt: DateTime<Utc> = mtime.into();
+            return Ok(dt.date_naive());
+        }
+    }
+    Ok(Utc::now().date_naive())
+}
+
+fn guess_gps_path(sensor_path: &Path) -> Option<PathBuf> {
+    let stem = sensor_path.file_stem()?.to_str()?.to_string();
+    let parent = sensor_path.parent()?;
+    let gps = parent.join(format!("{}_gps.csv", stem));
+    if gps.exists() { Some(gps) } else { None }
+}
+
+/// First sample index inside `pitch` where sustained pumping
+/// oscillation starts. Carry/transition before water entry is
+/// irregular and the board may be in any orientation — so we look for
+/// the first 3-second window with ≥ 2 zero-crossings of the detrended
+/// pitch and amplitude > 5°. Returns None if the window never settles
+/// into pumping (e.g. pure walking, or window too short).
+fn detect_water_entry(pitch: &[f64], sample_hz: usize) -> Option<usize> {
+    let n = pitch.len();
+    let win = 3 * sample_hz;
+    if n < win + sample_hz { return None; }
+
+    // 5-second rolling-median baseline → detrended pitch isolates the
+    // oscillatory component. Median (not mean) so a few seconds of
+    // carry-tilt with constant offset don't bias the baseline.
+    let baseline = rolling_median(pitch, 5 * sample_hz);
+    let detrended: Vec<f64> = pitch.iter().zip(baseline.iter())
+        .map(|(p, b)| p - b).collect();
+
+    for start in 0..n.saturating_sub(win) {
+        let w = &detrended[start..start + win];
+        let amp = w.iter().fold(0.0f64, |a, &v| a.max(v.abs()));
+        if amp < 5.0 { continue; }
+        let mut crossings = 0;
+        let mut prev = 0.0f64;
+        for &v in w {
+            if v.signum() != 0.0 && prev.signum() != 0.0 && v.signum() != prev.signum() {
+                crossings += 1;
+            }
+            if v != 0.0 { prev = v; }
+        }
+        if crossings >= 2 {
+            return Some(start);
+        }
+    }
+    None
+}
+
+fn ffprobe_duration(video: &Path) -> Result<f64> {
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=duration",
+               "-of", "default=noprint_wrappers=1:nokey=1"])
+        .arg(video)
+        .output()
+        .with_context(|| "running ffprobe — is it in PATH?")?;
+    let s = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+    s.parse::<f64>().with_context(|| format!("parse ffprobe output '{}'", s))
+}
+
+/// Read the video's `creation_time` (typically iPhone's wall-clock UTC
+/// at the start of recording). Returns None if absent / unparseable.
+fn ffprobe_creation_time(video: &Path) -> Option<DateTime<Utc>> {
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format_tags=creation_time",
+               "-of", "default=noprint_wrappers=1:nokey=1"])
+        .arg(video)
+        .output().ok()?;
+    let s = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+    if s.is_empty() { return None; }
+    DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))
 }
 
 /// Raw nose elevation in degrees from quaternions.
@@ -132,6 +480,10 @@ fn render_session_gif(
     sample_hz: usize,
     fps: u32,
     out_path: &PathBuf,
+    _start_local: Option<NaiveDateTime>,
+    height_m: Option<&[f64]>,
+    speed_kmh: Option<&[f64]>,
+    nose_abs: Option<&[f64]>,
 ) -> Result<()> {
     // Subsample so animation runs at `fps`.
     let step = (sample_hz as u32 / fps).max(1) as usize;
@@ -152,20 +504,16 @@ fn render_session_gif(
     let drop_time = drop_idx as f64 / sample_hz as f64;
     let drop_flash_end = drop_time + 2.0;
 
-    // Axis bounds
-    let y_lim = {
-        let mut mx = 30f64;
-        for &v in nose {
-            if v.is_finite() && v.abs() > mx { mx = v.abs(); }
-        }
-        mx * 1.1
-    };
-    let zoom_lim = 5.0f64;
+    // Scales are computed PER FRAME inside draw_frame from the
+    // history-up-to-now slices, so the y-max grows with the trace.
+    // Earlier frames get a tight scale that highlights the small early
+    // movements; later frames expand to fit any peaks.
 
     // Bitmap frame size
     let (w, h) = (1200u32, 900u32);
 
-    let title_line = format!("Session {} — {} (Dauer: {}:{:02})", session_num, base, dm, ds);
+    let title_line = format!("Session {} — {} (Dauer: {}:{:02})",
+        session_num, base, dm, ds);
 
     let root = BitMapBackend::gif(out_path, (w, h), 1000 / fps)?
         .into_drawing_area();
@@ -174,7 +522,11 @@ fn render_session_gif(
     for (frame, &fi) in frame_indices.iter().enumerate() {
         root.fill(&WHITE)?;
         let t_now = fi as f64 / sample_hz as f64;
-        let angle = nose[fi];
+        let angle = nose_abs.map(|s| s[fi]).unwrap_or(nose[fi]);
+        let h_hist = height_m.map(|s| &s[..=fi]);
+        let v_hist = speed_kmh.map(|s| &s[..=fi]);
+        let n_abs_hist = nose_abs.map(|s| &s[..=fi]);
+        let h_now = height_m.and_then(|s| if s[fi].is_finite() { Some(s[fi]) } else { None });
         draw_frame(
             &root,
             &title_line,
@@ -182,11 +534,13 @@ fn render_session_gif(
             &t_sess[..=fi],
             t_now,
             angle,
-            y_lim,
-            zoom_lim,
             drop_time,
             drop_flash_end,
             drop_angle,
+            h_hist,
+            v_hist,
+            n_abs_hist,
+            h_now,
         )?;
         root.present()?;
         if frame % 100 == 0 {
@@ -206,15 +560,65 @@ fn draw_frame<DB: DrawingBackend>(
     t_hist: &[f64],
     t_now: f64,
     angle: f64,
-    y_lim: f64,
-    zoom_lim: f64,
     drop_time: f64,
     drop_flash_end: f64,
     drop_angle: f64,
+    height_hist: Option<&[f64]>,
+    speed_hist: Option<&[f64]>,
+    nose_abs_hist: Option<&[f64]>,
+    height_now: Option<f64>,
 ) -> Result<(), anyhow::Error>
 where
     DB::ErrorType: 'static,
 {
+    // Per-frame scales: y-max equals the running max of the history
+    // shown so far. No headroom above. Tiny floors prevent degenerate
+    // empty ranges in the very first frames.
+    let zoom_lim: f64 = {
+        let mut mx = 0f64;
+        for &v in nose_hist {
+            if v.is_finite() && v.abs() > mx { mx = v.abs(); }
+        }
+        mx.max(1.0)
+    };
+    let y_lim: f64 = {
+        // 95th-percentile-based scale: a single ±35° outlier pump
+        // shouldn't stretch the axis so the typical ±10° activity
+        // ends up in the bottom 30 % of the panel. Outliers above
+        // p95 are visually clipped at the chart edge, which the
+        // user prefers over wasted vertical space.
+        let src = nose_abs_hist.unwrap_or(nose_hist);
+        let mut abs: Vec<f64> = src.iter()
+            .filter(|v| v.is_finite())
+            .map(|v| v.abs())
+            .collect();
+        if abs.is_empty() {
+            1.0
+        } else {
+            abs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let i = ((abs.len() as f64 * 0.95) as usize).min(abs.len() - 1);
+            abs[i].max(1.0).min(180.0)
+        }
+    };
+    let speed_top: f64 = if let Some(s) = speed_hist {
+        let m = s.iter().filter(|v| v.is_finite()).copied()
+            .fold(0.0f64, |a, b| a.max(b));
+        m.max(0.5)
+    } else { 30.0 };
+    let height_top: f64 = if let Some(s) = height_hist {
+        let m = s.iter()
+            .filter(|v| v.is_finite() && **v >= -0.15 && **v <= 0.95)
+            .copied()
+            .fold(0.0f64, |a, b| a.max(b));
+        m.max(0.1)
+    } else { 0.9 };
+    let height_bot: f64 = if let Some(s) = height_hist {
+        let m = s.iter()
+            .filter(|v| v.is_finite() && **v >= -0.15 && **v <= 0.95)
+            .copied()
+            .fold(f64::INFINITY, |a, b| a.min(b));
+        if m.is_finite() { m.min(0.0) } else { -0.1 }
+    } else { -0.1 };
     // Title across the top
     root.draw(&Text::new(
         title.to_string(),
@@ -222,19 +626,52 @@ where
         (FONT, 18).into_font().color(&BLACK),
     )).map_err(|e| anyhow::anyhow!("title: {e:?}"))?;
 
-    // Split into 3 panels (2:1:1 height)
-    let (board_area, rest) = root.split_vertically(430);
-    let (zoom_area, graph_area) = rest.split_vertically(225);
+    // Layout: 5 panels when height + speed are present, 3 panels
+    // otherwise (legacy session-detection mode without GPS). The
+    // canvas is 900 px tall and the global title needs ~25 px at top.
+    let have_extras = height_hist.is_some() && speed_hist.is_some();
+    let (board_area, rest) = if have_extras {
+        // board=320, rest=580 → split rest into zoom=130, height=145, speed=145, graph=160
+        root.split_vertically(320)
+    } else {
+        root.split_vertically(430)
+    };
+    let (zoom_area, after_zoom) = if have_extras {
+        rest.split_vertically(130)
+    } else {
+        rest.split_vertically(225)
+    };
+    let (height_area, speed_area, graph_area) = if have_extras {
+        let (h_a, after_h) = after_zoom.split_vertically(145);
+        let (v_a, g_a) = after_h.split_vertically(145);
+        (Some(h_a), Some(v_a), g_a)
+    } else {
+        (None, None, after_zoom)
+    };
 
     // --- Board side view ---
     let rad = angle.to_radians();
     let hl = 0.8f64;        // half-length
-    let lift = angle * 0.05;
+    // Lift = real baro-derived height when available, clamped to ±0.7 m
+    // so the board stays in the ±0.8 view. Falls back to a small angle-
+    // based proxy (1/100 of the angle in radians × hl) when no baro.
+    let lift: f64 = match height_now {
+        Some(h) if h.is_finite() => h.clamp(-0.1, 0.75),
+        _ => angle * 0.005,
+    };
     let nose_x = hl * rad.cos();
     let nose_y = hl * rad.sin() + lift;
     let tail_x = -hl * rad.cos();
     let tail_y = -hl * rad.sin() + lift;
 
+    // y=30 clears the global title (FONT 18 at root y=4) below it.
+    // The "Nasenwinkel: ±X.X°" overlay is moved further down so the
+    // two don't share a row.
+    board_area.draw(&Text::new(
+        "Höhe [m]".to_string(),
+        (12, 30),
+        (FONT, 22).into_font().color(&BLACK),
+    )).map_err(|e| anyhow::anyhow!("board y-label: {e:?}"))?;
     let mut bc = ChartBuilder::on(&board_area)
         .margin(20)
         .x_label_area_size(30)
@@ -242,19 +679,35 @@ where
         .build_cartesian_2d(-1.3f64..1.3f64, -0.8f64..0.8f64)
         .map_err(|e| anyhow::anyhow!("board chart: {e:?}"))?;
     bc.configure_mesh()
-        .y_desc("Höhe [m]")
         .light_line_style(RGBColor(240, 240, 240))
         .draw().map_err(|e| anyhow::anyhow!("mesh: {e:?}"))?;
 
-    // Water
+    // Water — fill rectangle + animated wavy surface line that scrolls
+    // backward at ~0.6 m/s, giving the illusion the board is travelling
+    // forward over the water while it pumps. Wave amplitude is tiny
+    // (2 cm) so it doesn't compete visually with the board's tilt/lift,
+    // but the motion is unmistakable.
     bc.draw_series(std::iter::once(Rectangle::new(
         [(-2.0, -0.8), (2.0, 0.0)],
         RGBColor(179, 217, 255).mix(0.4).filled(),
     ))).map_err(|e| anyhow::anyhow!("water: {e:?}"))?;
-    bc.draw_series(std::iter::once(PathElement::new(
-        vec![(-2.0, 0.0), (2.0, 0.0)],
-        RGBColor(0, 119, 190).stroke_width(2),
-    ))).map_err(|e| anyhow::anyhow!("waterline: {e:?}"))?;
+    {
+        use std::f64::consts::PI;
+        let wave_amp = 0.02;
+        let wavelength = 0.8;
+        let scroll_speed = 0.6; // m/s
+        let phase = -t_now * scroll_speed * 2.0 * PI / wavelength;
+        let n_pts = 240usize;
+        let wave_pts: Vec<(f64, f64)> = (0..n_pts).map(|i| {
+            let x = -2.0 + 4.0 * (i as f64 / (n_pts - 1) as f64);
+            let y = wave_amp * (phase + 2.0 * PI * x / wavelength).sin();
+            (x, y)
+        }).collect();
+        bc.draw_series(LineSeries::new(
+            wave_pts,
+            RGBColor(0, 119, 190).stroke_width(2),
+        )).map_err(|e| anyhow::anyhow!("waterline: {e:?}"))?;
+    }
 
     // Board
     bc.draw_series(std::iter::once(PathElement::new(
@@ -273,7 +726,7 @@ where
     let (bw, _bh) = board_area.dim_in_pixel();
     board_area.draw(&Text::new(
         format!("Nasenwinkel: {:+.1}°", angle),
-        (30, 40),
+        (30, 70),
         (FONT, 22).into_font().color(&RGBColor(220, 20, 20)),
     )).map_err(|e| anyhow::anyhow!("angle_txt: {e:?}"))?;
     let tm = (t_now / 60.0) as u32;
@@ -297,16 +750,21 @@ where
         }
     }
 
-    // --- Zoom panel (±5°) ---
+    // --- Zoom panel (auto-fit) ---
     let x_right = t_now + 2.0;
-    let mut zc = ChartBuilder::on(&zoom_area)
-        .margin(20)
+    let (zoom_title, zoom_plot) = zoom_area.split_vertically(40);
+    zoom_title.draw(&Text::new(
+        format!("Pump-Detail [°] (±{:.0}°)", zoom_lim),
+        (12, 4),
+        (FONT, 22).into_font().color(&BLACK),
+    )).map_err(|e| anyhow::anyhow!("zoom title: {e:?}"))?;
+    let mut zc = ChartBuilder::on(&zoom_plot)
+        .margin_top(2).margin_bottom(8).margin_left(10).margin_right(20)
         .x_label_area_size(30)
         .y_label_area_size(60)
         .build_cartesian_2d(0.0f64..x_right.max(1.0), -zoom_lim..zoom_lim)
         .map_err(|e| anyhow::anyhow!("zoom chart: {e:?}"))?;
     zc.configure_mesh()
-        .y_desc("Winkel [°]")
         .light_line_style(RGBColor(240, 240, 240))
         .draw().map_err(|e| anyhow::anyhow!("zoom mesh: {e:?}"))?;
     zc.draw_series(std::iter::once(PathElement::new(
@@ -322,15 +780,92 @@ where
         RGBColor(220, 20, 20).stroke_width(2),
     ))).map_err(|e| anyhow::anyhow!("cursor: {e:?}"))?;
 
-    // --- Full-range panel ---
-    let mut gc = ChartBuilder::on(&graph_area)
-        .margin(20)
+    // --- Height-above-water panel (baro, GPS-anchored, TC-corrected) ---
+    if let (Some(area), Some(h_data)) = (&height_area, height_hist) {
+        let (h_title, h_plot) = area.split_vertically(40);
+        h_title.draw(&Text::new(
+            "Höhe über Wasser [m] · Mast 0.80 m".to_string(),
+            (12, 4),
+            (FONT, 22).into_font().color(&BLACK),
+        )).map_err(|e| anyhow::anyhow!("height title: {e:?}"))?;
+        // Auto-fit y-axis to actual data range — no headroom above max.
+        // Out-of-physical-range values (>0.95 m or <−0.15 m) are still
+        // NaN'd in the trace itself.
+        let mut hc = ChartBuilder::on(&h_plot)
+            .margin_top(2).margin_bottom(8).margin_left(10).margin_right(20)
+            .x_label_area_size(30)
+            .y_label_area_size(60)
+            .build_cartesian_2d(0.0f64..x_right.max(1.0), height_bot..height_top)
+            .map_err(|e| anyhow::anyhow!("height chart: {e:?}"))?;
+        hc.configure_mesh()
+            .light_line_style(RGBColor(240, 240, 240))
+            .draw().map_err(|e| anyhow::anyhow!("height mesh: {e:?}"))?;
+        // Mast reference at 0.80 m
+        hc.draw_series(std::iter::once(PathElement::new(
+            vec![(0.0, 0.80), (x_right.max(1.0), 0.80)],
+            RGBColor(200, 0, 0).mix(0.5).stroke_width(1),
+        ))).map_err(|e| anyhow::anyhow!("mast ref: {e:?}"))?;
+        hc.draw_series(LineSeries::new(
+            t_hist.iter().zip(h_data.iter()).filter_map(|(&t, &h)| {
+                if h.is_finite() && h >= -0.15 && h <= 0.95 { Some((t, h)) }
+                else { None }
+            }),
+            RGBColor(44, 160, 44).stroke_width(2),
+        )).map_err(|e| anyhow::anyhow!("height line: {e:?}"))?;
+        hc.draw_series(std::iter::once(PathElement::new(
+            vec![(t_now, -0.1), (t_now, 0.9)],
+            RGBColor(220, 20, 20).stroke_width(2),
+        ))).map_err(|e| anyhow::anyhow!("height cursor: {e:?}"))?;
+    }
+
+    // --- Speed panel (km/h, GPS-derived, smoothed) ---
+    if let (Some(area), Some(v_data)) = (&speed_area, speed_hist) {
+        let (v_title, v_plot) = area.split_vertically(40);
+        v_title.draw(&Text::new(
+            "Geschwindigkeit [km/h]".to_string(),
+            (12, 4),
+            (FONT, 22).into_font().color(&BLACK),
+        )).map_err(|e| anyhow::anyhow!("speed title: {e:?}"))?;
+        let mut vc = ChartBuilder::on(&v_plot)
+            .margin_top(2).margin_bottom(8).margin_left(10).margin_right(20)
+            .x_label_area_size(30)
+            .y_label_area_size(60)
+            .build_cartesian_2d(0.0f64..x_right.max(1.0), 0.0f64..speed_top)
+            .map_err(|e| anyhow::anyhow!("speed chart: {e:?}"))?;
+        vc.configure_mesh()
+            .light_line_style(RGBColor(240, 240, 240))
+            .draw().map_err(|e| anyhow::anyhow!("speed mesh: {e:?}"))?;
+        vc.draw_series(LineSeries::new(
+            t_hist.iter().zip(v_data.iter()).filter_map(|(&t, &v)| {
+                if v.is_finite() { Some((t, v)) } else { None }
+            }),
+            RGBColor(214, 39, 40).stroke_width(2),
+        )).map_err(|e| anyhow::anyhow!("speed line: {e:?}"))?;
+        vc.draw_series(std::iter::once(PathElement::new(
+            vec![(t_now, 0.0), (t_now, speed_top)],
+            RGBColor(220, 20, 20).stroke_width(2),
+        ))).map_err(|e| anyhow::anyhow!("speed cursor: {e:?}"))?;
+    }
+
+    // --- Full-range panel: absolute orientation pitch (un-detrended) ---
+    let bottom_label = if nose_abs_hist.is_some() {
+        "Brett-Pitch absolut [°]"
+    } else {
+        "Nasenwinkel [°] (detrended)"
+    };
+    let (g_title, g_plot) = graph_area.split_vertically(40);
+    g_title.draw(&Text::new(
+        bottom_label.to_string(),
+        (12, 4),
+        (FONT, 22).into_font().color(&BLACK),
+    )).map_err(|e| anyhow::anyhow!("graph title: {e:?}"))?;
+    let mut gc = ChartBuilder::on(&g_plot)
+        .margin_top(2).margin_bottom(8).margin_left(10).margin_right(20)
         .x_label_area_size(40)
         .y_label_area_size(60)
         .build_cartesian_2d(0.0f64..x_right.max(1.0), -y_lim..y_lim)
         .map_err(|e| anyhow::anyhow!("graph chart: {e:?}"))?;
     gc.configure_mesh()
-        .y_desc("Nasenwinkel [°]")
         .x_desc("Zeit [s]")
         .light_line_style(RGBColor(240, 240, 240))
         .draw().map_err(|e| anyhow::anyhow!("graph mesh: {e:?}"))?;
@@ -338,8 +873,9 @@ where
         vec![(0.0, 0.0), (x_right.max(1.0), 0.0)],
         RGBColor(128, 128, 128).stroke_width(1),
     ))).map_err(|e| anyhow::anyhow!("zero: {e:?}"))?;
+    let abs_or_corrected: &[f64] = nose_abs_hist.unwrap_or(nose_hist);
     gc.draw_series(LineSeries::new(
-        t_hist.iter().zip(nose_hist.iter()).map(|(&t, &n)| (t, n)),
+        t_hist.iter().zip(abs_or_corrected.iter()).map(|(&t, &n)| (t, n)),
         RGBColor(31, 119, 180).stroke_width(2),
     )).map_err(|e| anyhow::anyhow!("graph line: {e:?}"))?;
     gc.draw_series(std::iter::once(PathElement::new(
@@ -481,3 +1017,7 @@ mod tempfile {
         Ok(TempDir { path: p })
     }
 }
+// touch 1777116091
+// touch 1777116125810961000
+// 1777117177953306000
+// 1777117609989703000

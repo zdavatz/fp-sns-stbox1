@@ -234,11 +234,19 @@ Two PNGs:
 
 ### Board Animation (`stbox-viz animate`)
 
-Per-session GIFs showing board orientation in real time, 3 panels (board side view + pump detail ±5° + full-range nose angle). Nose angle is 4th-order Butterworth 2 Hz low-pass with `filtfilt` zero-phase + 10 s rolling median baseline. Drop-in flash for 2 s on the steepest negative angle inside the first 10 s of the session. History lines build progressively; x-axis grows with the cursor.
+Per-session GIFs showing board orientation in real time. **Five panels when GPS is available** (board side view + pump detail + height-over-water + speed + nasenwinkel), three panels otherwise. Nose angle is 4th-order Butterworth **0.7 Hz** low-pass with `filtfilt` zero-phase + 10 s rolling median baseline (cutoff lowered from 2 Hz to 0.7 Hz so 1–2 Hz sensor / fusion noise doesn't make the trace look "shaky"; pump fundamental at ~0.5 Hz still sits in the passband). Drop-in flash for 2 s on the steepest negative angle inside the first 10 s of the session. History lines build progressively; x-axis grows with the cursor.
 
-With `--video FILE`, shells out to `ffmpeg` + `ffprobe` for the same `hstack=inputs=2` side-by-side MOV + optional 2 s title card concat that the old Python pipeline produced. `ffmpeg` must be in PATH.
+**Wall-clock window mode (`--at HH:MM[:SS]`)** bypasses pitch-oscillation session detection and renders one GIF for an exact wall-clock time slice — needed when the rider is on smooth flight (no pitch oscillation triggers) or when you want to align with external footage. Pair with `--tz-offset-h` (3 for Greek summer / EEST, 2 for CEST, etc.) and `--date YYYY-MM-DD` (defaults to sensor file mtime). Window length is `--duration <s>`; if `--video` is given the video's full length is the default. The GIF is anchored to the GPS clock so it lines up with the same wall-clock axis as `combined`. The video's `creation_time` metadata is also probed and printed for diagnostics — if it disagrees with `--at`, use the precise value to align video and animation to the millisecond. Optional `--auto-skip` advances both video and GIF past the carry/transition seconds (irregular pitch before pumping starts) so the side-by-side opens directly on the foiling action.
 
-Session detection is **pitch-oscillation based** (≥ 0.3 Hz over ≥ 30 s, merging < 60 s gaps). Smooth-flight pumpfoil data without clear pitch oscillation won't register — use `combined` (GPS-based) instead for those.
+**Side-by-side MOV (`--video FILE`)** shells out to `ffmpeg` + `ffprobe` for an `hstack=inputs=2` combined MOV with optional 2 s title-card concat (`--title`, `--subtitle`). `ffmpeg` must be in PATH.
+
+**Per-frame dynamic scales**: every panel's y-axis grows with the running max of the data shown so far — no headroom above the current max. The Nasenwinkel (detrended) panel uses a **95th-percentile-based** y-limit so a single outlier pump doesn't stretch the axis and leave the typical pump activity in the bottom 30 % of the panel; outliers above p95 are visually clipped at the edge. Speed and height panels use plain max. Earlier frames have tight axes that highlight small early movements; later frames expand as peaks come in.
+
+**Scrolling water surface**: the board side view shows a sinusoidal waterline (amplitude 2 cm, wavelength 0.8 m) that scrolls backward at 0.6 m/s, giving the visual impression that the board is moving forward over the water while it pumps. The board's lift uses the GPS-anchored baro height, smoothed with a 0.5-sec rolling mean to suppress pressure-noise spikes that would otherwise make the board jitter visibly up/down between actual pump cycles.
+
+**Panel labels are horizontal** (drawn in their own 40-px title strip above each chart), not the rotated `y_desc` plotters defaults. Title strips also keep the labels from being overdrawn by chart grid pixels.
+
+Without `--at`, session detection is **pitch-oscillation based** (≥ 0.3 Hz over ≥ 30 s, merging < 60 s gaps). Smooth-flight pumpfoil data without clear pitch oscillation won't register — use `combined` (GPS-based) instead for those.
 
 ### Compass Validity (`stbox-viz compass`)
 

@@ -41,6 +41,44 @@ Plotly.js is loaded from the CDN (same as the Python version's
 `include_plotlyjs='cdn'`), so the HTML needs internet the first time it's
 opened in a browser.
 
+### Wall-clock-aligned animation (`animate --at`)
+
+The default `animate` subcommand finds pumping sessions by pitch
+oscillation and renders one GIF per session. To instead pin the
+animation to an exact wall-clock time (e.g. to align with external
+camera footage), use `--at`:
+
+```sh
+./target/release/stbox-viz animate ../../../csv/ayano_25.4.2026_s0.csv \
+    --at 10:16 --tz-offset-h 3 --date 2026-04-25 \
+    --video /path/to/IMG_1851.MOV \
+    --title "Ayano · Ermioni · 25.4.2026" \
+    --subtitle "Ride 8 · 10:16 EEST"
+```
+
+Flags:
+
+- `--at HH:MM[:SS]` — wall-clock start of the GIF window (in local time
+  per `--tz-offset-h`). Bypasses pitch-oscillation session detection.
+- `--duration <s>` — window length. Defaults to the video's full length
+  when `--video` is given, else 60 s.
+- `--video <path>` — overlay the camera video next to the GIF via ffmpeg
+  hstack. The video's `creation_time` is probed and printed; pass that
+  value back as `--at HH:MM:SS` for millisecond-precise alignment.
+- `--auto-skip` — advance both video and GIF past the carry/transition
+  seconds before sustained pitch oscillation begins. Off by default.
+- `--tz-offset-h`, `--date` — same semantics as `combined`.
+
+The GIF has 5 panels when GPS is available (board side view + pump
+detail + height-over-water + speed + nasenwinkel), 3 otherwise. Each
+panel's y-axis grows with the running max — no wasted vertical space
+above the data. The board side view scrolls a sinusoidal waterline
+backward at 0.6 m/s so the board appears to be travelling forward
+over the water while it pumps; lift comes from the smoothed baro
+height. Panel titles are horizontal (their own title strip above
+each chart). The Nasenwinkel panel uses a 95th-percentile-based
+y-limit so single-outlier pumps don't stretch the axis.
+
 ## Why Rust
 
 - Single binary vs Python + venv + pandas + plotly + numpy + scipy
