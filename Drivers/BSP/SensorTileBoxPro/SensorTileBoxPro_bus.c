@@ -2179,22 +2179,20 @@ __weak HAL_StatusTypeDef MX_I2C4_Init(I2C_HandleTypeDef* hi2c)
   HAL_StatusTypeDef ret = HAL_OK;
 
   hi2c->Instance = I2C4;
-  /* STC3115 fuel gauge on I2C4. Slowed to ~10 kHz Standard Mode
-     (TIMINGR = 0x4F206363 at PCLK1 = 160 MHz: PRESC=79 → tPRESC=500 ns,
-     SCLL=SCLH=99 → SCL period = 100 us = 10 kHz) so that even very
-     weak / missing external pull-ups (internal STM32U5 pull-ups are
-     ~40 kOhm with bus capacitance ~50 pF → tau ~2 us, 90 % rise time
-     ~4.6 us) have far more time than required for the lines to release
-     to high between bits. Battery is logged at 1 Hz and each sample
-     transfers a few bytes, so 10 kHz throughput is more than ample.
-     Earlier values: ST v2.0.0 default 0x00F07BFF (~421 kHz, above
-     STC3115 Fast-Mode spec, made the gauge NAK every init); v1.6.0
-     0xA040184A (~145 kHz, worked with the original ST hardware
-     populated pull-ups but failed on this Rev_C board where I2C4
-     external pull-ups are absent). Other I2C buses (MEMS on
-     I2C1/I2C2/I2C3, all Fast-Mode Plus capable, populated pull-ups)
-     keep the newer 0x00F07BFF timing untouched. */
-  hi2c->Init.Timing = 0x4F206363;
+  /* STC3115 fuel gauge on I2C4 tops out at 400 kHz (Fast Mode). The ST
+     v2.0.0 update replaced the v1.6.0 timing 0xA040184A (~145 kHz at
+     PCLK1=160 MHz, explicitly chosen for the STC3115) with 0x00F07BFF,
+     which yields ~421 kHz — just above the spec and enough to make the
+     gauge NAK every init on marginal pull-ups. Restored to the original
+     safe value; other I2C buses (MEMS on I2C1/I2C2/I2C3, all Fast-Mode
+     Plus capable) keep the newer timing untouched.
+     [26.4.2026] The 10 kHz Standard-Mode attempt (TIMINGR 0x4F206363)
+     correlated with a boot hang on Peter's box after DFU flash — the
+     I2C4 init only runs at first START_LOG and shouldn't affect boot,
+     so the connection is unclear, but rolling back the timing was the
+     cheapest way to isolate. Pull-up GPIO_PULLUP fix (PD12/PD13)
+     stays. */
+  hi2c->Init.Timing = 0xA040184A;
   hi2c->Init.OwnAddress1 = 0;
   hi2c->Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c->Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;

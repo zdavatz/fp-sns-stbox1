@@ -587,11 +587,31 @@ fn resolve_at_window(
         video.and_then(|v| ffprobe_duration(v).ok())
     }).unwrap_or(60.0);
 
-    // Sensor sample indices by tick (samples are at 100 Hz nominal but
-    // the relationship is exact tick → sample lookup, not seconds).
-    let dur_ticks = dur * 100.0;
+    // End-anchor: same GPS-UTC trick as the start. Without this we'd
+    // compute the end as anchor_tick + dur*100, which assumes 100 ticks
+    // = 1 wall-clock second — but ThreadX runs on the drifting HSI, so
+    // by the end of a long window the tick count diverges from real
+    // time. Symptom: side-by-side combined.mov where the GIF panel
+    // (driven by ticks) lags or leads the camera video (true wall-
+    // clock) by several seconds at the end. Anchoring both ends via
+    // GPS UTC keeps the data window equal to `dur` real seconds
+    // regardless of HSI drift.
+    let target_end_utc = anchor_utc_sec + dur;
+    let mut end_idx = best_idx;
+    let mut end_diff = f64::INFINITY;
+    for (i, row) in rows.iter().enumerate() {
+        if let Some(u) = parse_utc_hhmmss(&row.utc) {
+            let d = (u - target_end_utc).abs();
+            if d < end_diff { end_diff = d; end_idx = i; }
+        }
+    }
+    let anchor_end_tick = if end_diff < 5.0 {
+        rows[end_idx].ticks
+    } else {
+        anchor_tick + dur * 100.0  // fallback: no GPS coverage near end
+    };
     let s = samples.iter().position(|r| r.ticks >= anchor_tick).unwrap_or(0);
-    let e = samples.iter().position(|r| r.ticks >= anchor_tick + dur_ticks)
+    let e = samples.iter().position(|r| r.ticks >= anchor_end_tick)
         .unwrap_or(samples.len());
 
     // Local-time anchor for display = the GPS UTC at the anchor row,
@@ -742,14 +762,23 @@ fn render_session_gif(
     foil_start_t: Option<f64>,  // seconds when foiling begins
 ) -> Result<()> {
     // Subsample so the GIF's wall-clock playback matches the data
-    // window exactly. Integer step (e.g. 100/15 = 6) gave 60 ms of
-    // data per GIF frame; at 15 fps GIF playback (= 67 ms/frame) the
-    // GIF ran 1.117× too long, drifting the GIF behind a paired
-    // video by ~4 s over a 39 s window. Float step + nearest-sample
-    // indexing keeps n_frames = round(samples / (sample_hz/fps)),
-    // and the GIF's encoded frame interval (1000/fps ms) then makes
-    // playback length = n_frames × 1000/fps ≈ data window length.
-    let step_f = sample_hz as f64 / fps as f64;
+    // window exactly. Two pitfalls to avoid:
+    // (1) Integer step (e.g. 100/15 = 6) gives 60 ms of data per
+    //     frame at 15 fps target, so the GIF ran 1.117× too long.
+    //     Float step fixes that.
+    // (2) GIF spec encodes per-frame delay in 1/100-sec units (10 ms
+    //     resolution). 1000/15 = 66.67 ms gets rounded by the gif
+    //     crate to 70 ms → real playback rate 14.286 fps, not 15.
+    //     If we still compute step_f from the 15-fps target, the
+    //     GIF plays ~5 % slower than the underlying data window —
+    //     in a 41-sec at-window paired with a camera video, that's
+    //     ~2 s of drift by the end. Pre-round delay_ms to a 10-ms
+    //     multiple, derive effective_fps from THAT, and use it for
+    //     step_f so the encoded GIF rate matches the data step.
+    let delay_ms_target = 1000.0 / fps as f64;
+    let delay_ms = (((delay_ms_target / 10.0).round() * 10.0) as u32).max(10);
+    let effective_fps = 1000.0 / delay_ms as f64;
+    let step_f = sample_hz as f64 / effective_fps;
     let n_frames = ((nose.len() as f64) / step_f).round() as usize;
     let frame_indices: Vec<usize> = (0..n_frames)
         .map(|i| ((i as f64 * step_f).round() as usize).min(nose.len() - 1))
@@ -795,7 +824,7 @@ fn render_session_gif(
     let title_line = format!("Session {} — {} (Dauer: {}:{:02})",
         session_num, base, dm, ds);
 
-    let root = BitMapBackend::gif(out_path, (w, h), 1000 / fps)?
+    let root = BitMapBackend::gif(out_path, (w, h), delay_ms)?
         .into_drawing_area();
 
     println!("  generating {} frames…", n_frames);

@@ -141,6 +141,42 @@ On every boot the firmware emits a green-LED progress sequence (main.c `BootStag
 
 If boot stops before the 3rd blink, one of the init steps hung — useful for narrowing down hardware/driver issues when `STBOX1_PRINTF` is compiled out. Red LED solid = either an SD firmware update in progress (`firmware.bin` on the card) or an early hang (clock / crystal / floating GPIO). Red LED blinking at ~2.5 Hz = `Error_Handler` — see `Error_Log_Pump_Tsueri_*.log` on the SD card for the source-file and line.
 
+**Per-sensor diagnostic blinks inside `InitMemsSensors()` (26.4.2026).** Between the 2nd and 3rd green `BootStageBlink`, the firmware now emits a numbered burst of red blinks (`DiagBlinkRed(n)` in `main.c`) before each sensor init, with a 400 ms gap after each burst:
+
+- **1×** red — entered `InitMemsSensors()`
+- **2×** red — about to init LIS2MDL magnetometer (I²C2)
+- **3×** red — about to init LSM6DSV16X acc/gyro (SPI)
+- **4×** red — about to init LPS22DF pressure (I²C2)
+- **5×** red — about to init STTS22H temperature (I²C2)
+- **6×** red — all four sensor inits returned, function exiting
+
+If boot hangs at "2 green + N×red + dark", N pins down which sensor's I²C/SPI transaction is blocking. Costs ~3 s of boot time but invaluable when serial debug is unavailable. Discovered Peter's box hang at 2-green-zero-red on 26.4.2026 — meaning `InitMemsSensors()` was never being called, which combined with the fact that newly DFU'd firmware kept exhibiting the same hang regardless of code changes pointed at a flash-bank/option-byte mismatch (the chip was running a stale firmware in one bank while DFU was writing to the other). See "Recovering from a stuck flash bank" below.
+
+**FW_INFO.TXT at SD-card root (26.4.2026).** On every successful SD-mount the firmware writes/overwrites `FW_INFO.TXT` at the root of the SD card with the current build's fingerprint:
+
+```
+fw: build Apr 26 2026 12:18:42
+GPS 10Hz | AUDIO=0 BATTERY=1 | flash ~117KB
+```
+
+Same content as the second line of the `--- Boot ---` marker in `Error_Log_Pump_Tsueri_*.log`, but a single small file at a fixed path that the field tester can read in 5 seconds by popping the SD card into a computer. Especially useful after a firmware update to confirm DFU/SD-update actually took: if the date/time in `FW_INFO.TXT` doesn't match what you expect, the chip is running a stale firmware copy. Implementation: `WriteFwInfoFile()` in `app_filex.c`, called from `CheckAndApplyFirmwareUpdate()` right after `fx_media_open` succeeds, deletes any stale prior copy first so a shorter new content can't leave tail bytes.
+
+**Recovering from a stuck flash bank (26.4.2026).** STM32U585 has dual-bank flash with a `SWAP_BANK` option byte that selects which physical bank maps to address `0x08000000` at boot. Successful SD-updates toggle this byte, but the documented bank-swap-bug can leave `SWAP_BANK` in an inconsistent state. Symptoms when this happens:
+
+- DFU reports a successful flash, but the chip continues to run an old firmware on every boot.
+- Multiple DFU + SD-update + power-cycle attempts produce identical hang behaviour because the new firmware is being written to the *inactive* bank.
+- The diagnostic blinks above show **zero red blinks**, even on a build that emits red blinks before any other init.
+
+To recover, mass-erase both banks via `dfu-util` before the next flash:
+
+```sh
+# Hold user button + plug USB-C → DFU mode
+dfu-util -d 0483:df11 -a 0 -s 0x08000000:mass-erase:force -D firmware.bin
+# Power-cycle (USB out + back in, no button) → boot from cleanly programmed flash
+```
+
+The `:mass-erase:force` modifier wipes the entire flash (both banks) before downloading, so after the operation the chip has only one firmware copy and the bank-mapping question becomes irrelevant. STM32CubeProgrammer's "Full Chip Erase" achieves the same outcome via the GUI.
+
 **SD firmware update visual feedback (24.4.2026).** Two distinct LED patterns frame `CheckAndApplyFirmwareUpdate()` so the field tester has direct confirmation that the update ran without needing serial or SD-log access:
 
 - **Firmware detected**: 10× rapid green+red alternation (~2 s total), fired the moment `firmware.bin` is successfully opened. Very distinct from the 1/2/3-green `BootStageBlink` pattern, so you can tell at a glance whether the board is entering an SD-update or booting straight into logging.

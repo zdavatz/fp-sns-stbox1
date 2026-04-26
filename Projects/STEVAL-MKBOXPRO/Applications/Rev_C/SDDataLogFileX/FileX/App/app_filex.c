@@ -184,6 +184,7 @@ static uint32_t WavProcess_HeaderInit(void);
 static uint32_t WavProcess_HeaderUpdate(uint32_t len);
 static void ErrorLog_BuildFilename(CHAR *buf);
 static void ErrorLog_Open(void);
+static void WriteFwInfoFile(void);
 static INT  CheckAndApplyFirmwareUpdate(void);
 static void InitClockBaseFromCompileDate(void);
 static void SetClockBaseFromGPS(UINT year, UINT month, UINT day,
@@ -1240,6 +1241,52 @@ void ErrorLog_Close(void)
 }
 
 /**
+  * @brief  Overwrite FW_INFO.TXT at the SD-card root with the current
+  *         firmware fingerprint. Lets the field tester verify which
+  *         binary is actually running by popping the SD card into a
+  *         computer — no need to hunt through the error log.
+  *
+  *         Same content as the boot marker in the error log (build
+  *         date/time, GPS rate, feature flags, flash footprint), but
+  *         a single small file at a fixed path that's overwritten on
+  *         every boot, so the timestamp + content always reflect the
+  *         currently-active firmware.
+  *
+  *         Caller must already have opened sdio_disk.
+  * @retval None
+  */
+static void WriteFwInfoFile(void)
+{
+  FX_FILE info_file;
+  CHAR info[200];
+
+  extern uint32_t _sidata, _sdata, _edata;
+  ULONG flash_end_addr = (ULONG)&_sidata + ((ULONG)&_edata - (ULONG)&_sdata);
+  ULONG flash_kb = (flash_end_addr - 0x08000000UL + 1023) / 1024;
+
+  INT len = sprintf(info,
+    "fw: build %s %s\r\nGPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    __DATE__, __TIME__,
+    (unsigned)GPS_RATE_HZ,
+    STBOX1_LOG_AUDIO, STBOX1_LOG_BATTERY,
+    (unsigned long)flash_kb);
+
+  /* Delete any previous version first so a shorter new content cannot
+     leave stale tail bytes from the old file. */
+  fx_file_delete(&sdio_disk, "FW_INFO.TXT");
+
+  if (fx_file_create(&sdio_disk, "FW_INFO.TXT") != FX_SUCCESS)
+    return;
+  if (fx_file_open(&sdio_disk, &info_file, "FW_INFO.TXT", FX_OPEN_FOR_WRITE)
+      != FX_SUCCESS)
+    return;
+
+  fx_file_write(&info_file, info, len);
+  fx_file_close(&info_file);
+  fx_media_flush(&sdio_disk);
+}
+
+/**
   * @brief  Check SD card for firmware.bin and flash it to the other bank
   *
   * On boot, opens the SD card and looks for "firmware.bin". If found:
@@ -1252,6 +1299,11 @@ void ErrorLog_Close(void)
   * To update firmware: copy firmware.bin to SD card, power-cycle the device.
   * The red LED blinks during the update. If no firmware.bin is found,
   * normal SD logging continues.
+  *
+  * Always writes FW_INFO.TXT before the firmware-update check, so the
+  * field tester can see which firmware is actually running on every
+  * boot — including after a failed bank-swap update where the chip
+  * keeps booting from the old bank.
   *
   * @retval 0 = no update found, continues normally
   *         Does not return on successful update (system reset)
@@ -1271,6 +1323,11 @@ static INT CheckAndApplyFirmwareUpdate(void)
     /* No SD card or media error — skip update, continue to logging */
     return 0;
   }
+
+  /* Write/overwrite FW_INFO.TXT so the currently-running firmware is
+     visible immediately after boot — before any START_LOG, even if
+     the user never starts a session. */
+  WriteFwInfoFile();
 
   /* Try to open firmware.bin */
   status = fx_file_open(&sdio_disk, &fw_file, "firmware.bin", FX_OPEN_FOR_READ);

@@ -220,13 +220,33 @@ static void PrintInfo(void)
 }
 
 /**
+* @brief  Diagnostic red-blink helper. Used inside InitMemsSensors to
+*         pinpoint which sensor init hangs. Pattern: short ~80 ms
+*         on/off, with a 400 ms gap after the burst so consecutive
+*         bursts are visually distinct from the green BootStageBlink.
+*/
+static void DiagBlinkRed(uint8_t n)
+{
+  for (uint8_t i = 0; i < n; i++) {
+    BSP_LED_On(LED_RED);
+    HAL_Delay(80);
+    BSP_LED_Off(LED_RED);
+    HAL_Delay(80);
+  }
+  HAL_Delay(400);
+}
+
+/**
 * @brief  Init Mems Sensors
 * @param  None
 * @retval None
 */
 static void InitMemsSensors(void)
-{ 
+{
    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* Diagnostic step 1: entered InitMemsSensors */
+  DiagBlinkRed(1);
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOI_CLK_ENABLE();
@@ -253,6 +273,9 @@ static void InitMemsSensors(void)
   HAL_GPIO_Init(GPIOI, &GPIO_InitStruct);
 #endif
   
+  /* Diagnostic step 2: about to init LIS2MDL magnetometer (I2C2) */
+  DiagBlinkRed(2);
+
   /* Magneto */
   if(BSP_MOTION_SENSOR_Init(LIS2MDL_0, MOTION_MAGNETO)==BSP_ERROR_NONE) {
     if(BSP_MOTION_SENSOR_SetOutputDataRate(LIS2MDL_0, MOTION_MAGNETO, LIS2MDL_MAG_ODR)==BSP_ERROR_NONE) {
@@ -268,6 +291,9 @@ static void InitMemsSensors(void)
     STBOX1_PRINTF("Error: LIS2MDL_0 KO\r\n");
   }
   
+  /* Diagnostic step 3: about to init LSM6DSV16X acc/gyro (SPI) */
+  DiagBlinkRed(3);
+
   /* Acc/Gyro */
   if(BSP_MOTION_SENSOR_Init(LSM6DSV16X_0, MOTION_ACCELERO | MOTION_GYRO)==BSP_ERROR_NONE) {
     if(BSP_MOTION_SENSOR_SetOutputDataRate(LSM6DSV16X_0, MOTION_ACCELERO, LSM6DSV16X_ACC_ODR)==BSP_ERROR_NONE) {
@@ -291,6 +317,9 @@ static void InitMemsSensors(void)
     STBOX1_PRINTF("Error: LSM6DSV16X_0 KO\r\n");
   }
   
+  /* Diagnostic step 4: about to init LPS22DF pressure sensor (I2C2) */
+  DiagBlinkRed(4);
+
   /* Pressure */
   if(BSP_ENV_SENSOR_Init(LPS22DF_0, ENV_PRESSURE)==BSP_ERROR_NONE) {
     if(BSP_ENV_SENSOR_SetOutputDataRate(LPS22DF_0, ENV_PRESSURE, LPS22DF_ODR)==BSP_ERROR_NONE) {
@@ -302,6 +331,9 @@ static void InitMemsSensors(void)
     STBOX1_PRINTF("Error: LPS22DF_0 KO\r\n");
   }
   
+  /* Diagnostic step 5: about to init STTS22H temperature sensor (I2C2) */
+  DiagBlinkRed(5);
+
   /* Temperature  */
   if(BSP_ENV_SENSOR_Init(STTS22H_0, ENV_TEMPERATURE)==BSP_ERROR_NONE) {
     if(BSP_ENV_SENSOR_SetOutputDataRate(STTS22H_0, ENV_TEMPERATURE, STTS22H_ODR)==BSP_ERROR_NONE) {
@@ -312,6 +344,9 @@ static void InitMemsSensors(void)
   } else {
     STBOX1_PRINTF("Error: STTS22H_0 KO\r\n");
   }
+
+  /* Diagnostic step 6: all four sensor inits returned (or skipped) */
+  DiagBlinkRed(6);
 }
 
 /**
