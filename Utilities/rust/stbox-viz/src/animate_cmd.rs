@@ -997,6 +997,57 @@ fn render_session_gif(
     let root = BitMapBackend::gif(out_path, (w, h), delay_ms)?
         .into_drawing_area();
 
+    // Push-off frame index + carry-phase yaw offset.
+    //
+    // After push_off (foiling phase) we strip the Madgwick yaw entirely
+    // because the 6DOF fusion has no magnetometer reference and drifts.
+    // Before push_off (carry phase) we use the *full* body-to-world
+    // quaternion so the rendered foil rotates as Ayano turns the board
+    // in his hands while walking.
+    //
+    // To avoid a yaw discontinuity at push_off, we subtract the
+    // body-to-world Z-twist of the quaternion sampled at push_off from
+    // every carry frame. That makes the carry-phase yaw equal zero
+    // at push_off, smoothly matching the stripped foiling yaw.
+    let push_off_idx: Option<usize> = water_set_t.zip(quats).map(|(t, qs)| {
+        ((t * sample_hz as f64).round() as usize).min(qs.len().saturating_sub(1))
+    });
+    let q_twist_pushoff: [f64; 4] = match (push_off_idx, quats) {
+        (Some(idx), Some(qs)) => {
+            let p = board3d::quat_conj(&qs[idx]);
+            let (qw, qz) = (p[0], p[3]);
+            let n = (qw * qw + qz * qz).sqrt();
+            if n > 1e-9 { [qw / n, 0.0, 0.0, qz / n] } else { [1.0, 0.0, 0.0, 0.0] }
+        }
+        _ => [1.0, 0.0, 0.0, 0.0],
+    };
+    let q_twist_pushoff_inv = board3d::quat_conj(&q_twist_pushoff);
+
+    // Carry-phase orientation corrections (applied per-frame
+    // depending on whether the rider is in foil-up or foil-down
+    // sub-pose; see below for the deck-up direction check):
+    //
+    // 1. 180° around the board's pitch axis (body frame). Foil-up
+    //    only — corrects the inverted mast pose so the rendered
+    //    mesh shows deck-up rather than deck-down.
+    //    Under the current mount (board_Y → IMU +Z), the board's
+    //    pitch axis is IMU +Z, so the quaternion is [0, 0, 0, 1].
+    //
+    // 2. 180° around the board's roll axis (body frame). Foil-up
+    //    only — additional correction the rider observed visually:
+    //    after the pitch flip the board still rendered rolled by
+    //    180° vs. the camera footage.
+    //    Roll axis = board +X = IMU +Y, so the quaternion is
+    //    [0, 0, 1, 0].
+    //
+    // 3. 180° around world yaw (Z). Both sub-poses — the gyro-
+    //    integrated yaw is unanchored (GPS course unreliable below
+    //    3 km/h), so the rendered nose tends to face 180° off from
+    //    the rider's actual heading throughout the carry.
+    let q_180_pitch_body: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+    let q_180_roll_body:  [f64; 4] = [0.0, 0.0, 1.0, 0.0];
+    let q_180_yaw_world:  [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+
     println!("  generating {} frames…", n_frames);
     for (frame, &fi) in frame_indices.iter().enumerate() {
         root.fill(&WHITE)?;
@@ -1008,25 +1059,101 @@ fn render_session_gif(
         let h_now = height_m.and_then(|s| if s[fi].is_finite() { Some(s[fi]) } else { None });
         // Per-frame quaternion → mesh rotation.
         //
-        // The mesh is pre-rotated at load time by the hard-coded
-        // mast-mount transform `R_mount` (in board3d::Mesh::recentre_unit),
-        // so it lives in the IMU body frame. We can therefore apply
-        // q_now directly without any Madgwick-quaternion calibration.
+        // The mesh is pre-rotated at load time by the mount transform
+        // `R_mount` (in board3d::Mesh::recentre_unit), so it lives in
+        // the IMU body frame. Madgwick's q is world-to-body, so
+        // conj(q) is body-to-world.
         //
-        // Yaw stripped via swing-twist decomposition around world Z
-        // to remove Madgwick 6DOF yaw drift (no magnetometer
-        // constraint), so the board's heading stays fixed in the
-        // rendered scene.
-        // Use conj(q_now): the Madgwick implementation in this codebase
-        // produces a quaternion in the world-to-body convention, so to
-        // get body-to-world (what our matrix() function and rendering
-        // pipeline expect) we conjugate first. Then strip yaw via
-        // swing-twist around world Z to remove Madgwick 6DOF yaw drift.
-        let q_rel_now: Option<[f64; 4]> = quats.map(|qs| {
-            board3d::quat_strip_yaw(&board3d::quat_conj(&qs[fi]))
-        });
+        // Phase-dependent yaw handling:
+        //   - Carry phase (fi < push_off_idx): use the FULL body-to-
+        //     world quaternion, with the Z-twist at push_off
+        //     subtracted. This lets the rendered foil yaw with Ayano
+        //     as he turns the board in his hands, while still landing
+        //     at zero yaw at push_off so the transition into foiling
+        //     is seamless.
+        //   - Foiling phase (fi >= push_off_idx): strip the yaw via
+        //     swing-twist decomposition around world Z. Madgwick 6DOF
+        //     yaw drifts (no magnetometer), so we ignore it and let
+        //     the board sit with a fixed heading in the rendered
+        //     scene.
         let _ = q_mount_conj;
         let yaw_now = yaw_rad.map(|s| s[fi]);
+        let q_rel_now: Option<[f64; 4]> = quats.map(|qs| {
+            let p = board3d::quat_conj(&qs[fi]);
+            let in_carry = push_off_idx.map_or(false, |po| fi < po);
+            if in_carry {
+                // Per-frame foil-up vs. foil-down decision. Ayano
+                // transitions through both poses before push-off:
+                // first foil-up while walking, then he sets the tail
+                // on the harbor wall and pitches the board parallel
+                // to the water (foil-down) before stepping on. The
+                // constant 180° corrections are only correct for the
+                // foil-up portion. Compute the deck-up direction in
+                // world frame (deck-up_body = +Z_board = −X_IMU under
+                // our mount); positive Z = foil-down (no correction),
+                // negative Z = foil-up (apply correction).
+                let deck_up_body = [0.0, -1.0, 0.0, 0.0]; // pure-quat (-X_IMU)
+                let tmp = board3d::quat_mul(&p, &deck_up_body);
+                let deck_up_world = board3d::quat_mul(&tmp, &board3d::quat_conj(&p));
+                let deck_up_world_z = deck_up_world[3];
+
+                let q_after_offset = board3d::quat_mul(&p, &q_twist_pushoff_inv);
+                // The deck-up check turned out unreliable for the
+                // early carry on this clip (IMU readings during
+                // walking don't put the deck cleanly negative-Z),
+                // so we fall back to a time-based split:
+                //
+                //   sec 0..13   : early carry, board carried in
+                //                 hands. 180° around world Y to
+                //                 flip the rendered nose direction
+                //                 (vertical + horizontal) from
+                //                 down→up so the board doesn't
+                //                 read as dropping nose-first.
+                //   sec 13+     : transition + on-water before
+                //                 push-off. No extra rotations.
+                //
+                // 13 s is chosen from the camera footage: that's
+                // when the rider sets the tail on the harbor wall
+                // and starts pitching the board parallel to the
+                // water.
+                let _ = q_180_pitch_body;
+                let _ = q_180_roll_body;
+                let _ = q_180_yaw_world;
+                let _ = deck_up_world_z;
+                let early_carry_until_s = 13.0;
+                if t_now < early_carry_until_s {
+                    // World-frame 180° around X: flips Y (lateral)
+                    // and Z (vertical), preserves X (heading) — so
+                    // the board moves to the correct side of Ayano
+                    // and the nose flips from down to up.
+                    let q_180_x_world: [f64; 4] = [0.0, 1.0, 0.0, 0.0];
+                    // Body-frame 90° around body X (= mast axis):
+                    // swings the nose 90° around the mast so the
+                    // foil's front-wing/tail-wing axis lines up with
+                    // how Ayano holds the board (nose pointing along
+                    // his arm, not perpendicular). Quaternion for
+                    // +90° around (1,0,0): [cos(45°), sin(45°), 0, 0].
+                    let s = std::f64::consts::FRAC_1_SQRT_2;
+                    let q_90_x_body: [f64; 4] = [s, s, 0.0, 0.0];
+                    let after_body = board3d::quat_mul(&q_after_offset, &q_90_x_body);
+                    board3d::quat_mul(&q_180_x_world, &after_body)
+                } else {
+                    q_after_offset
+                }
+            } else {
+                // Foiling phase: strip the Madgwick 6DOF yaw (which
+                // drifts with no magnetometer) and DO NOT replace
+                // it with GPS course. Adding GPS yaw was tested but
+                // produced visible side-to-side wobble (the GPS
+                // course is noisy at boat speeds, and even small
+                // heading jitter rotates the rendered foil enough
+                // to read as wobble). Render with a fixed heading
+                // — the side panel cares about pitch/roll, not
+                // which way the nose is pointing.
+                let _ = yaw_now;
+                board3d::quat_strip_yaw(&p)
+            }
+        });
         let pump_count_now = pump_count_at_sample[fi];
         draw_frame(
             &root,
@@ -1295,13 +1422,20 @@ where
         ))).map_err(|e| anyhow::anyhow!("tail: {e:?}"))?;
     }
 
-    // Nose angle / time overlays
+    // Nose angle / time / pump overlays. The Nasenwinkel and Pumps
+    // values are meaningless while the rider is still carrying the
+    // board (no foiling motion, the IMU's "pitch" is whatever the
+    // board's hold orientation happens to be), so we suppress them
+    // until push-off. The Zeit clock stays on always.
     let (bw, _bh) = board_area.dim_in_pixel();
-    board_area.draw(&Text::new(
-        format!("Nasenwinkel: {:+.1}°", angle),
-        (30, 70),
-        (FONT, 22).into_font().color(&RGBColor(220, 20, 20)),
-    )).map_err(|e| anyhow::anyhow!("angle_txt: {e:?}"))?;
+    let in_foiling = water_set_t.map_or(true, |wt| t_now >= wt);
+    if in_foiling {
+        board_area.draw(&Text::new(
+            format!("Nasenwinkel: {:+.1}°", angle),
+            (30, 70),
+            (FONT, 22).into_font().color(&RGBColor(220, 20, 20)),
+        )).map_err(|e| anyhow::anyhow!("angle_txt: {e:?}"))?;
+    }
     let tm = (t_now / 60.0) as u32;
     let ts = ((t_now % 60.0) as u32).min(59);
     board_area.draw(&Text::new(
@@ -1309,15 +1443,16 @@ where
         (bw as i32 - 180, 40),
         (FONT, 20).into_font().color(&BLACK),
     )).map_err(|e| anyhow::anyhow!("time_txt: {e:?}"))?;
-    // Pump counter — counts upward zero-crossings of nose_corrected
-    // through +5° with a −5° rearm threshold (Schmitt). Displayed
-    // below the clock so the rider can see total pump strokes
-    // accumulating in real time.
-    board_area.draw(&Text::new(
-        format!("Pumps: {}", pump_count),
-        (bw as i32 - 180, 70),
-        (FONT, 22).into_font().color(&RGBColor(34, 102, 170)),
-    )).map_err(|e| anyhow::anyhow!("pump_txt: {e:?}"))?;
+    if in_foiling {
+        // Pump counter — sum of dynamic-acc peaks gated on speed
+        // > 4 km/h. Hidden during carry so it doesn't read as
+        // "0 pumps" while the rider is just walking with the board.
+        board_area.draw(&Text::new(
+            format!("Pumps: {}", pump_count),
+            (bw as i32 - 180, 70),
+            (FONT, 22).into_font().color(&RGBColor(34, 102, 170)),
+        )).map_err(|e| anyhow::anyhow!("pump_txt: {e:?}"))?;
+    }
 
     // Drop-in flash
     if t_now >= drop_time && t_now <= drop_flash_end {

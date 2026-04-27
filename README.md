@@ -227,6 +227,13 @@ Cross-panel inspection: hovering shows a vertical spike line through every panel
 | `--sensor-offset SEC` | `animate` | start time in GIF |
 | `--title TEXT` | `animate` | title card (green, bold, 2 s intro) |
 | `--subtitle TEXT` | `animate` | subtitle (light blue) |
+| `--at HH:MM[:SS]` | `animate` | render one GIF for an exact wall-clock window (bypasses pitch-oscillation session detection) |
+| `--tz-offset-h H` | `animate` | UTC offset for `--at` (3 = EEST/Greek summer, 2 = CEST) |
+| `--date YYYY-MM-DD` | `animate` | recording date for `--at` (defaults to sensor file mtime) |
+| `--duration SEC` | `animate` | length of the `--at` window (default = video duration if `--video`, else 60 s) |
+| `--auto-skip` | `animate` | skip carry/transition seconds before pumping starts |
+| `--dock-height-m H` | `animate` | dock height above water for the height panel (Ermioni harbour wall = 0.75) |
+| `--board-stl FILE` | `animate` | render the side-view panel as a 3D rotating mesh (`/Users/zdavatz/software/fingerfoil/stl/0_combined.stl` is canonical) instead of a 2D line |
 
 CSV column names from the on-device firmware (both `Time [mS]` legacy and the current `Time [10ms]`) are auto-detected. GPS CSV is picked up automatically as `<stem>_gps.csv` next to the sensor CSV.
 

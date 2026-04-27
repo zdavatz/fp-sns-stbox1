@@ -272,6 +272,22 @@ Per-session GIFs showing board orientation in real time. **Five panels when GPS 
 
 **Panel labels are horizontal** (drawn in their own 40-px title strip above each chart), not the rotated `y_desc` plotters defaults. Title strips also keep the labels from being overdrawn by chart grid pixels.
 
+**3D foil mesh in the side-view panel (`--board-stl <FILE>`, 27.4.2026)**: when set, the side-view panel renders the full hydrofoil STL (`/Users/zdavatz/software/fingerfoil/stl/0_combined.stl` is the canonical one) as a 3D-rasterized mesh whose orientation comes from the Madgwick quaternion. A pure software rasterizer in `board3d.rs` (no GPU, no winit dependency) loads the binary STL once, pre-rotates it by a hard-coded mount transform `R_mount` (board frame → IMU body frame), then per-frame applies the body-to-world quaternion and projects through a fixed camera into a 600×400 RGBA buffer. Camera is set up as a **pure side view from port** (`eye = (0, 3.2, 0.5)`, `up = world +Z`) so the board's nose-tail axis projects horizontally on screen and a pitch rotation around the lateral axis becomes purely vertical screen motion — no diagonal upper-left/lower-right wobble that came from the earlier 3/4-isometric angle.
+
+Mount transform (derived empirically from Ayano's 25.4.2026 Ermioni data): `IMU +X = -board +Z` (mast-down direction, anchored by AccX ≈ −1g during foiling), `IMU +Y = +board +X` (nose direction), `IMU +Z = +board +Y` (port direction). The pump-axis swap (Y/Z compared to a plausibly-symmetric earlier mount) was needed because pumps physically rotate the board around its lateral axis, and with the swap that maps to gyro Y oscillations rather than Z — making the rendered pump motion read as pitch (forward) instead of roll (sideways).
+
+**Phase-dependent yaw handling in the 3D rendering**:
+- **Foiling phase** (after push-off): the Madgwick 6DOF yaw drifts (no magnetometer reference), so we strip it via swing-twist decomposition around world Z. We tested replacing it with GPS course-over-ground but the resulting heading jitter (multipath + course-noise at boat speeds) made the rendered foil wobble visibly side-to-side; reverted. The board now sits with a fixed heading in the rendered scene; only pitch+roll come from the IMU.
+- **Carry phase** (before push-off): use the FULL body-to-world quaternion (with the Z-twist captured at push-off subtracted as an offset, so the carry yaw lands at zero at the transition into foiling). This lets the rendered foil yaw with Ayano as he turns the board in his hands.
+
+**Early-carry hand-tuned fix-ups (sec 0–13 in Ayano's clip)**: the gyro-integrated yaw + IMU readings during the carry-walking phase don't put the rendered foil where the rider's hands actually hold it (combination of unreliable yaw at low speed, IMU mount being mid-mast vs. the rider gripping the nose, and the rider naturally swinging the board). After iterating against the camera footage we landed on:
+- World-frame 180° around X (pre-multiply): `(a, b, c) → (a, -b, -c)`. Flips lateral side (board ends up on the rider's left, not his right) and vertical (nose flips from down to up). Preserves the rendered heading direction X.
+- Body-frame 90° around body X (post-multiply, around the mast axis): swings the foil's front-wing/tail-wing direction by 90° around the mast so it lines up with how Ayano's left hand grips the nose. Quaternion `[cos(45°), sin(45°), 0, 0]`.
+
+A time-based threshold (`< 13 s` from clip start) gates this — the per-frame deck-up direction signal turned out unreliable for distinguishing carry-walking from on-water-stationary on this clip. Sec 13+ in carry (rider sets tail on harbour wall, pitches board parallel to water) renders without the early-carry corrections, matching how it should look as the board lays down.
+
+**Carry-phase suppression of nose-angle + pump counter overlays**: the "Nasenwinkel: ±X.X°" and "Pumps: N" text in the side-view panel are hidden until push-off — they're meaningless while the rider is just walking (the IMU's "pitch" reading is whatever angle the carry hold puts the mast at, and pump count is gated to speed > 4 km/h anyway). The `Zeit:` clock stays on always.
+
 Without `--at`, session detection is **pitch-oscillation based** (≥ 0.3 Hz over ≥ 30 s, merging < 60 s gaps). Smooth-flight pumpfoil data without clear pitch oscillation won't register — use `combined` (GPS-based) instead for those.
 
 ### Compass Validity (`stbox-viz compass`)

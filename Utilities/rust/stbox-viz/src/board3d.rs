@@ -127,35 +127,34 @@ impl Mesh {
             }
         }
         // Hard-coded mount transform for the SensorTile.box mounted
-        // SIDEWAYS ON THE MAST (long axis perpendicular to the mast,
-        // short axis along the mast). Derived from:
+        // ON THE MAST. Derived from:
         //
         // - At foiling (board level): AccX ≈ −1 g → IMU +X axis
         //   points DOWN along the mast (mast-down direction).
-        // - Box "long axis sideways" → IMU +Y is along the board's
-        //   lateral direction (port-starboard).
-        // - Box flat face perpendicular to long axis → IMU +Z is
-        //   along the board's longitudinal direction (nose-tail).
-        //
-        // Sign convention (assuming box on the tail-facing face of
-        // the mast, long axis toward starboard — flip rows 1 or 2
-        // below if the actual mounting is mirrored):
+        // - Pump rotation observed in the rendering with the
+        //   previous (Y↔Z swapped) mount appeared as a ROLL of the
+        //   board (port-starboard rocking) instead of a PITCH (nose
+        //   bobbing fore/aft). Pumps physically rotate the board
+        //   around its port-starboard axis, so the IMU axis that
+        //   sees the pump frequency must map to board-Y (lateral),
+        //   not board-X (longitudinal). That fixes which of IMU +Y
+        //   / IMU +Z is the lateral vs. longitudinal direction:
         //
         //   IMU +X = -Z_board (mast-down = into deck/water)
-        //   IMU +Y = +Y_board (starboard)
-        //   IMU +Z = +X_board (tail)
+        //   IMU +Y = +X_board (longitudinal — nose direction)
+        //   IMU +Z = +Y_board (lateral — port direction)
         //
         // R_mount maps board frame → IMU frame. Pre-rotating each
         // mesh vertex by R_mount puts the mesh into the IMU body
         // frame, so the per-frame Madgwick rotation can be applied
         // directly without a separate calibration quaternion.
         //
-        // Matrix:
+        // Matrix (columns = images of board basis vectors):
         //   [ 0   0  -1 ]
-        //   [ 0   1   0 ]
         //   [ 1   0   0 ]
+        //   [ 0   1   0 ]
         let apply_mount = |v: Vec3| -> Vec3 {
-            Vec3::new(-v.z, v.y, v.x)
+            Vec3::new(-v.z, v.x, v.y)
         };
         for t in &mut self.tris {
             for v in &mut t.v {
@@ -180,12 +179,15 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// 3/4 isometric: behind the rider, raised up, looking forward-
-    /// down. With body-frame +X = nose direction, the camera sits at
-    /// (-X, +Y, +Z) so it looks past the tail toward the nose.
+    /// Pure side view from port, slightly elevated. Camera lies in
+    /// the world Y-Z plane (X = 0) so the board's nose-tail axis
+    /// (world X) projects horizontally on screen, and a pitch
+    /// rotation around the board's lateral axis (world Y) becomes
+    /// purely vertical screen motion — no diagonal upper-left to
+    /// lower-right "wobble" from a 3/4 angle.
     pub fn iso() -> Self {
         Camera {
-            eye: Vec3::new(-2.5, 1.8, 1.4),
+            eye: Vec3::new(0.0, 3.2, 0.5),
             up:  Vec3::new(0.0, 0.0, 1.0),
             fov_y: 35f32.to_radians(),
         }
