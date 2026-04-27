@@ -203,6 +203,8 @@ All visualisation is done by the `stbox-viz` Rust crate at `Utilities/rust/stbox
 
 Build: `cd Utilities/rust/stbox-viz && cargo build --release`. Binary at `target/release/stbox-viz`. Crate source layout: `io.rs`, `fusion.rs` (Madgwick 6DOF), `euler.rs`, `session.rs` (pitch-oscillation detection), `gps.rs` (haversine + ride detection), `baro.rs` (TC + GPS-anchored water reference), `butter.rs` (4th-order Butterworth + filtfilt), `spectrogram.rs` (scipy-equivalent STFT via `rustfft`), `html.rs` (Plotly JSON emission), `plot_common.rs` (shared `plotters` helpers), and one `*_cmd.rs` per subcommand.
 
+GPS auto-detection (used by `combined` and `animate`) accepts two naming forms next to the sensor CSV: the firmware's on-card layout `SensNNN.csv` ↔ `GpsNNN.csv` (preferred — works directly from a mounted SD card), and the legacy `<stem>.csv` ↔ `<stem>_gps.csv` form for renamed/exported CSVs. Earlier versions only matched the legacy form, which silently failed on raw SD content (`combined` would log "no GPS CSV found" and skip ride detection). See `guess_gps_path` in `main.rs` and `animate_cmd.rs`.
+
 ### Combined HTML (`stbox-viz combined`)
 
 **Time-axis flags**: by default the x-axis runs in UTC anchored to the GPS clock. Pass `--tz-offset-h <h>` to shift to local time — `3` for Greek summer (EEST, used at Ermioni), `2` for Swiss summer (CEST), `1` for Swiss winter (CET). The axis title, ride-list times, and hover tooltips all reflect the chosen offset (`Local time (UTC+3)` etc.). The recording date defaults to the sensor file's mtime; override with `--date YYYY-MM-DD` if you've moved files around (`cp` resets mtime to today). Date only affects the rendered date string — time-of-day reads off the GPS clock regardless of date.
