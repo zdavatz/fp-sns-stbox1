@@ -89,48 +89,6 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
         None
     };
 
-    // Pump count per sample over the full session, computed from
-    // dynamic-acceleration peaks (one peak per stroke). Same signal
-    // pumpfoil uses for cadence detection. Each peak above 80 mg of
-    // local-mean-subtracted |acc|, with a 300 ms refractory period
-    // (well below the ~670 ms pump cycle), counts as one pump. The
-    // count is cumulative so each frame just looks up the current
-    // sample's value.
-    let pump_count_full: Vec<u32> = {
-        let n = samples.len();
-        if n == 0 { Vec::new() } else {
-            let mag: Vec<f64> = samples.iter()
-                .map(|s| (s.acc[0]*s.acc[0] + s.acc[1]*s.acc[1] + s.acc[2]*s.acc[2]).sqrt())
-                .collect();
-            let half = sample_hz / 2;
-            let mut csum = vec![0.0; n + 1];
-            for i in 0..n { csum[i + 1] = csum[i] + mag[i]; }
-            let dyn_acc: Vec<f64> = (0..n).map(|i| {
-                let lo = i.saturating_sub(half);
-                let hi = (i + half + 1).min(n);
-                mag[i] - (csum[hi] - csum[lo]) / (hi - lo) as f64
-            }).collect();
-            let thresh = 80.0;
-            let refractory: i64 = (sample_hz * 3 / 10) as i64;  // 300 ms
-            let mut count = 0u32;
-            let mut last_peak: i64 = -1_000_000;
-            let mut out = vec![0u32; n];
-            for i in 1..n.saturating_sub(1) {
-                if dyn_acc[i] > thresh
-                    && dyn_acc[i] > dyn_acc[i-1]
-                    && dyn_acc[i] >= dyn_acc[i+1]
-                    && (i as i64 - last_peak) > refractory
-                {
-                    count += 1;
-                    last_peak = i as i64;
-                }
-                out[i] = count;
-            }
-            if n > 0 { out[n - 1] = count; }
-            out
-        }
-    };
-
     // Nose angle for animation: 0.7 Hz Butterworth + 10 s baseline.
     // Pump frequency on this hardware is ~0.5 Hz. With a 0.7 Hz cutoff
     // the pump fundamental sits well inside the passband (~5 % loss)
@@ -225,6 +183,46 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             (height_offset, speed_aligned, lats, lons, gps_t_s, yaw_rad)
         } else {
             (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        }
+    };
+
+    // Pump count per sample, gated on GPS speed > 4 km/h so carry/
+    // walking/dock impacts don't inflate it. Cumulative count.
+    let pump_count_full: Vec<u32> = {
+        let n = samples.len();
+        if n == 0 { Vec::new() } else {
+            let mag: Vec<f64> = samples.iter()
+                .map(|s| (s.acc[0]*s.acc[0] + s.acc[1]*s.acc[1] + s.acc[2]*s.acc[2]).sqrt())
+                .collect();
+            let half = sample_hz / 2;
+            let mut csum = vec![0.0; n + 1];
+            for i in 0..n { csum[i + 1] = csum[i] + mag[i]; }
+            let dyn_acc: Vec<f64> = (0..n).map(|i| {
+                let lo = i.saturating_sub(half);
+                let hi = (i + half + 1).min(n);
+                mag[i] - (csum[hi] - csum[lo]) / (hi - lo) as f64
+            }).collect();
+            let thresh = 80.0;
+            let refractory: i64 = (sample_hz * 3 / 10) as i64;
+            let mut count = 0u32;
+            let mut last_peak: i64 = -1_000_000;
+            let mut out = vec![0u32; n];
+            for i in 1..n.saturating_sub(1) {
+                let on_water = !speed_at_sensor.is_empty()
+                    && speed_at_sensor[i] > 4.0;
+                if on_water
+                    && dyn_acc[i] > thresh
+                    && dyn_acc[i] > dyn_acc[i-1]
+                    && dyn_acc[i] >= dyn_acc[i+1]
+                    && (i as i64 - last_peak) > refractory
+                {
+                    count += 1;
+                    last_peak = i as i64;
+                }
+                out[i] = count;
+            }
+            if n > 0 { out[n - 1] = count; }
+            out
         }
     };
 
@@ -1008,22 +1006,21 @@ fn render_session_gif(
         let v_hist = speed_kmh.map(|s| &s[..=fi]);
         let n_abs_hist = nose_abs.map(|s| &s[..=fi]);
         let h_now = height_m.and_then(|s| if s[fi].is_finite() { Some(s[fi]) } else { None });
-        // Per-frame relative quaternion: q_rel = q_now · conj(q_mount).
-        // Yaw is then stripped via swing-twist decomposition because
-        // Madgwick 6DOF without magnetometer drifts in yaw, and the
-        // drift differs between session phases (carry vs foiling),
-        // which manifests as the rendered board pointing in the wrong
-        // compass direction at one phase even when pitch/roll are
-        // correct. The visible symptom on this hardware was "carry
-        // pose 90° off, pumping pose correct" — exactly what a
-        // pure yaw mismatch produces.
-        let q_rel_now: Option<[f64; 4]> = quats.and_then(|qs| {
-            let qn = qs[fi];
-            let q_rel = if let Some(qm) = q_mount_conj {
-                board3d::quat_mul(&qn, &qm)
-            } else { qn };
-            Some(board3d::quat_strip_yaw(&q_rel))
+        // Per-frame quaternion → mesh rotation.
+        //
+        // The mesh is pre-rotated at load time by the hard-coded
+        // mast-mount transform `R_mount` (in board3d::Mesh::recentre_unit),
+        // so it lives in the IMU body frame. We can therefore apply
+        // q_now directly without any Madgwick-quaternion calibration.
+        //
+        // Yaw stripped via swing-twist decomposition around world Z
+        // to remove Madgwick 6DOF yaw drift (no magnetometer
+        // constraint), so the board's heading stays fixed in the
+        // rendered scene.
+        let q_rel_now: Option<[f64; 4]> = quats.map(|qs| {
+            board3d::quat_strip_yaw(&qs[fi])
         });
+        let _ = q_mount_conj;
         let yaw_now = yaw_rad.map(|s| s[fi]);
         let pump_count_now = pump_count_at_sample[fi];
         draw_frame(

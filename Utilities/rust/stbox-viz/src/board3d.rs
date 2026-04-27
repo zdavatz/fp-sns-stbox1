@@ -126,10 +126,45 @@ impl Mesh {
                 v.z = (v.z - centre.z) * scale;
             }
         }
-        // No body-frame remap here — the calibration quaternion
-        // (q_mount) handles the IMU-to-deck offset, and a fixed
-        // 180° pre-rotation here was found empirically to break the
-        // pumping pose alignment.
+        // Hard-coded mount transform for the SensorTile.box mounted
+        // SIDEWAYS ON THE MAST (long axis perpendicular to the mast,
+        // short axis along the mast). Derived from:
+        //
+        // - At foiling (board level): AccX ≈ −1 g → IMU +X axis
+        //   points DOWN along the mast (mast-down direction).
+        // - Box "long axis sideways" → IMU +Y is along the board's
+        //   lateral direction (port-starboard).
+        // - Box flat face perpendicular to long axis → IMU +Z is
+        //   along the board's longitudinal direction (nose-tail).
+        //
+        // Sign convention (assuming box on the tail-facing face of
+        // the mast, long axis toward starboard — flip rows 1 or 2
+        // below if the actual mounting is mirrored):
+        //
+        //   IMU +X = -Z_board (mast-down = into deck/water)
+        //   IMU +Y = +Y_board (starboard)
+        //   IMU +Z = +X_board (tail)
+        //
+        // R_mount maps board frame → IMU frame. Pre-rotating each
+        // mesh vertex by R_mount puts the mesh into the IMU body
+        // frame, so the per-frame Madgwick rotation can be applied
+        // directly without a separate calibration quaternion.
+        //
+        // Matrix:
+        //   [ 0   0  -1 ]
+        //   [ 0   1   0 ]
+        //   [ 1   0   0 ]
+        let apply_mount = |v: Vec3| -> Vec3 {
+            Vec3::new(-v.z, v.y, v.x)
+        };
+        for t in &mut self.tris {
+            for v in &mut t.v {
+                *v = apply_mount(*v);
+            }
+        }
+        for n in &mut self.normals {
+            *n = apply_mount(*n);
+        }
         self
     }
 }
