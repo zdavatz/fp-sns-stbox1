@@ -63,6 +63,7 @@ C_SOURCES = \
   $(APP)/Core/Src/main.c \
   $(APP)/Core/Src/app_threadx.c \
   $(APP)/Core/Src/gps_nmea.c \
+  $(APP)/Core/Src/buzzer.c \
   $(APP)/Core/Src/stm32u5xx_hal_msp.c \
   $(APP)/Core/Src/stm32u5xx_hal_timebase_tim.c \
   $(APP)/Core/Src/stm32u5xx_it.c \
