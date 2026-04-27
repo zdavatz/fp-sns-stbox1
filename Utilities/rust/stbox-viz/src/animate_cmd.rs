@@ -1017,8 +1017,13 @@ fn render_session_gif(
         // to remove Madgwick 6DOF yaw drift (no magnetometer
         // constraint), so the board's heading stays fixed in the
         // rendered scene.
+        // Use conj(q_now): the Madgwick implementation in this codebase
+        // produces a quaternion in the world-to-body convention, so to
+        // get body-to-world (what our matrix() function and rendering
+        // pipeline expect) we conjugate first. Then strip yaw via
+        // swing-twist around world Z to remove Madgwick 6DOF yaw drift.
         let q_rel_now: Option<[f64; 4]> = quats.map(|qs| {
-            board3d::quat_strip_yaw(&qs[fi])
+            board3d::quat_strip_yaw(&board3d::quat_conj(&qs[fi]))
         });
         let _ = q_mount_conj;
         let yaw_now = yaw_rad.map(|s| s[fi]);
