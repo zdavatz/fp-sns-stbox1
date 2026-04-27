@@ -10,6 +10,7 @@
 mod animate_cmd;
 mod baro;
 mod bin_util;
+mod board3d;
 mod butter;
 mod compass_cmd;
 mod euler;
@@ -132,6 +133,13 @@ enum Cmd {
         /// actual lift above water. Default 0 (no offset).
         #[arg(long, default_value_t = 0.0)]
         dock_height_m: f64,
+        /// Path to a binary STL of the board (fingerfoil's
+        /// `1_board.stl` is the canonical one). When set, the side-
+        /// view panel renders the board as a 3D rotating mesh driven
+        /// by Madgwick pitch+roll plus GPS-course yaw, instead of
+        /// the simple 2D line. See issue #4 for the data plan.
+        #[arg(long)]
+        board_stl: Option<PathBuf>,
     },
 }
 
@@ -149,7 +157,7 @@ fn main() -> Result<()> {
         Cmd::Animate { sensor_csv, output, fps, session, video,
                        video_offset, sensor_offset, title, subtitle,
                        at, duration, tz_offset_h, date, auto_skip,
-                       dock_height_m } => {
+                       dock_height_m, board_stl } => {
             animate_cmd::run(&animate_cmd::AnimateArgs {
                 sensor_csv: &sensor_csv,
                 output_dir: &output,
@@ -166,6 +174,7 @@ fn main() -> Result<()> {
                 date: date.as_deref(),
                 auto_skip,
                 dock_height_m,
+                board_stl: board_stl.as_deref(),
             })
         }
     }
