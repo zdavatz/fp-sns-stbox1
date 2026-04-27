@@ -8,6 +8,7 @@
 #include "gps_nmea.h"
 #include "stbox1_config.h"
 #include "SensorTileBoxPro.h"
+#include "buzzer.h"
 #include "tx_api.h"
 #include <string.h>
 #include <stdlib.h>
@@ -113,6 +114,16 @@ static void parse_rmc(char *fields[], int n)
   const char *date   = fields[9];  /* "ddmmyy" */
 
   if (status[0] != 'A') return;   /* 'V' = void */
+
+  /* Audible "first valid GPS fix" indicator: triple beep, fired once
+     per boot. Runs in gps_thread context (priority 11) so HAL_Delay
+     inside Buzzer_Beep is safe — the UART IRQ keeps filling RxRing
+     while we beep, no NMEA bytes are lost. */
+  static uint8_t FixBeepFired = 0;
+  if (!FixBeepFired) {
+    FixBeepFired = 1;
+    Buzzer_FixAcquired();
+  }
 
   /* No tx_interrupt_control needed: both parse_rmc (via GPS_Process) and
      the sole consumers (GPS_GetLatestFix / GPS_GetWallClock) run in the

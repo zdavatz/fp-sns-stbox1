@@ -17,6 +17,7 @@ extern "C" {
 void Buzzer_Init(void);
 void Buzzer_Beep(uint32_t freq_hz, uint16_t duration_ms);
 void Buzzer_BootDone(void);
+void Buzzer_FixAcquired(void);
 
 #ifdef __cplusplus
 }

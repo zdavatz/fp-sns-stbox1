@@ -88,3 +88,13 @@ void Buzzer_BootDone(void)
   HAL_Delay(60);
   Buzzer_Beep(3000U, 90U);
 }
+
+void Buzzer_FixAcquired(void)
+{
+  /* Three quick high-pitched chirps so it can't be confused with the
+     two-tone boot signal. ~270 ms total. */
+  for (uint8_t i = 0; i < 3; ++i) {
+    Buzzer_Beep(2500U, 60U);
+    if (i < 2) HAL_Delay(40);
+  }
+}
