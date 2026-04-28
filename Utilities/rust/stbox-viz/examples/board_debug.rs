@@ -2,7 +2,7 @@
 //! Run: cargo run --release --example board_debug -- <stl> [pitch] [roll] [yaw]
 //! Output: /tmp/board_debug.ppm (P6 binary PPM, viewable in `open` / Preview)
 
-use stbox_viz::board3d::{Mesh, Camera, render};
+use stbox_viz::board3d::{Mesh, Camera, MountKind, render};
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,10 +13,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let roll_deg:  f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let yaw_deg:   f32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0.0);
 
-    let mesh = Mesh::load_binary_stl(Path::new(stl))?;
+    let mesh = Mesh::load_binary_stl(Path::new(stl), MountKind::Mast)?;
     eprintln!("loaded {} triangles", mesh.tris.len());
 
-    let cam = Camera::iso();
+    let cam = Camera::iso(MountKind::Mast);
     eprintln!("camera eye: {:?}, up: {:?}, fov_y: {} deg",
         cam.eye, cam.up, cam.fov_y.to_degrees());
 

@@ -77,6 +77,19 @@ Flags:
   correct heights for dock-launched sessions where the bare baro
   algorithm would otherwise treat the dock itself as water
   reference. Default 0 (raw baro).
+- `--board-stl <path>` — render a 3D-rotated hydrofoil mesh in the
+  side-view panel instead of the 2D line. Canonical model is
+  `~/software/fingerfoil/stl/0_combined.stl`. Pure-Rust software
+  rasterizer, no GPU.
+- `--mount mast|deck` — where the SensorTile.box is physically
+  attached on the board. `mast` (default) — strapped to the mast
+  with chip +X pointing along the mast (Ayano's Ermioni sessions);
+  uses Madgwick `quat_strip_yaw(quat_conj(q))` with `R_mount =
+  (-z, x, y)` and a port-side camera. `deck` — on top of the deck,
+  long axis nose-tail, chip +Z pointing down through the deck
+  (Peter's 28.4.2026 session); uses accel-only tilt with a 180°-X
+  pre-flip, `R_mount = identity`, and a tail-camera. Wrong mount
+  flag renders the foil on its side.
 - `--tz-offset-h`, `--date` — same semantics as `combined`.
 
 The GIF has 6 panels when GPS is available (top row: board side view
@@ -106,6 +119,12 @@ while it pumps; lift comes from the smoothed baro height. Panel
 titles are horizontal (their own 40-px title strip above each
 chart). The Nasenwinkel panel uses a 95th-percentile-based y-limit
 so single-outlier pumps don't stretch the axis.
+
+Each time-series panel (Pump-Detail, Höhe, Geschwindigkeit,
+Nasenwinkel) draws a red dot at the cursor's data point and a red
+value label (`±X.X°` / `X.XX m` / `X.X km/h`) just to the right of
+the needle so the live value is readable without scanning the
+y-axis — useful when the GIF runs paired with camera footage.
 
 ## Why Rust
 

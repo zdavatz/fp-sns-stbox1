@@ -58,13 +58,28 @@ pub struct Mesh {
     pub normals: Vec<Vec3>,
 }
 
+/// Where the SensorTile.box is physically attached on the board.
+/// Different mounts need different `R_mount`, camera angle, and accel
+/// pre-rotation, so the user picks one at the CLI (`--mount mast|deck`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MountKind {
+    /// Box strapped to the mast with the chip's +X pointing along the
+    /// mast (down toward the foil at level pose). Original mount used
+    /// for Ayano's 22.4.2026 + 25.4.2026 Ermioni sessions.
+    Mast,
+    /// Box on top of the deck, long axis along the board's nose-tail.
+    /// Chip's +Z points down through the deck. Used for Peter's
+    /// 28.4.2026 session.
+    Deck,
+}
+
 impl Mesh {
-    /// Load a binary STL file from disk.
+    /// Load a binary STL file from disk for the given mount.
     ///
     /// Format: 80-byte header (skipped) + uint32 LE triangle count +
     /// repeated (3 floats normal LE, 3×3 floats vertices LE, uint16
     /// attribute byte count). 50 bytes per triangle.
-    pub fn load_binary_stl(path: &Path) -> Result<Mesh> {
+    pub fn load_binary_stl(path: &Path, mount: MountKind) -> Result<Mesh> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("read STL {}", path.display()))?;
         if bytes.len() < 84 {
@@ -95,13 +110,15 @@ impl Mesh {
             normals.push(normal);
         }
 
-        Ok(Mesh { tris, normals }.recentre_unit())
+        Ok(Mesh { tris, normals }.recentre_unit(mount))
     }
 
     /// Re-centre the mesh at origin and scale so the longest extent in
     /// any axis equals 2 (i.e. [-1, +1]). Lets the camera + animator
-    /// work in mesh-independent units.
-    fn recentre_unit(mut self) -> Mesh {
+    /// work in mesh-independent units. Then apply the mount-specific
+    /// `R_mount` rotation to align the mesh body frame with the IMU
+    /// body frame.
+    fn recentre_unit(mut self, mount: MountKind) -> Mesh {
         if self.tris.is_empty() { return self; }
         let mut min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
         let mut max = Vec3::new(-f32::INFINITY, -f32::INFINITY, -f32::INFINITY);
@@ -126,30 +143,28 @@ impl Mesh {
                 v.z = (v.z - centre.z) * scale;
             }
         }
-        // Hard-coded mount transform for the SensorTile.box mounted
-        // ON TOP OF THE BOARD (deck mount), with the box's long
-        // axis along the board's nose-tail direction.
+        // Hard-coded mount transform `R_mount` mapping board frame
+        // → IMU frame. Pre-rotating each mesh vertex by R_mount puts
+        // the mesh into the IMU body frame, so the per-frame IMU
+        // quaternion can be applied directly without a separate
+        // calibration step.
         //
-        // Derived from Peter's 28.4.2026 data:
-        // - At level pose: AccZ ≈ −1 g (measured ~−960 mg). Per
-        //   Madgwick's reference frame (gravity along world −Z,
-        //   accelerometer reads +Z at rest), this means +Z_IMU
-        //   points DOWN — i.e. the chip's labelled +Z faces down
-        //   through the deck. So +Z_IMU = −board_Z.
-        // - Box long axis along board long axis → +X_IMU lies along
-        //   board ±X (nose-tail). With AccX, AccY ≈ 0 at level the
-        //   sign is undetermined from this data alone; we pick the
-        //   sign that makes the mount a 180°-around-X rotation
-        //   (proper rotation, det = +1) rather than a reflection.
+        // Mast mount (Ayano's setup):
+        //   IMU +X = -Z_board (mast-down — into the foil at level)
+        //   IMU +Y = +X_board (nose direction)
+        //   IMU +Z = +Y_board (port direction)
+        //   ⇒ R_mount(v) = (-v.z, v.x, v.y)
         //
-        // R_mount = identity. The 3D side-view path uses an
-        // accel-only tilt quaternion (computed in animate_cmd.rs
-        // run() as `tilt_quats`) where the deck-mount's chip-Z-down
-        // orientation is already pre-flipped on the accelerometer
-        // input, so the resulting quaternion is already in a
-        // right-side-up body frame. R_mount must therefore stay
-        // identity to avoid double-flipping the mesh.
-        let apply_mount = |v: Vec3| -> Vec3 { v };
+        // Deck mount (Peter's 28.4.2026 setup):
+        //   The 3D path uses an accel-only tilt quaternion that is
+        //   already pre-flipped on the accelerometer input (in
+        //   animate_cmd.rs `tilt_quats`), so the resulting quaternion
+        //   is already in a right-side-up body frame. R_mount stays
+        //   identity here to avoid double-flipping the mesh.
+        let apply_mount: fn(Vec3) -> Vec3 = match mount {
+            MountKind::Mast => |v: Vec3| Vec3::new(-v.z, v.x, v.y),
+            MountKind::Deck => |v: Vec3| v,
+        };
         for t in &mut self.tris {
             for v in &mut t.v {
                 *v = apply_mount(*v);
@@ -173,20 +188,24 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// View from behind the tail of the board, slightly elevated,
-    /// looking forward along the heading. The mesh's rendered nose
-    /// direction lands at world −X (Madgwick converged to that
-    /// equilibrium for this mount), so the camera sits at +X to be
-    /// "behind the tail" with the nose pointing away into the
-    /// screen. Pump rotation (around the board's lateral Y axis)
-    /// tilts the nose up/down in screen space; roll (around the
-    /// longitudinal X axis) rocks the deck side-to-side.
-    pub fn iso() -> Self {
-        Camera {
-            eye: Vec3::new(-3.0, 0.0, 0.7),
-            up:  Vec3::new(0.0, 0.0, 1.0),
-            fov_y: 35f32.to_radians(),
-        }
+    /// Mount-appropriate side/tail view of the board.
+    ///
+    /// Mast mount: pure side view from port — eye in the world Y-Z
+    /// plane (X = 0), board nose-tail axis (world X) projects
+    /// horizontally on screen, so a pitch rotation around the board's
+    /// lateral axis (world Y) becomes purely vertical screen motion.
+    ///
+    /// Deck mount: view from behind the tail — the accel-only tilt
+    /// path lands the rendered nose at world −X, so the camera sits
+    /// at world +X (= "behind the tail") looking into the screen.
+    /// Pump rotation tilts the nose up/down; roll rocks the deck
+    /// side-to-side.
+    pub fn iso(mount: MountKind) -> Self {
+        let eye = match mount {
+            MountKind::Mast => Vec3::new(0.0, 3.2, 0.5),
+            MountKind::Deck => Vec3::new(-3.0, 0.0, 0.7),
+        };
+        Camera { eye, up: Vec3::new(0.0, 0.0, 1.0), fov_y: 35f32.to_radians() }
     }
 }
 

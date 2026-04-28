@@ -140,7 +140,27 @@ enum Cmd {
         /// the simple 2D line. See issue #4 for the data plan.
         #[arg(long)]
         board_stl: Option<PathBuf>,
+        /// Where the SensorTile.box is physically mounted on the
+        /// board. `mast` (default) — strapped to the mast with chip
+        /// +X pointing along the mast; used for Ayano's Ermioni
+        /// sessions. `deck` — on top of the deck, long axis
+        /// nose-tail, chip +Z facing down through the deck; used
+        /// for Peter's 28.4.2026 session.
+        #[arg(long, value_enum, default_value_t = MountArg::Mast)]
+        mount: MountArg,
     },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum MountArg { Mast, Deck }
+
+impl From<MountArg> for board3d::MountKind {
+    fn from(m: MountArg) -> Self {
+        match m {
+            MountArg::Mast => board3d::MountKind::Mast,
+            MountArg::Deck => board3d::MountKind::Deck,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -157,7 +177,7 @@ fn main() -> Result<()> {
         Cmd::Animate { sensor_csv, output, fps, session, video,
                        video_offset, sensor_offset, title, subtitle,
                        at, duration, tz_offset_h, date, auto_skip,
-                       dock_height_m, board_stl } => {
+                       dock_height_m, board_stl, mount } => {
             animate_cmd::run(&animate_cmd::AnimateArgs {
                 sensor_csv: &sensor_csv,
                 output_dir: &output,
@@ -175,6 +195,7 @@ fn main() -> Result<()> {
                 auto_skip,
                 dock_height_m,
                 board_stl: board_stl.as_deref(),
+                mount: mount.into(),
             })
         }
     }

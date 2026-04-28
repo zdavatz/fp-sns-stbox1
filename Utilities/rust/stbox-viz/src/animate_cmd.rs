@@ -57,6 +57,10 @@ pub struct AnimateArgs<'a> {
     /// Optional binary-STL of the board mesh. When provided, the side-
     /// view panel renders a 3D-rotated mesh instead of the 2D line.
     pub board_stl: Option<&'a std::path::Path>,
+    /// Where the IMU is physically mounted on the board. Picks
+    /// `R_mount`, the camera angle, and the accel-only-tilt
+    /// pre-flip path. Default is mast.
+    pub mount: board3d::MountKind,
 }
 
 pub fn run(args: &AnimateArgs) -> Result<()> {
@@ -80,9 +84,9 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
     // We keep it Option<board3d::Mesh> so the line-fallback path
     // works unchanged for users who don't pass --board-stl.
     let board_mesh: Option<board3d::Mesh> = if let Some(stl) = args.board_stl {
-        println!("loading board STL {} (3D side-view enabled)",
-                 stl.display());
-        let m = board3d::Mesh::load_binary_stl(stl)?;
+        println!("loading board STL {} (3D side-view enabled, mount={:?})",
+                 stl.display(), args.mount);
+        let m = board3d::Mesh::load_binary_stl(stl, args.mount)?;
         println!("  {} triangles", m.tris.len());
         Some(m)
     } else {
@@ -584,47 +588,62 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
         // With deck-mount the chip's +Z faces down, so we pre-flip
         // accel Y and Z (180° around X) to get a right-side-up
         // gravity reading before extracting the pitch+roll angles.
-        let smooth_window: usize = (sample_hz / 4).max(1); // 0.25 s
-        let half = smooth_window / 2;
-        let n_total = samples.len();
-        let mut acc_smooth: Vec<[f64; 3]> = Vec::with_capacity(n_total);
-        for i in 0..n_total {
-            let lo = i.saturating_sub(half);
-            let hi = (i + half + 1).min(n_total);
-            let mut sx = 0.0; let mut sy = 0.0; let mut sz = 0.0;
-            for j in lo..hi {
-                sx += samples[j].acc[0];
-                sy += samples[j].acc[1];
-                sz += samples[j].acc[2];
+        // Mast-mount has the chip oriented differently and uses the
+        // Madgwick quaternion path directly (no accel pre-flip), so
+        // tilt_quats is only built for the deck branch.
+        let tilt_quats: Vec<fusion::Quat> = if args.mount == board3d::MountKind::Deck {
+            let smooth_window: usize = (sample_hz / 4).max(1); // 0.25 s
+            let half = smooth_window / 2;
+            let n_total = samples.len();
+            let mut acc_smooth: Vec<[f64; 3]> = Vec::with_capacity(n_total);
+            for i in 0..n_total {
+                let lo = i.saturating_sub(half);
+                let hi = (i + half + 1).min(n_total);
+                let mut sx = 0.0; let mut sy = 0.0; let mut sz = 0.0;
+                for j in lo..hi {
+                    sx += samples[j].acc[0];
+                    sy += samples[j].acc[1];
+                    sz += samples[j].acc[2];
+                }
+                let cnt = (hi - lo) as f64;
+                acc_smooth.push([sx / cnt, sy / cnt, sz / cnt]);
             }
-            let cnt = (hi - lo) as f64;
-            acc_smooth.push([sx / cnt, sy / cnt, sz / cnt]);
-        }
-        // The chip's labelled X is along the box's *short* dimension
-        // (lateral on the board), and chip Y is along the *long*
-        // dimension = board's nose-tail. So pitch (nose-up) shows up
-        // as a change in AccY, and roll (port-up) shows up as a
-        // change in AccX. Use those axes in the formulas accordingly.
-        let tilt_quats: Vec<fusion::Quat> = acc_smooth.iter().map(|a| {
-            let ax = a[0];
-            let ay = -a[1];
-            let az = -a[2];
-            let n = (ax * ax + ay * ay + az * az).sqrt();
-            if n > 1e-9 {
-                let (ax, ay, az) = (ax / n, ay / n, az / n);
-                let pitch = (-ay).atan2((ax * ax + az * az).sqrt());
-                let roll  = ax.atan2(az);
-                let cp = (pitch * 0.5).cos();
-                let sp = (pitch * 0.5).sin();
-                let cr = (roll * 0.5).cos();
-                let sr = (roll * 0.5).sin();
-                [cp * cr, cp * sr, sp * cr, -sp * sr]
-            } else {
-                [1.0, 0.0, 0.0, 0.0]
-            }
-        }).collect();
+            // The chip's labelled X is along the box's *short*
+            // dimension (lateral on the board), Y is along the long
+            // dimension = nose-tail. Pitch (nose-up) → AccY, roll
+            // (port-up) → AccX. The unary minuses on ay/az are the
+            // 180°-around-X pre-flip for chip-Z-down deck mount.
+            acc_smooth.iter().map(|a| {
+                let ax = a[0];
+                let ay = -a[1];
+                let az = -a[2];
+                let n = (ax * ax + ay * ay + az * az).sqrt();
+                if n > 1e-9 {
+                    let (ax, ay, az) = (ax / n, ay / n, az / n);
+                    let pitch = (-ay).atan2((ax * ax + az * az).sqrt());
+                    let roll  = ax.atan2(az);
+                    let cp = (pitch * 0.5).cos();
+                    let sp = (pitch * 0.5).sin();
+                    let cr = (roll * 0.5).cos();
+                    let sr = (roll * 0.5).sin();
+                    [cp * cr, cp * sr, sp * cr, -sp * sr]
+                } else {
+                    [1.0, 0.0, 0.0, 0.0]
+                }
+            }).collect()
+        } else {
+            Vec::new()
+        };
+        // Source of per-frame quaternions for the 3D mesh: tilt-only
+        // (deck mount) or full Madgwick (mast mount, where the mesh
+        // path uses `quat_strip_yaw(quat_conj(q))` to drop the gyro-
+        // drifted yaw).
+        let quats_for_3d: &[fusion::Quat] = match args.mount {
+            board3d::MountKind::Deck => &tilt_quats,
+            board3d::MountKind::Mast => &quats,
+        };
         let quats_slice: Option<&[fusion::Quat]> = if board_mesh.is_some() {
-            Some(&tilt_quats[at_s..at_e])
+            Some(&quats_for_3d[at_s..at_e])
         } else { None };
         let yaw_slice: Option<&[f32]> = if board_mesh.is_some()
             && !yaw_full_rad.is_empty()
@@ -657,6 +676,7 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
                     .map(|&v| v - off).collect();
                 Some(pc)
             }.as_deref(),
+            args.mount,
         )?;
         println!("Saved {}", gif_path.display());
 
@@ -710,6 +730,7 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             None,  // and the phase boundaries
             None,
             None, None, None, None, None,  // 3D mesh/quats/q_mount/yaw + pump_count — only --at mode
+            args.mount,
         )?;
         println!("Saved {}", gif_path.display());
 
@@ -976,6 +997,7 @@ fn render_session_gif(
     // Cumulative pump count per sample, aligned with `nose`. When
     // None, the displayed Pumps counter shows 0.
     pump_count: Option<&[u32]>,
+    mount: board3d::MountKind,
 ) -> Result<()> {
     // Subsample so the GIF's wall-clock playback matches the data
     // window exactly. Two pitfalls to avoid:
@@ -1160,9 +1182,20 @@ fn render_session_gif(
         // behind the tail."
         let _ = (yaw_now, q_twist_pushoff_inv,
                  q_180_pitch_body, q_180_roll_body,
-                 push_off_idx);
-        let q_rel_now: Option<[f64; 4]> = quats.map(|qs| {
-            board3d::quat_mul(&q_180_yaw_world, &qs[fi])
+                 push_off_idx, q_mount_conj);
+        let q_rel_now: Option<[f64; 4]> = quats.map(|qs| match mount {
+            // Deck mount: caller passes accel-only tilt quaternions;
+            // pre-multiply 180° world-Z so the STL nose lands at
+            // world+X for a camera at world−X (= "view from behind
+            // the tail").
+            board3d::MountKind::Deck => board3d::quat_mul(&q_180_yaw_world, &qs[fi]),
+            // Mast mount: caller passes Madgwick world-to-body
+            // quaternions. Conjugate to get body-to-world, then
+            // strip the gyro-drifted yaw via swing-twist
+            // decomposition so the rendered foil keeps a fixed
+            // heading (the side-view panel only cares about
+            // pitch+roll).
+            board3d::MountKind::Mast => board3d::quat_strip_yaw(&board3d::quat_conj(&qs[fi])),
         });
         let pump_count_now = pump_count_at_sample[fi];
         draw_frame(
@@ -1186,6 +1219,7 @@ fn render_session_gif(
             q_rel_now,
             yaw_now,
             pump_count_now,
+            mount,
         )?;
         root.present()?;
         if frame % 100 == 0 {
@@ -1223,6 +1257,7 @@ fn draw_frame<DB: DrawingBackend>(
     q_rel_now: Option<[f64; 4]>,
     yaw_rad_now: Option<f32>,
     pump_count: u32,
+    mount: board3d::MountKind,
 ) -> Result<(), anyhow::Error>
 where
     DB::ErrorType: 'static,
@@ -1408,7 +1443,7 @@ where
         let _ = angle;
         let _ = yaw_rad_now;
         let rot = board3d::quat_to_matrix(&q_rel);
-        let cam = board3d::Camera::iso();
+        let cam = board3d::Camera::iso(mount);
         let frame = board3d::render_with_matrix(
             m, rot, &cam, panel_w, panel_h, [34, 102, 170],
         );
@@ -1621,6 +1656,18 @@ where
         vec![(t_now, -zoom_lim), (t_now, zoom_lim)],
         RGBColor(220, 20, 20).stroke_width(2),
     ))).map_err(|e| anyhow::anyhow!("cursor: {e:?}"))?;
+    // Current value label at top of panel, just right of the cursor.
+    if let Some(val) = nose_hist.iter().rev().find(|v| v.is_finite()).copied() {
+        let plotted = val.clamp(-zoom_lim, zoom_lim);
+        zc.draw_series(std::iter::once(Circle::new(
+            (t_now, plotted), 4, RGBColor(220, 20, 20).filled(),
+        ))).ok();
+        zc.draw_series(std::iter::once(Text::new(
+            format!("{:+.1}°", val),
+            (t_now + 0.2, zoom_lim * 0.78),
+            (FONT, 18).into_font().color(&RGBColor(220, 20, 20)),
+        ))).ok();
+    }
 
     // --- Height-above-water panel (baro, GPS-anchored, TC-corrected) ---
     if let (Some(area), Some(h_data)) = (&height_area, height_hist) {
@@ -1669,6 +1716,19 @@ where
             vec![(t_now, -0.1), (t_now, 0.9)],
             RGBColor(220, 20, 20).stroke_width(2),
         ))).map_err(|e| anyhow::anyhow!("height cursor: {e:?}"))?;
+        // Current value label at top of panel, just right of the cursor.
+        if let Some(val) = h_data.iter().rev().find(|v| v.is_finite()).copied() {
+            let plotted = val.clamp(height_bot, height_top);
+            hc.draw_series(std::iter::once(Circle::new(
+                (t_now, plotted), 4, RGBColor(220, 20, 20).filled(),
+            ))).ok();
+            let span = (height_top - height_bot).max(0.1);
+            hc.draw_series(std::iter::once(Text::new(
+                format!("{:.2} m", val),
+                (t_now + 0.2, height_top - span * 0.12),
+                (FONT, 18).into_font().color(&RGBColor(220, 20, 20)),
+            ))).ok();
+        }
     }
 
     // --- Speed panel (km/h, GPS-derived, smoothed) ---
@@ -1728,6 +1788,20 @@ where
             vec![(t_now, 0.0), (t_now, speed_top)],
             RGBColor(220, 20, 20).stroke_width(2),
         ))).map_err(|e| anyhow::anyhow!("speed cursor: {e:?}"))?;
+        // Current value label at top of panel, just right of the cursor.
+        // Y position is below the phase labels (which sit at speed_top * 0.92)
+        // so the value badge doesn't collide with them.
+        if let Some(val) = v_data.iter().rev().find(|v| v.is_finite()).copied() {
+            let plotted = val.clamp(0.0, speed_top);
+            vc.draw_series(std::iter::once(Circle::new(
+                (t_now, plotted), 4, RGBColor(220, 20, 20).filled(),
+            ))).ok();
+            vc.draw_series(std::iter::once(Text::new(
+                format!("{:.1} km/h", val),
+                (t_now + 0.2, speed_top * 0.78),
+                (FONT, 18).into_font().color(&RGBColor(220, 20, 20)),
+            ))).ok();
+        }
     }
 
     // --- Full-range panel: absolute orientation pitch (un-detrended) ---
@@ -1775,6 +1849,18 @@ where
         vec![(t_now, -y_lim), (t_now, y_lim)],
         RGBColor(220, 20, 20).stroke_width(2),
     ))).map_err(|e| anyhow::anyhow!("cursor: {e:?}"))?;
+    // Current value label at top of panel, just right of the cursor.
+    if let Some(val) = abs_or_corrected.iter().rev().find(|v| v.is_finite()).copied() {
+        let plotted = val.clamp(-y_lim, y_lim);
+        gc.draw_series(std::iter::once(Circle::new(
+            (t_now, plotted), 4, RGBColor(220, 20, 20).filled(),
+        ))).ok();
+        gc.draw_series(std::iter::once(Text::new(
+            format!("{:+.1}°", val),
+            (t_now + 0.2, y_lim * 0.78),
+            (FONT, 18).into_font().color(&RGBColor(220, 20, 20)),
+        ))).ok();
+    }
 
     Ok(())
 }
