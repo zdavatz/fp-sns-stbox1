@@ -569,8 +569,62 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             Some(&height_window)
         } else { None };
 
+        // Build a slice of "tilt quaternions" — pitch+roll only,
+        // derived from a low-pass-filtered accelerometer reading.
+        //
+        // Accel-only attitude has a known failure mode: when linear
+        // acceleration is comparable to gravity (e.g. the rider hits
+        // a wave or pump-pushes hard), the accel vector points in a
+        // direction unrelated to "down" and the rendered foil flips
+        // sideways for a frame or two. Smoothing the accel with a
+        // ~0.5 s rolling mean (50 samples at 100 Hz) preserves the
+        // ~1 Hz pump-pitch signal but rejects sub-100-ms linear-
+        // acceleration spikes.
+        //
+        // With deck-mount the chip's +Z faces down, so we pre-flip
+        // accel Y and Z (180° around X) to get a right-side-up
+        // gravity reading before extracting the pitch+roll angles.
+        let smooth_window: usize = (sample_hz / 4).max(1); // 0.25 s
+        let half = smooth_window / 2;
+        let n_total = samples.len();
+        let mut acc_smooth: Vec<[f64; 3]> = Vec::with_capacity(n_total);
+        for i in 0..n_total {
+            let lo = i.saturating_sub(half);
+            let hi = (i + half + 1).min(n_total);
+            let mut sx = 0.0; let mut sy = 0.0; let mut sz = 0.0;
+            for j in lo..hi {
+                sx += samples[j].acc[0];
+                sy += samples[j].acc[1];
+                sz += samples[j].acc[2];
+            }
+            let cnt = (hi - lo) as f64;
+            acc_smooth.push([sx / cnt, sy / cnt, sz / cnt]);
+        }
+        // The chip's labelled X is along the box's *short* dimension
+        // (lateral on the board), and chip Y is along the *long*
+        // dimension = board's nose-tail. So pitch (nose-up) shows up
+        // as a change in AccY, and roll (port-up) shows up as a
+        // change in AccX. Use those axes in the formulas accordingly.
+        let tilt_quats: Vec<fusion::Quat> = acc_smooth.iter().map(|a| {
+            let ax = a[0];
+            let ay = -a[1];
+            let az = -a[2];
+            let n = (ax * ax + ay * ay + az * az).sqrt();
+            if n > 1e-9 {
+                let (ax, ay, az) = (ax / n, ay / n, az / n);
+                let pitch = (-ay).atan2((ax * ax + az * az).sqrt());
+                let roll  = ax.atan2(az);
+                let cp = (pitch * 0.5).cos();
+                let sp = (pitch * 0.5).sin();
+                let cr = (roll * 0.5).cos();
+                let sr = (roll * 0.5).sin();
+                [cp * cr, cp * sr, sp * cr, -sp * sr]
+            } else {
+                [1.0, 0.0, 0.0, 0.0]
+            }
+        }).collect();
         let quats_slice: Option<&[fusion::Quat]> = if board_mesh.is_some() {
-            Some(&quats[at_s..at_e])
+            Some(&tilt_quats[at_s..at_e])
         } else { None };
         let yaw_slice: Option<&[f32]> = if board_mesh.is_some()
             && !yaw_full_rad.is_empty()
@@ -1093,12 +1147,22 @@ fn render_session_gif(
         // sits with a fixed heading in the rendered scene; the
         // side panel cares about pitch/roll, not which way the
         // nose is pointing.
+        // 3D mesh quaternion. The caller passes accel-only tilt
+        // quaternions (pitch+roll from gravity direction in body
+        // frame, no gyro integration → no yaw drift around the
+        // mast). On top of that we pre-multiply a 180° world-Z
+        // rotation because the STL's nose direction lands at
+        // world-X with the identity tilt quaternion, which puts
+        // the nose toward the camera at -X (= "view from front").
+        // Pre-multiplying by 180°-world-Z rotates the entire
+        // scene around the vertical, putting the nose at world+X
+        // = into the screen for a camera at -X = "view from
+        // behind the tail."
+        let _ = (yaw_now, q_twist_pushoff_inv,
+                 q_180_pitch_body, q_180_roll_body,
+                 push_off_idx);
         let q_rel_now: Option<[f64; 4]> = quats.map(|qs| {
-            let _ = (yaw_now, q_twist_pushoff_inv,
-                     q_180_pitch_body, q_180_roll_body, q_180_yaw_world,
-                     push_off_idx);
-            let p = board3d::quat_conj(&qs[fi]);
-            board3d::quat_strip_yaw(&p)
+            board3d::quat_mul(&q_180_yaw_world, &qs[fi])
         });
         let pump_count_now = pump_count_at_sample[fi];
         draw_frame(
@@ -1311,16 +1375,18 @@ where
 
     // Board
     // Board: 3D-rasterized mesh if --board-stl provided, we have
-    // pitch/roll/yaw for this frame, AND we're past push-off (= we
-    // have reliable IMU + GPS data). Before push-off the IMU's
-    // Madgwick yaw has drifted freely with no magnetometer or GPS
-    // course correction, so the rendered orientation is unreliable.
-    // We hide the 3D mesh entirely during the carry phase and show
-    // a "Tragen — keine 3D-Daten" placeholder instead. Once Ayano
-    // is moving (speed > 4 km/h sustained) we have a clean
-    // reference and can start drawing the foil.
-    let in_foiling = water_set_t.map_or(true, |wt| t_now >= wt);
-    let render_3d = mesh.is_some() && q_rel_now.is_some() && in_foiling;
+    // pitch/roll/yaw for this frame, AND either push-off has
+    // happened (foiling, GPS course reliable) OR a fixed early
+    // start time has elapsed (for clips where the rider is
+    // already foiling at the start of the window and push-off is
+    // outside it). The fixed start gives the visualization a
+    // moment to settle (Madgwick gyro convergence + waiting until
+    // the board is clearly on the water before drawing).
+    const SHOW_3D_FROM_S: f64 = 10.5;
+    let after_push_off = water_set_t.map_or(false, |wt| t_now >= wt);
+    let elapsed_enough = t_now >= SHOW_3D_FROM_S;
+    let show_3d_now = after_push_off || elapsed_enough;
+    let render_3d = mesh.is_some() && q_rel_now.is_some() && show_3d_now;
     if render_3d {
         let m = mesh.unwrap();
         // Render the 3D board into a bitmap that fills the entire
@@ -1362,7 +1428,7 @@ where
             board_area.draw(&elem)
                 .map_err(|e| anyhow::anyhow!("board3d blit: {e:?}"))?;
         }
-    } else if !in_foiling {
+    } else if !show_3d_now {
         // Carry phase: no 3D model, no 2D line. Just the water
         // surface (already drawn above) plus a centered placeholder
         // text indicating that 3D data isn't available yet.
@@ -1393,7 +1459,7 @@ where
     // board's hold orientation happens to be), so we suppress them
     // until push-off. The Zeit clock stays on always.
     let (bw, _bh) = board_area.dim_in_pixel();
-    if in_foiling {
+    if show_3d_now {
         board_area.draw(&Text::new(
             format!("Nasenwinkel: {:+.1}°", angle),
             (30, 70),
@@ -1408,7 +1474,7 @@ where
         (bw as i32 - 200, 40),
         (FONT, 20).into_font().color(&BLACK),
     )).map_err(|e| anyhow::anyhow!("time_txt: {e:?}"))?;
-    if in_foiling {
+    if show_3d_now {
         // Pump counter — sum of dynamic-acc peaks gated on speed
         // > 4 km/h. Hidden during carry so it doesn't read as
         // "0 pumps" while the rider is just walking with the board.

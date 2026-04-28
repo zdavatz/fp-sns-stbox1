@@ -110,7 +110,6 @@ pub fn compute_quaternions(samples: &[SensorRow], beta: f64) -> Vec<Quat> {
     let mut out = Vec::with_capacity(samples.len());
 
     for s in samples {
-        // Gyro mdps → rad/s
         let gyro_rad = [
             s.gyro[0] * 0.001 * DEG_TO_RAD,
             s.gyro[1] * 0.001 * DEG_TO_RAD,

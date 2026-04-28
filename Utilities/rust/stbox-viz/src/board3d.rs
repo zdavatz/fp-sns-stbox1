@@ -127,35 +127,29 @@ impl Mesh {
             }
         }
         // Hard-coded mount transform for the SensorTile.box mounted
-        // ON THE MAST. Derived from:
+        // ON TOP OF THE BOARD (deck mount), with the box's long
+        // axis along the board's nose-tail direction.
         //
-        // - At foiling (board level): AccX ≈ −1 g → IMU +X axis
-        //   points DOWN along the mast (mast-down direction).
-        // - Pump rotation observed in the rendering with the
-        //   previous (Y↔Z swapped) mount appeared as a ROLL of the
-        //   board (port-starboard rocking) instead of a PITCH (nose
-        //   bobbing fore/aft). Pumps physically rotate the board
-        //   around its port-starboard axis, so the IMU axis that
-        //   sees the pump frequency must map to board-Y (lateral),
-        //   not board-X (longitudinal). That fixes which of IMU +Y
-        //   / IMU +Z is the lateral vs. longitudinal direction:
+        // Derived from Peter's 28.4.2026 data:
+        // - At level pose: AccZ ≈ −1 g (measured ~−960 mg). Per
+        //   Madgwick's reference frame (gravity along world −Z,
+        //   accelerometer reads +Z at rest), this means +Z_IMU
+        //   points DOWN — i.e. the chip's labelled +Z faces down
+        //   through the deck. So +Z_IMU = −board_Z.
+        // - Box long axis along board long axis → +X_IMU lies along
+        //   board ±X (nose-tail). With AccX, AccY ≈ 0 at level the
+        //   sign is undetermined from this data alone; we pick the
+        //   sign that makes the mount a 180°-around-X rotation
+        //   (proper rotation, det = +1) rather than a reflection.
         //
-        //   IMU +X = -Z_board (mast-down = into deck/water)
-        //   IMU +Y = +X_board (longitudinal — nose direction)
-        //   IMU +Z = +Y_board (lateral — port direction)
-        //
-        // R_mount maps board frame → IMU frame. Pre-rotating each
-        // mesh vertex by R_mount puts the mesh into the IMU body
-        // frame, so the per-frame Madgwick rotation can be applied
-        // directly without a separate calibration quaternion.
-        //
-        // Matrix (columns = images of board basis vectors):
-        //   [ 0   0  -1 ]
-        //   [ 1   0   0 ]
-        //   [ 0   1   0 ]
-        let apply_mount = |v: Vec3| -> Vec3 {
-            Vec3::new(-v.z, v.x, v.y)
-        };
+        // R_mount = identity. The 3D side-view path uses an
+        // accel-only tilt quaternion (computed in animate_cmd.rs
+        // run() as `tilt_quats`) where the deck-mount's chip-Z-down
+        // orientation is already pre-flipped on the accelerometer
+        // input, so the resulting quaternion is already in a
+        // right-side-up body frame. R_mount must therefore stay
+        // identity to avoid double-flipping the mesh.
+        let apply_mount = |v: Vec3| -> Vec3 { v };
         for t in &mut self.tris {
             for v in &mut t.v {
                 *v = apply_mount(*v);
@@ -179,15 +173,17 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// Pure side view from port, slightly elevated. Camera lies in
-    /// the world Y-Z plane (X = 0) so the board's nose-tail axis
-    /// (world X) projects horizontally on screen, and a pitch
-    /// rotation around the board's lateral axis (world Y) becomes
-    /// purely vertical screen motion — no diagonal upper-left to
-    /// lower-right "wobble" from a 3/4 angle.
+    /// View from behind the tail of the board, slightly elevated,
+    /// looking forward along the heading. The mesh's rendered nose
+    /// direction lands at world −X (Madgwick converged to that
+    /// equilibrium for this mount), so the camera sits at +X to be
+    /// "behind the tail" with the nose pointing away into the
+    /// screen. Pump rotation (around the board's lateral Y axis)
+    /// tilts the nose up/down in screen space; roll (around the
+    /// longitudinal X axis) rocks the deck side-to-side.
     pub fn iso() -> Self {
         Camera {
-            eye: Vec3::new(0.0, 3.2, 0.5),
+            eye: Vec3::new(-3.0, 0.0, 0.7),
             up:  Vec3::new(0.0, 0.0, 1.0),
             fov_y: 35f32.to_radians(),
         }
