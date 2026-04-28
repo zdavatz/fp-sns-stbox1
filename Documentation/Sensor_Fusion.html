@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sensor Fusion in stbox-viz</title>
+<style>
+  @page { size: A4; margin: 22mm 20mm; }
+  body { font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+         font-size: 10.5pt; line-height: 1.45; color: #222; }
+  h1 { font-size: 18pt; margin: 0 0 4pt 0; }
+  h2 { font-size: 13pt; margin: 16pt 0 6pt 0; border-bottom: 1px solid #ccc; padding-bottom: 2pt; }
+  h3 { font-size: 11pt; margin: 12pt 0 4pt 0; }
+  p { margin: 4pt 0 6pt 0; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5pt;
+         background: #f3f3f3; padding: 1px 4px; border-radius: 3px; }
+  pre  { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9pt;
+         background: #f6f6f6; padding: 8pt 10pt; border-radius: 4px;
+         border: 1px solid #e3e3e3; overflow-x: auto; line-height: 1.35; }
+  ul { margin: 4pt 0 6pt 18pt; padding: 0; }
+  li { margin: 2pt 0; }
+  table { border-collapse: collapse; margin: 6pt 0 8pt 0; font-size: 10pt; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 4pt 7pt; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; }
+  .meta { color: #666; font-size: 9.5pt; margin-bottom: 12pt; }
+  .note { background: #fff8e1; border-left: 3px solid #f0b400; padding: 6pt 10pt;
+          margin: 8pt 0; font-size: 10pt; }
+  .yes { color: #1a7f1a; font-weight: 600; }
+  .no  { color: #b22; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>Sensor Fusion in stbox-viz</h1>
+<div class="meta">FP-SNS-STBOX1 / SDDataLogFileX &middot; SensorTile.box PRO &middot; 28 April 2026</div>
+
+<h2>Input data we record per session</h2>
+<p>Every recorded session writes up to four CSV/WAV files to the SD card. The
+sensors and their roles:</p>
+
+<table>
+  <tr>
+    <th>Source</th>
+    <th>Rate</th>
+    <th>What it gives us</th>
+    <th>Used in fusion?</th>
+  </tr>
+  <tr>
+    <td>LSM6DSV16X &mdash; <strong>3D gyroscope</strong></td>
+    <td>100&nbsp;Hz</td>
+    <td>Angular velocity X/Y/Z, &plusmn;500&nbsp;dps full scale, 17.5&nbsp;mdps/LSB</td>
+    <td><span class="yes">Yes</span> &mdash; Madgwick prediction step</td>
+  </tr>
+  <tr>
+    <td>LSM6DSV16X &mdash; <strong>3D accelerometer</strong></td>
+    <td>100&nbsp;Hz</td>
+    <td>Specific force X/Y/Z, &plusmn;4&nbsp;g full scale, 0.122&nbsp;mg/LSB</td>
+    <td><span class="yes">Yes</span> &mdash; Madgwick correction step</td>
+  </tr>
+  <tr>
+    <td>LIS2MDL &mdash; <strong>3D magnetometer (compass)</strong></td>
+    <td>100&nbsp;Hz</td>
+    <td>Magnetic field X/Y/Z (mgauss). Offset cancellation + temp comp + LPF on.</td>
+    <td><span class="no">No</span> &mdash; iron-distorted, see below</td>
+  </tr>
+  <tr>
+    <td>LPS22DF &mdash; <strong>barometer</strong></td>
+    <td>100&nbsp;Hz</td>
+    <td>Pressure (hPa) and temperature. Used for board height above water.</td>
+    <td><span class="no">No</span> &mdash; downstream height pipeline only</td>
+  </tr>
+  <tr>
+    <td>u-blox MAX-M10S &mdash; <strong>GPS position</strong></td>
+    <td>10&nbsp;Hz</td>
+    <td>Lat/lon/alt + UTC time, NMEA GGA + RMC</td>
+    <td><span class="no">No</span> &mdash; ride detection, map, height anchor</td>
+  </tr>
+  <tr>
+    <td>u-blox MAX-M10S &mdash; <strong>GPS speed</strong></td>
+    <td>10&nbsp;Hz</td>
+    <td>Position-derived (haversine), <em>not</em> module Doppler-speed (unreliable)</td>
+    <td><span class="no">No</span> &mdash; ride detection + push-off trigger</td>
+  </tr>
+</table>
+
+<h2>The fusion filter</h2>
+<p>We use a <strong>6DOF Madgwick AHRS</strong> filter &mdash; gyro + accel only.
+Implementation: <code>Utilities/rust/stbox-viz/src/fusion.rs</code> (port of the classic
+Madgwick&nbsp;2010 IMU variant). Magnetometer is <em>deliberately excluded</em>;
+the other four signals are used <em>downstream</em> of fusion, not as inputs to it.</p>
+
+<h3>Why we drop the compass</h3>
+<p>Validation against GPS course-over-ground (Ermioni, 22.4.2026):</p>
+<ul>
+  <li>median residual: <strong>&minus;14&deg;</strong></li>
+  <li>p5&ndash;p95 spread: <strong>307&deg;</strong> &mdash; essentially random</li>
+</ul>
+<p>The LIS2MDL is hard/soft-iron-distorted by ferromagnetic mounting hardware.
+Feeding it into a 9DOF gradient would couple heading garbage into roll &amp; pitch
+and corrupt the whole quaternion. So we accept that <em>yaw has no absolute
+reference</em>. The fix is hardware (plastic screws, redesigned enclosure away
+from steel mounts).</p>
+
+<h3>The math, per sample</h3>
+<ol>
+  <li>Predict the quaternion derivative from the gyroscope alone:
+      <code>q&#775; = &frac12; &middot; q &otimes; &omega;</code>.</li>
+  <li>Compute the Madgwick gradient of the accelerometer error
+      (the rotated world gravity vector should match the measured body-frame accel).</li>
+  <li>Subtract <code>&beta; &middot; &nabla;F / &Vert;&nabla;F&Vert;</code> from the
+      gyro-predicted derivative.</li>
+  <li>Integrate by <code>dt</code>, then renormalise the quaternion.</li>
+</ol>
+<p><code>&beta;</code> is the tuning knob &mdash; how strongly we trust accel vs gyro.
+<code>dt</code> is auto-detected from the median tick delta in the CSV
+(1&nbsp;tick = 10&nbsp;ms &rArr; 100&nbsp;Hz &rArr; dt&nbsp;=&nbsp;0.01&nbsp;s).</p>
+
+<h3>Input units into Madgwick</h3>
+<ul>
+  <li>Accel: <strong>mg</strong>. Direction-only after normalisation.</li>
+  <li>Gyro: <strong>mdps</strong>. Converted to rad/s before integration.</li>
+</ul>
+
+<h2>What downstream code does with each signal</h2>
+
+<h3>Quaternion &rarr; Nasenwinkel</h3>
+<p><code>nose_angle_series_deg</code> projects the body-Y axis (board nose direction)
+into world&nbsp;Z and takes <code>asin</code>:</p>
+<pre>nose_z  = 2 &middot; (q<sub>j</sub>&middot;q<sub>k</sub> &minus; q<sub>s</sub>&middot;q<sub>i</sub>)
+angle&deg; = asin(nose_z)</pre>
+<p>Drift correction: 1&nbsp;s centred rolling median (suppresses correction spikes)
+followed by subtraction of a 60&nbsp;s rolling-median baseline. This drives
+the Nasenwinkel trace and the pump-cadence STFT.</p>
+
+<h3>Quaternion &rarr; 3D foil rendering</h3>
+<p><strong>Mast-mount</strong> (<code>animate --mount mast</code>): orientation
+straight from the Madgwick quaternion with <code>quat_strip_yaw</code> removing
+the drifting yaw. Captures the 90&deg; tail-place transient just before push-off
+because Madgwick integrates the gyro continuously.</p>
+
+<p><strong>Deck-mount</strong> (<code>animate --mount deck</code>): bypasses
+Madgwick and uses <strong>accel-only tilt</strong> &mdash; 0.25&nbsp;s rolling
+mean on accel, then
+<code>pitch = atan2(&minus;a<sub>y</sub>, &radic;(a<sub>x</sub>&sup2;+a<sub>z</sub>&sup2;))</code>,
+<code>roll = atan2(a<sub>x</sub>, a<sub>z</sub>)</code>. Reason: gyro-Z bias survives
+<code>quat_strip_yaw</code> once the mast is tilted, making the rendered foil
+spin around its own mast on clean rides.</p>
+
+<h3>Barometer &rarr; height above water</h3>
+<p>Two-stage correction (<code>baro.rs</code>):</p>
+<ol>
+  <li><strong>Temperature compensation.</strong> The LPS22DF sits in a semi-sealed
+      enclosure, so pressure couples to temperature via the ideal-gas law.
+      A 10&nbsp;&deg;C swing produces ~15&nbsp;hPa of fake altitude
+      &mdash; far larger than the 0.08&nbsp;hPa signal from the 80&nbsp;cm mast.</li>
+  <li><strong>GPS-anchored water reference.</strong> When GPS speed &lt; 3&nbsp;km/h
+      the board is in the water; we linear-interpolate the TC'd pressure across
+      flying segments and compute height via the local hypsometric approximation
+      <code>8434 &middot; (1 &minus; P/P<sub>ref</sub>)</code>.</li>
+</ol>
+<p>Final guards: clamp to physical mast range [&minus;0.1, 0.9]&nbsp;m, NaN samples
+where 10&nbsp;ms pressure delta exceeds 1&nbsp;hPa (sensor glitches). NaN-aware
+smoothing keeps neighbouring real samples valid.</p>
+
+<h3>GPS &rarr; ride detection, map, push-off</h3>
+<ul>
+  <li><strong>Ride detection.</strong> Sustained GPS speed &gt; 3&nbsp;km/h for &ge; 10&nbsp;s,
+      merge gaps &lt; 30&nbsp;s, pad &plusmn; 3&nbsp;s. More reliable than the
+      pitch-oscillation detector for smooth flying where the board barely pitches.</li>
+  <li><strong>Map trace.</strong> One Plotly trace per ride, coloured by speed (Viridis 0&ndash;25&nbsp;km/h),
+      hover shows UTC + speed + nose angle + height-above-water.</li>
+  <li><strong>Push-off trigger.</strong> First sample where a 1&nbsp;s rolling mean of
+      <em>raw</em> position-derived speed exceeds 4&nbsp;km/h sustainedly for 0.5&nbsp;s.
+      Drives the phase-band shading (Tragen / Rennen / Foilen) and the
+      Push-off-Winkel flash.</li>
+  <li><strong>Speed cleaning.</strong> Two-stage filter: reject samples with
+      |&Delta;v|/&Delta;t &gt; 15&nbsp;km/h/s (multipath spikes), then 5&nbsp;s
+      rolling median. Module Doppler-speed is unreliable on this hardware
+      (median 0.12&nbsp;km/h while position deltas show 10&ndash;30&nbsp;km/h),
+      so we always derive speed from position.</li>
+</ul>
+
+<div class="note">
+The pump-cadence trace is still driven by the Madgwick output even in deck-mount
+mode &mdash; only the 3D mesh path uses the accel-only attitude. That keeps the
+pump fundamental (~0.5&nbsp;Hz) clean while giving us a stable visual rendering.
+</div>
+
+<h2>Carry phase &mdash; explicitly hidden</h2>
+<p>During the carry phase (no GPS speed) the 3D mesh is hidden completely &mdash;
+the panel shows <em>&ldquo;Tragen &mdash; keine 3D-Daten&rdquo;</em>. Without an
+absolute heading reference (no usable mag, GPS course unreliable below ~3&nbsp;km/h)
+any rendered orientation during carry is a guess; we'd rather show no foil than a
+wrong one. The 3D rendering switches on at <em>water_set_t</em> (sustained GPS
+speed &gt; 4&nbsp;km/h) or after a 10.5&nbsp;s fallback timeout.</p>
+
+</body>
+</html>

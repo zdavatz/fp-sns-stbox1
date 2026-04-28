@@ -192,6 +192,8 @@ Data collected via the ST BLE Sensor app uses a slightly different format (date/
 
 ## Visualization
 
+**User-facing fusion explainer** at `Documentation/Sensor_Fusion.{html,pdf}` (rendered by headless Chrome: `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --disable-gpu --no-pdf-header-footer --print-to-pdf=Sensor_Fusion.pdf "file://$PWD/Sensor_Fusion.html"`). Short walkthrough of the six recorded inputs (3D gyro, 3D accel, 3D compass, baro, GPS pos, GPS speed), which two go into Madgwick (gyro+accel), why the LIS2MDL is dropped, and what each downstream consumer does with the quaternion / baro / GPS streams. Send to field testers via `~/software/pegelstand/whatsapp/send-doc.mjs <jid> Documentation/Sensor_Fusion.pdf "<caption>"`. Update the HTML and re-render the PDF whenever the fusion pipeline changes.
+
 All visualisation is done by the `stbox-viz` Rust crate at `Utilities/rust/stbox-viz/`. Single binary, no Python runtime. Four subcommands:
 
 | Subcommand | Output | Input |
