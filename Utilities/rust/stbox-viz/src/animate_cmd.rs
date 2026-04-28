@@ -1078,81 +1078,27 @@ fn render_session_gif(
         //     scene.
         let _ = q_mount_conj;
         let yaw_now = yaw_rad.map(|s| s[fi]);
+        // 3D mesh quaternion. The side-view panel hides the 3D
+        // model entirely until push-off — see the `in_foiling`
+        // gating in draw_frame. Before push-off the Madgwick yaw
+        // has drifted freely (no magnetometer, no GPS course
+        // correction at < 3 km/h), so the rendered carry-phase
+        // orientation isn't trustworthy. We compute a quaternion
+        // here for every frame anyway because the panel falls back
+        // to a "Tragen — keine 3D-Daten" placeholder, and the
+        // value is just unused on those frames.
+        //
+        // For foiling frames: strip the Madgwick yaw via swing-
+        // twist decomposition, leaving only pitch+roll. The board
+        // sits with a fixed heading in the rendered scene; the
+        // side panel cares about pitch/roll, not which way the
+        // nose is pointing.
         let q_rel_now: Option<[f64; 4]> = quats.map(|qs| {
+            let _ = (yaw_now, q_twist_pushoff_inv,
+                     q_180_pitch_body, q_180_roll_body, q_180_yaw_world,
+                     push_off_idx);
             let p = board3d::quat_conj(&qs[fi]);
-            let in_carry = push_off_idx.map_or(false, |po| fi < po);
-            if in_carry {
-                // Per-frame foil-up vs. foil-down decision. Ayano
-                // transitions through both poses before push-off:
-                // first foil-up while walking, then he sets the tail
-                // on the harbor wall and pitches the board parallel
-                // to the water (foil-down) before stepping on. The
-                // constant 180° corrections are only correct for the
-                // foil-up portion. Compute the deck-up direction in
-                // world frame (deck-up_body = +Z_board = −X_IMU under
-                // our mount); positive Z = foil-down (no correction),
-                // negative Z = foil-up (apply correction).
-                let deck_up_body = [0.0, -1.0, 0.0, 0.0]; // pure-quat (-X_IMU)
-                let tmp = board3d::quat_mul(&p, &deck_up_body);
-                let deck_up_world = board3d::quat_mul(&tmp, &board3d::quat_conj(&p));
-                let deck_up_world_z = deck_up_world[3];
-
-                let q_after_offset = board3d::quat_mul(&p, &q_twist_pushoff_inv);
-                // The deck-up check turned out unreliable for the
-                // early carry on this clip (IMU readings during
-                // walking don't put the deck cleanly negative-Z),
-                // so we fall back to a time-based split:
-                //
-                //   sec 0..13   : early carry, board carried in
-                //                 hands. 180° around world Y to
-                //                 flip the rendered nose direction
-                //                 (vertical + horizontal) from
-                //                 down→up so the board doesn't
-                //                 read as dropping nose-first.
-                //   sec 13+     : transition + on-water before
-                //                 push-off. No extra rotations.
-                //
-                // 13 s is chosen from the camera footage: that's
-                // when the rider sets the tail on the harbor wall
-                // and starts pitching the board parallel to the
-                // water.
-                let _ = q_180_pitch_body;
-                let _ = q_180_roll_body;
-                let _ = q_180_yaw_world;
-                let _ = deck_up_world_z;
-                let early_carry_until_s = 13.0;
-                if t_now < early_carry_until_s {
-                    // World-frame 180° around X: flips Y (lateral)
-                    // and Z (vertical), preserves X (heading) — so
-                    // the board moves to the correct side of Ayano
-                    // and the nose flips from down to up.
-                    let q_180_x_world: [f64; 4] = [0.0, 1.0, 0.0, 0.0];
-                    // Body-frame 90° around body X (= mast axis):
-                    // swings the nose 90° around the mast so the
-                    // foil's front-wing/tail-wing axis lines up with
-                    // how Ayano holds the board (nose pointing along
-                    // his arm, not perpendicular). Quaternion for
-                    // +90° around (1,0,0): [cos(45°), sin(45°), 0, 0].
-                    let s = std::f64::consts::FRAC_1_SQRT_2;
-                    let q_90_x_body: [f64; 4] = [s, s, 0.0, 0.0];
-                    let after_body = board3d::quat_mul(&q_after_offset, &q_90_x_body);
-                    board3d::quat_mul(&q_180_x_world, &after_body)
-                } else {
-                    q_after_offset
-                }
-            } else {
-                // Foiling phase: strip the Madgwick 6DOF yaw (which
-                // drifts with no magnetometer) and DO NOT replace
-                // it with GPS course. Adding GPS yaw was tested but
-                // produced visible side-to-side wobble (the GPS
-                // course is noisy at boat speeds, and even small
-                // heading jitter rotates the rendered foil enough
-                // to read as wobble). Render with a fixed heading
-                // — the side panel cares about pitch/roll, not
-                // which way the nose is pointing.
-                let _ = yaw_now;
-                board3d::quat_strip_yaw(&p)
-            }
+            board3d::quat_strip_yaw(&p)
         });
         let pump_count_now = pump_count_at_sample[fi];
         draw_frame(
@@ -1364,9 +1310,17 @@ where
     }
 
     // Board
-    // Board: 3D-rasterized mesh if --board-stl provided AND we have
-    // pitch/roll/yaw for this frame; else 2D-line fallback.
-    let render_3d = mesh.is_some() && q_rel_now.is_some();
+    // Board: 3D-rasterized mesh if --board-stl provided, we have
+    // pitch/roll/yaw for this frame, AND we're past push-off (= we
+    // have reliable IMU + GPS data). Before push-off the IMU's
+    // Madgwick yaw has drifted freely with no magnetometer or GPS
+    // course correction, so the rendered orientation is unreliable.
+    // We hide the 3D mesh entirely during the carry phase and show
+    // a "Tragen — keine 3D-Daten" placeholder instead. Once Ayano
+    // is moving (speed > 4 km/h sustained) we have a clean
+    // reference and can start drawing the foil.
+    let in_foiling = water_set_t.map_or(true, |wt| t_now >= wt);
+    let render_3d = mesh.is_some() && q_rel_now.is_some() && in_foiling;
     if render_3d {
         let m = mesh.unwrap();
         // Render the 3D board into a bitmap that fills the entire
@@ -1408,6 +1362,17 @@ where
             board_area.draw(&elem)
                 .map_err(|e| anyhow::anyhow!("board3d blit: {e:?}"))?;
         }
+    } else if !in_foiling {
+        // Carry phase: no 3D model, no 2D line. Just the water
+        // surface (already drawn above) plus a centered placeholder
+        // text indicating that 3D data isn't available yet.
+        let (panel_w, panel_h) = board_area.dim_in_pixel();
+        let txt = "Tragen — keine 3D-Daten";
+        board_area.draw(&Text::new(
+            txt.to_string(),
+            ((panel_w as i32) / 2 - 130, (panel_h as i32) / 2 - 12),
+            (FONT, 24).into_font().color(&RGBColor(120, 120, 120)),
+        )).map_err(|e| anyhow::anyhow!("carry placeholder: {e:?}"))?;
     } else {
         bc.draw_series(std::iter::once(PathElement::new(
             vec![(tail_x, tail_y), (nose_x, nose_y)],
@@ -1428,7 +1393,6 @@ where
     // board's hold orientation happens to be), so we suppress them
     // until push-off. The Zeit clock stays on always.
     let (bw, _bh) = board_area.dim_in_pixel();
-    let in_foiling = water_set_t.map_or(true, |wt| t_now >= wt);
     if in_foiling {
         board_area.draw(&Text::new(
             format!("Nasenwinkel: {:+.1}°", angle),
@@ -1438,9 +1402,10 @@ where
     }
     let tm = (t_now / 60.0) as u32;
     let ts = ((t_now % 60.0) as u32).min(59);
+    let th = ((t_now * 100.0) as u32 % 100).min(99);
     board_area.draw(&Text::new(
-        format!("Zeit: {}:{:02}", tm, ts),
-        (bw as i32 - 180, 40),
+        format!("Zeit: {}:{:02}.{:02}", tm, ts, th),
+        (bw as i32 - 200, 40),
         (FONT, 20).into_font().color(&BLACK),
     )).map_err(|e| anyhow::anyhow!("time_txt: {e:?}"))?;
     if in_foiling {
