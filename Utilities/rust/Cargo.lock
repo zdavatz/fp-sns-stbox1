@@ -1973,12 +1973,13 @@ dependencies = [
 
 [[package]]
 name = "movement-logger"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
  "eframe",
  "egui",
+ "image 0.25.10",
  "rfd",
  "winres",
 ]

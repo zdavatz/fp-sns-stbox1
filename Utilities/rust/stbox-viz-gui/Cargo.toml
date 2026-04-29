@@ -1,6 +1,6 @@
 [package]
 name = "movement-logger"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "MovementLogger — drag-and-drop GUI front-end for stbox-viz animate. SensorTile.box pumpfoil session video generator."
 license = "GPL-3.0-only"
@@ -22,6 +22,10 @@ egui = "0.29"
 rfd = "0.15"
 anyhow = "1"
 chrono = "0.4"
+# Decode assets/icon.png at startup → window icon + in-app top-right
+# logo. Default-features off to avoid pulling JPEG/TIFF/etc. — we only
+# ever load the PNG that's baked in via include_bytes!.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Build-time icon embedding for Windows .exe (so explorer / taskbar
 # show the MovementLogger icon without an MSIX wrapper). No-op on other

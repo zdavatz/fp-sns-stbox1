@@ -23,6 +23,13 @@ use std::sync::{
 };
 use std::thread;
 
+/// Bundled-into-binary 512×512 PNG. The build pipeline already
+/// generates this file at the canonical asset path; including it as
+/// bytes means the standalone binary doesn't depend on any external
+/// file at run time. egui rasterises on demand for whichever pixel
+/// size the layout asks for.
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
+
 // ---------------------------------------------------------------------------
 //  App state
 // ---------------------------------------------------------------------------
@@ -80,6 +87,10 @@ struct AppState {
     running: Arc<AtomicBool>,
     /// Last subprocess exit status, displayed in the status bar.
     last_status: Option<RunStatus>,
+
+    /// Cached GPU texture for the top-right logo. Lazily uploaded on
+    /// first frame so the egui context is available.
+    icon_tex: Option<egui::TextureHandle>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -408,10 +419,26 @@ impl eframe::App for AppState {
         }
         let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
+        // Lazy-load the in-app logo on the first frame after the egui
+        // context becomes available.
+        if self.icon_tex.is_none() {
+            self.icon_tex = decode_icon().map(|img| {
+                ctx.load_texture("movementlogger-icon", img, egui::TextureOptions::LINEAR)
+            });
+        }
+
         egui::TopBottomPanel::top("title").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(format!("MovementLogger {}", env!("CARGO_PKG_VERSION")));
                 ui.weak("— SensorTile.box pumpfoil session video generator");
+                // Right-anchor the logo so it sits in the top-right
+                // corner regardless of window width.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(tex) = self.icon_tex.as_ref() {
+                        let size = egui::vec2(40.0, 40.0);
+                        ui.add(egui::Image::new((tex.id(), size)).fit_to_exact_size(size));
+                    }
+                });
             });
         });
 
@@ -678,13 +705,40 @@ fn open_in_filer(path: &Path) -> std::io::Result<()> {
 //  Entry point
 // ---------------------------------------------------------------------------
 
+/// Decode `ICON_PNG` into an egui-friendly RGBA image. Returns `None`
+/// on decode failure — the GUI still works, it just shows no logo.
+fn decode_icon() -> Option<egui::ColorImage> {
+    let img = image::load_from_memory(ICON_PNG).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    Some(egui::ColorImage::from_rgba_unmultiplied(
+        [w as usize, h as usize],
+        img.as_raw(),
+    ))
+}
+
+/// Decode the icon into the format eframe wants for the OS-level
+/// window icon (Dock on macOS, taskbar on Windows / Linux).
+fn os_window_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(ICON_PNG).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width: w,
+        height: h,
+    })
+}
+
 fn main() -> eframe::Result<()> {
     let title = format!("MovementLogger {}", env!("CARGO_PKG_VERSION"));
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([880.0, 720.0])
+        .with_min_inner_size([560.0, 480.0])
+        .with_title(&title);
+    if let Some(icon) = os_window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([880.0, 720.0])
-            .with_min_inner_size([560.0, 480.0])
-            .with_title(&title),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
