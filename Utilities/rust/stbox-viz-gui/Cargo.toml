@@ -1,0 +1,35 @@
+[package]
+name = "movement-logger"
+version = "0.1.0"
+edition = "2021"
+description = "MovementLogger — drag-and-drop GUI front-end for stbox-viz animate. SensorTile.box pumpfoil session video generator."
+license = "GPL-3.0-only"
+authors = ["Zeno R.R. Davatz <zdavatz@ywesee.com>"]
+homepage = "https://github.com/zdavatz/fp-sns-stbox1"
+repository = "https://github.com/zdavatz/fp-sns-stbox1"
+
+# Binary name is intentionally the camel-case "MovementLogger" so that
+# the macOS .app's CFBundleExecutable, the Windows MSIX entry-point, and
+# the Linux launcher all match the user-facing product name without an
+# extra rename step.
+[[bin]]
+name = "MovementLogger"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.29"
+rfd = "0.15"
+anyhow = "1"
+chrono = "0.4"
+
+# Build-time icon embedding for Windows .exe (so explorer / taskbar
+# show the MovementLogger icon without an MSIX wrapper). No-op on other
+# platforms via the cfg gate in build.rs.
+[build-dependencies]
+winres = "0.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

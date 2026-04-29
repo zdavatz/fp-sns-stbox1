@@ -304,3 +304,10 @@ This software release is compatible with:
 
 - [**ST BLE Sensor Android application**](https://play.google.com/store/apps/details?id=com.st.bluems)  V5.0.0 (or higher)
 - [**ST BLE Sensor iOS application**](https://apps.apple.com/it/app/st-ble-sensor/id993670214)  V5.0.0 (or higher)
+
+## Companion desktop tooling
+
+This repo also ships two companion tools for working with the data the firmware writes to the SD card:
+
+- **`stbox-viz`** — Rust CLI that turns `SensNNN.csv` + `GpsNNN.csv` into interactive Plotly HTML, sensor PNGs, pump-cadence spectrograms, and animated session videos. Source at `Utilities/rust/stbox-viz/`.
+- **`MovementLogger`** — cross-platform (Win/Mac/Linux) drag-and-drop GUI front-end for `stbox-viz animate`. Drop sensor CSV + GPS + camera footage, fill in a handful of optional fields, click Generate. Source at `Utilities/rust/stbox-viz-gui/` — see [its README](Utilities/rust/stbox-viz-gui/README.md). Tagged releases (`vX.Y.Z`) produce binaries for Linux, macOS (Intel + Apple Silicon, with a `.app` bundle and an optional notarized DMG) and Windows via `.github/workflows/release.yml`.

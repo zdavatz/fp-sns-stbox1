@@ -331,6 +331,27 @@ Both Makefiles include `config.mk` via `-include $(ROOT)/config.mk` with a fallb
 
 SDDataLogFileX Makefile also exposes `GPS_RATE_HZ` (default 10) that gets passed into `stbox1_config.h` as `-DGPS_RATE_HZ=<n>` and drives `UBX-CFG-RATE` in `gps_nmea.c`. Override per invocation, e.g. `make GPS_RATE_HZ=5` for 5 Hz or `make GPS_RATE_HZ=25` for the max rate. The header has a `[1, 25]` `#error` guard (UART ceiling at 38400 baud with only GGA + RMC enabled). IDE builds that don't define the macro get the 10 Hz default.
 
+## MovementLogger GUI
+
+Cross-platform (Win/Mac/Linux) drag-and-drop wrapper around `stbox-viz animate`. Source at `Utilities/rust/stbox-viz-gui/`, binary called `MovementLogger`. Drop a sensor CSV (auto-pairs the matching `_gps.csv`), an optional camera `.mov`/`.mp4`, and an optional board `.stl`; fill in `--at`, `--tz-offset-h`, `--mount`, etc. in the form; click Generate. The GUI shells out to the bundled `stbox-viz` CLI (looked up next to its own `current_exe()` first, then PATH) so the heavy plotters/rustfft/gif deps stay out of the GUI binary, and stdout/stderr stream into the live log panel.
+
+Workspace at `Utilities/rust/Cargo.toml` lists `stbox-viz` and `stbox-viz-gui` as members. The vendored `Utilities/rust/winit-patched/` is `exclude`d from the workspace (it ships its own workspace) and wired in via `[patch.crates-io] winit = { path = "winit-patched" }`. **The Mac App Store winit patch from the workspace `CLAUDE.md` is required** — eframe → winit 0.30 calls `_CGSSetWindowBackgroundBlurRadius` (private CoreGraphics) which Apple's binary scanner rejects. The fork's patch replaces `Window::set_blur` with a no-op and comments out the now-unused `NSInteger`/`AnyObject` imports in `ffi.rs` so `RUSTFLAGS=-Dwarnings` doesn't trip on them. Verify after every release build: `nm target/release/MovementLogger | grep CGSSetWindowBackgroundBlur` must return nothing. **eframe must stay on 0.29 or newer**: 0.28 drags in winit 0.29 alongside 0.30, the patch only matches the 0.30 path, and the private symbol slips back into the binary through the unpatched 0.29 dep.
+
+### Releases
+
+GitHub Actions workflow at `.github/workflows/release.yml`. Tag `vX.Y.Z` and push — the workflow runs the per-platform matrix (Linux x86_64 + aarch64, macOS Intel + Apple Silicon, Windows x86_64), packages each as `MovementLogger-vX.Y.Z-<target>.tar.gz`/`.zip` with SHA256, and attaches everything to a GitHub Release. The macOS path also assembles a `MovementLogger.app` bundle (with `stbox-viz` shipped inside `Contents/MacOS/` so the GUI's `current_exe()`-relative lookup finds it).
+
+Optional store paths (mirrored from rust2xml, gated on repo/org variables):
+
+| Var | Effect |
+|---|---|
+| `vars.MACOS_STORE_ENABLED == 'true'` | Universal `.app` → signed DMG (Developer ID, notarized) → optional Mac App Store `.pkg` upload via altool/iTMSTransporter. |
+| `vars.MSSTORE_ENABLED == 'true'` | MSIX pack → signed → optional Microsoft Store devcenter REST submission. |
+
+The workflow uses **the same secret names as `~/software/rust2xml`** so org-level secrets carry over without repo-level setup: `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_INSTALLER_CERTIFICATE`, `MACOS_INSTALLER_CERTIFICATE_PASSWORD`, `MACOS_DEVELOPER_ID_CERTIFICATE`, `MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`, `APPLE_TEAM_ID`, `MACOS_PROVISIONING_PROFILE`, `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`, `MSSTORE_TENANT_ID`, `MSSTORE_CLIENT_ID`, `MSSTORE_CLIENT_SECRET`, plus `vars.MSSTORE_APP_ID`. Bundle id is `com.ywesee.movementlogger` (separate from rust2xml's `com.ywesee.rust2xml`) — needs its own App Store Connect record + provisioning profile before the Mac App Store gate flips on.
+
+Local sanity build: `cd Utilities/rust && cargo build --release -p movement-logger -p stbox-viz`. Re-run the `nm` check above whenever bumping eframe/winit.
+
 ## WhatsApp CLI
 
 `whatsapp/` contains a small Baileys-based Node.js CLI for sending firmware binaries (and plots) to contacts or groups without opening the WhatsApp app. Four scripts, identical session store (`whatsapp/auth/`):
