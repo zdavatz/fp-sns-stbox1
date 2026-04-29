@@ -432,11 +432,25 @@ impl eframe::App for AppState {
                 ui.heading(format!("MovementLogger {}", env!("CARGO_PKG_VERSION")));
                 ui.weak("— SensorTile.box pumpfoil session video generator");
                 // Right-anchor the logo so it sits in the top-right
-                // corner regardless of window width.
+                // corner regardless of window width. Clicking it opens
+                // a mailto: to support — saves field testers having to
+                // hunt for the support address when something goes
+                // wrong with a session render.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(tex) = self.icon_tex.as_ref() {
                         let size = egui::vec2(40.0, 40.0);
-                        ui.add(egui::Image::new((tex.id(), size)).fit_to_exact_size(size));
+                        let resp = ui
+                            .add(
+                                egui::ImageButton::new((tex.id(), size))
+                                    .frame(false),
+                            )
+                            .on_hover_text("Email zdavatz@ywesee.com")
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if resp.clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                "mailto:zdavatz@ywesee.com",
+                            ));
+                        }
                     }
                 });
             });
