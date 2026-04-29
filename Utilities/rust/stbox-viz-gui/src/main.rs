@@ -428,9 +428,10 @@ impl eframe::App for AppState {
         }
 
         egui::TopBottomPanel::top("title").show(ctx, |ui| {
+            // No app-name + version heading here — the OS window
+            // title already shows it, no point duplicating.
             ui.horizontal(|ui| {
-                ui.heading(format!("MovementLogger {}", env!("CARGO_PKG_VERSION")));
-                ui.weak("— SensorTile.box pumpfoil session video generator");
+                ui.label("SensorTile.box pumpfoil session video generator");
                 // Right-anchor the logo so it sits in the top-right
                 // corner regardless of window width. Clicking it opens
                 // a mailto: to support — saves field testers having to
