@@ -410,7 +410,7 @@ impl eframe::App for AppState {
 
         egui::TopBottomPanel::top("title").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("MovementLogger");
+                ui.heading(format!("MovementLogger {}", env!("CARGO_PKG_VERSION")));
                 ui.weak("— SensorTile.box pumpfoil session video generator");
             });
         });
@@ -679,15 +679,16 @@ fn open_in_filer(path: &Path) -> std::io::Result<()> {
 // ---------------------------------------------------------------------------
 
 fn main() -> eframe::Result<()> {
+    let title = format!("MovementLogger {}", env!("CARGO_PKG_VERSION"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([880.0, 720.0])
             .with_min_inner_size([560.0, 480.0])
-            .with_title("MovementLogger"),
+            .with_title(&title),
         ..Default::default()
     };
     eframe::run_native(
-        "MovementLogger",
+        &title,
         options,
         Box::new(|_cc| Ok(Box::new(AppState::new()))),
     )
