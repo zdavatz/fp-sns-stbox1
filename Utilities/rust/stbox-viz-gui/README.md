@@ -2,6 +2,13 @@
 
 Cross-platform (Win/Mac/Linux) drag-and-drop GUI for SensorTile.box pumpfoil session telemetry. Drop a sensor CSV (auto-pairs the matching `_gps.csv`), an optional camera `.mov`/`.mp4`, and an optional board `.stl`; fill in the few optional fields; click **Generate**. The GUI shells out to the bundled `stbox-viz animate` CLI to render the annotated session video.
 
+## Window layout
+
+- **OS title bar** shows `MovementLogger <version>` (and the app icon — Dock on macOS, taskbar on Win/Linux). The version is read from `env!("CARGO_PKG_VERSION")` so it always matches the binary you're looking at.
+- **Top strip** (inside the window):
+  - Left: a hyperlink `SensorTile.box pumpfoil session video generator` → opens [the project on GitHub](https://github.com/zdavatz/fp-sns-stbox1) in the default browser.
+  - Right: the MovementLogger logo. Clicking it launches the default mail client composing to `zdavatz@ywesee.com` — quick path for field testers to send a bug report or a session that didn't render right.
+
 ## Drop zone
 
 | File pattern | Routed to |

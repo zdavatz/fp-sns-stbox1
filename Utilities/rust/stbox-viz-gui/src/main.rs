@@ -431,7 +431,10 @@ impl eframe::App for AppState {
             // No app-name + version heading here — the OS window
             // title already shows it, no point duplicating.
             ui.horizontal(|ui| {
-                ui.label("SensorTile.box pumpfoil session video generator");
+                ui.hyperlink_to(
+                    "SensorTile.box pumpfoil session video generator",
+                    "https://github.com/zdavatz/fp-sns-stbox1",
+                );
                 // Right-anchor the logo so it sits in the top-right
                 // corner regardless of window width. Clicking it opens
                 // a mailto: to support — saves field testers having to
