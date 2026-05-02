@@ -47,10 +47,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `gui: true` is set explicitly on every target that should
+          # bundle MovementLogger. GitHub Actions' expression engine
+          # treats an unset matrix value as null, and `null == false`
+          # evaluates true under its lenient comparison — so leaving
+          # `gui` undefined would silently route a target through the
+          # CLI-only build step and the staging cp would then fail
+          # looking for a MovementLogger binary that was never built.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
             binary-suffix: ""
+            gui: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
@@ -64,14 +72,17 @@ jobs:
             os: macos-13
             archive: tar.gz
             binary-suffix: ""
+            gui: true
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
             binary-suffix: ""
+            gui: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
             binary-suffix: ".exe"
+            gui: true
     steps:
       - uses: actions/checkout@v4
 
@@ -697,7 +708,17 @@ jobs:
   publish:
     name: publish release
     needs: [build, macos-store, windows-msix]
-    if: always() && needs.build.result == 'success'
+    # Ship the release whenever at least one of the artefact-producing
+    # jobs succeeded — Peter's macOS DMG should land even if a Linux
+    # cross-build trips on a missing native dep, and vice-versa. The
+    # `always()` guard makes sure this evaluates after every dependency
+    # finishes (instead of being skipped because one needed job failed).
+    if: |
+      always() && (
+        needs.build.result == 'success' ||
+        needs.macos-store.result == 'success' ||
+        needs.windows-msix.result == 'success'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: write
