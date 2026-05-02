@@ -370,6 +370,42 @@ jobs:
             --deep \
             target/release/MovementLogger.app
 
+      # Notarize and staple the .app BEFORE building the DMG. The earlier
+      # workflow only stapled the DMG file, which meant Gatekeeper had to
+      # do an online check the first time the user dragged the .app out
+      # of the DMG to /Applications — and refused to launch when the
+      # field tester (Peter, often offline on a sailboat) had no
+      # internet. Stapling the .app embeds the notarization ticket so
+      # offline launches pass without a network round-trip.
+      - name: notarize + staple .app (Developer ID + API key)
+        if: env.APPLE_API_KEY_P8 != '' && env.MACOS_DEVELOPER_ID_CERTIFICATE != ''
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          MACOS_DEVELOPER_ID_CERTIFICATE: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.private_keys
+          echo "$APPLE_API_KEY_P8" | base64 --decode \
+            > ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
+          # ditto preserves resource forks + xattrs, so the .app round-
+          # trips through the zip cleanly. notarytool then notarizes
+          # every binary inside.
+          ditto -c -k --keepParent target/release/MovementLogger.app MovementLogger.app.zip
+          xcrun notarytool submit MovementLogger.app.zip \
+            --key ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+          # Staples the cloud-side ticket onto the .app on disk; from
+          # here the .app is launchable without any network access.
+          xcrun stapler staple target/release/MovementLogger.app
+          rm -f MovementLogger.app.zip
+          # Sanity check — `spctl -a -vvv` against a stapled bundle
+          # should print "accepted" + "source=Notarized Developer ID".
+          spctl -a -vvv --type execute target/release/MovementLogger.app
+
       - name: create DMG
         run: |
           set -euo pipefail
@@ -383,7 +419,11 @@ jobs:
             "MovementLogger-${version}-macos-aarch64.dmg"
           rm -rf "$staging"
 
-      - name: notarize DMG (only if Developer ID signed it)
+      # Belt-and-suspenders: also notarize + staple the DMG file itself.
+      # The .app inside is already stapled (so launching it works
+      # offline), but stapling the DMG too means double-clicking the DMG
+      # to mount it doesn't trigger an online check either.
+      - name: notarize + staple DMG
         if: env.APPLE_API_KEY_P8 != '' && env.MACOS_DEVELOPER_ID_CERTIFICATE != ''
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -394,9 +434,6 @@ jobs:
           set -euo pipefail
           version="${{ steps.vars.outputs.version }}"
           dmg="MovementLogger-${version}-macos-aarch64.dmg"
-          mkdir -p ~/.private_keys
-          echo "$APPLE_API_KEY_P8" | base64 --decode \
-            > ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
           xcrun notarytool submit "$dmg" \
             --key ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
             --key-id "$APPLE_API_KEY_ID" \
