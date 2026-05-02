@@ -397,6 +397,27 @@ GitHub Actions workflow at `.github/workflows/release.yml`. Tag `vX.Y.Z` and pus
 
 **Re-using a tag after deletion is allowed but races the publish step.** The publish job runs with `if: always() && (one of build/macos-store/windows-msix succeeded)`, which means even a *cancelled* run still triggers publish if at least one job had completed successfully. So `gh run cancel` on a release run after `macos-store` succeeded WILL publish the partial release before the workflow fully terminates. If you then delete the tag and re-push to fix something, the new run can't `gh release create` because the release already exists. Either delete the GitHub release first (`gh release delete vX.Y.Z --yes --cleanup-tag`) or accept that the originally-published artefacts stay live and the new run's matching-name uploads collide.
 
+**Notarize + staple the .app, not just the DMG (v0.1.6+).** v0.1.5 stapled only the DMG file. When the user drags the .app out to /Applications, Gatekeeper looks for a notarization ticket on the .app itself; if none is found locally it falls back to an online lookup. Field tester Peter, often offline on a sailboat, hit `nicht geöffnet` because the online lookup failed. The fix re-orders the steps in `macos-store` so the .app is notarized + stapled BEFORE the DMG is built (`ditto -c -k --keepParent .app .zip` → `notarytool submit zip --wait` → `stapler staple .app` → `hdiutil create dmg`), with the DMG also notarized + stapled afterwards as belt-and-suspenders. A `spctl -a -vvv --type execute` sanity check after the .app staple makes a future workflow regression fail loud instead of silently shipping an unverified .app.
+
+**The Apple signing secrets must be set per-repo — there is no org-level default for personal accounts.** The original global CLAUDE.md note ("the same secret names as `~/software/rust2xml` so org-level secrets carry over") is wrong for `zdavatz/*` repos because `zdavatz` is a user account, not a GitHub org. Each new repo that wants notarized DMGs needs all 10 secrets set explicitly:
+
+```sh
+REPO=zdavatz/<new-repo>
+gh secret set APPLE_TEAM_ID         --repo "$REPO" --body '4B37356EGR'
+gh secret set APPLE_API_KEY_ID      --repo "$REPO" --body '7B9HFNP99B'
+gh secret set APPLE_API_ISSUER_ID   --repo "$REPO" --body '69a6de70-0490-47e3-e053-5b8c7c11a4d1'
+gh secret set APPLE_API_KEY_P8                  --repo "$REPO" < <(base64 -i ~/.apple/AuthKey_7B9HFNP99B.p8)
+gh secret set MACOS_DEVELOPER_ID_CERTIFICATE    --repo "$REPO" < <(base64 -i ~/Library/Mobile\ Documents/com~apple~CloudDocs/ywesee/p12/developer_id_application.p12)
+gh secret set MACOS_CERTIFICATE                 --repo "$REPO" < <(base64 -i ~/Library/Mobile\ Documents/com~apple~CloudDocs/ywesee/p12/mac_app_distribution.p12)
+gh secret set MACOS_INSTALLER_CERTIFICATE       --repo "$REPO" < <(base64 -i ~/Library/Mobile\ Documents/com~apple~CloudDocs/ywesee/p12/mac_installer_distribution.p12)
+read -s -p "p12 password: " P; echo
+for S in MACOS_CERTIFICATE_PASSWORD MACOS_INSTALLER_CERTIFICATE_PASSWORD MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD; do
+  printf '%s' "$P" | gh secret set "$S" --repo "$REPO"
+done; unset P
+```
+
+The `if:` gates on `env.APPLE_API_KEY_P8 != '' && env.MACOS_DEVELOPER_ID_CERTIFICATE != ''` will silently skip notarization when any required secret is missing, so a fresh repo's first release ships an unsigned binary unless these are set first. Verify with `gh secret list --repo "$REPO"` — should show all 10 names.
+
 Optional store paths (mirrored from rust2xml, gated on repo/org variables):
 
 | Var | Effect |
