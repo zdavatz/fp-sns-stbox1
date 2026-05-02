@@ -68,11 +68,10 @@ jobs:
             # libxkbcommon / fontconfig / GL — out of scope for v1.
             # The CLI-only `stbox-viz` still builds fine cross-compiled.
             gui: false
-          - target: x86_64-apple-darwin
-            os: macos-13
-            archive: tar.gz
-            binary-suffix: ""
-            gui: true
+          # Intel Mac dropped — every Mac shipped since late 2020 is
+          # Apple Silicon, the macos-13 runner queue is unreliable, and
+          # the universal-DMG path has been replaced with an aarch64-
+          # only DMG below in `macos-store`.
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
@@ -238,10 +237,11 @@ jobs:
           retention-days: 30
 
   # --- macOS store / DMG bundle ----------------------------------------
-  # Builds a universal `MovementLogger.app`, signs it with the Developer
-  # ID Application identity for a notarized DMG, and (if Apple API key
-  # secrets are present) signs it again with the Apple Distribution
-  # identity for a Mac App Store .pkg uploaded via altool /
+  # Builds the aarch64 (Apple Silicon) `MovementLogger.app`, signs it
+  # with the Developer ID Application identity for a notarized DMG, and
+  # (if Apple API key secrets are present) signs it again with the
+  # Apple Distribution identity for a Mac App Store .pkg uploaded via
+  # altool /
   # iTMSTransporter.
   #
   # Gated on `vars.MACOS_STORE_ENABLED == 'true'`. Without that flag
@@ -255,11 +255,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: Utilities/rust
-          key: macos-universal
+          key: macos-aarch64
 
       - name: resolve version
         id: vars
@@ -275,21 +275,11 @@ jobs:
           echo "tag=$tag"           >> "$GITHUB_OUTPUT"
           echo "version=$version"   >> "$GITHUB_OUTPUT"
 
-      - name: build universal MovementLogger + stbox-viz
+      - name: build aarch64 MovementLogger + stbox-viz
         shell: bash
         run: |
           set -euo pipefail
           cargo build --release --target aarch64-apple-darwin -p movement-logger -p stbox-viz
-          cargo build --release --target x86_64-apple-darwin  -p movement-logger -p stbox-viz
-          mkdir -p target/release
-          lipo -create \
-            target/aarch64-apple-darwin/release/MovementLogger \
-            target/x86_64-apple-darwin/release/MovementLogger \
-            -output target/release/MovementLogger-universal
-          lipo -create \
-            target/aarch64-apple-darwin/release/stbox-viz \
-            target/x86_64-apple-darwin/release/stbox-viz \
-            -output target/release/stbox-viz-universal
 
       - name: assemble MovementLogger.app
         shell: bash
@@ -299,8 +289,8 @@ jobs:
           app="target/release/MovementLogger.app"
           rm -rf "$app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-          cp target/release/MovementLogger-universal "$app/Contents/MacOS/MovementLogger"
-          cp target/release/stbox-viz-universal      "$app/Contents/MacOS/stbox-viz"
+          cp target/aarch64-apple-darwin/release/MovementLogger "$app/Contents/MacOS/MovementLogger"
+          cp target/aarch64-apple-darwin/release/stbox-viz      "$app/Contents/MacOS/stbox-viz"
           chmod +x "$app/Contents/MacOS/MovementLogger" "$app/Contents/MacOS/stbox-viz"
 
           tmp_iconset="$(mktemp -d)/icon.iconset"
@@ -390,7 +380,7 @@ jobs:
           hdiutil create -volname "MovementLogger" \
             -srcfolder "$staging" \
             -ov -format UDZO \
-            "MovementLogger-${version}-macos-universal.dmg"
+            "MovementLogger-${version}-macos-aarch64.dmg"
           rm -rf "$staging"
 
       - name: notarize DMG (only if Developer ID signed it)
@@ -403,7 +393,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.vars.outputs.version }}"
-          dmg="MovementLogger-${version}-macos-universal.dmg"
+          dmg="MovementLogger-${version}-macos-aarch64.dmg"
           mkdir -p ~/.private_keys
           echo "$APPLE_API_KEY_P8" | base64 --decode \
             > ~/.private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
@@ -418,7 +408,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
-          path: Utilities/rust/MovementLogger-*-macos-universal.dmg
+          path: Utilities/rust/MovementLogger-*-macos-aarch64.dmg
           if-no-files-found: ignore
 
       - name: build + sign + upload Mac App Store .pkg
