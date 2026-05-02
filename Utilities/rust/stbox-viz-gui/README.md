@@ -35,6 +35,25 @@ Drop multiple files at once — the classifier routes each to the right slot.
 | FPS | `--fps` | Default 15. |
 | Output folder | `-o` | Default `gif/` next to where MovementLogger was launched. |
 
+## BLE FileSync panel (download from STBoxSync)
+
+A collapsible **BLE FileSync** section sits between the file summary and the animation parameters. It talks to a SensorTile.box running the `SDDataLogFileX` firmware (which advertises as `STBoxSync` with PIN-secure pairing — see the firmware's [BLE FileSync section](../../../README.md#ble-filesync--download-sd-card-files-over-bluetooth-sddatalogfilex) for the wire protocol).
+
+Workflow:
+
+1. **Scan** — 5 s scan, lists every `STBoxSync` peripheral with RSSI.
+2. **Connect** — first time the OS pops a Bluetooth permission prompt and a pairing dialog (PIN `123456`).
+3. **Refresh file list** — sends LIST, populates a checklist with `name + size + checkbox` rows. All rows are pre-ticked.
+4. **Download selected** — for each ticked file: sends READ, accumulates raw bytes until the LIST size is reached, writes to the chosen output folder (default `csv/`). Files matching `Sens*.csv` or `*_gps.csv` auto-route into the form's Sensor / GPS slots so you can hit Generate without re-dragging.
+5. **STOP_LOG** — needed if the box is mid-session; READ refuses to read currently-open log files with `BUSY`.
+
+Architecture: `src/ble.rs` runs a tokio current-thread runtime on its own worker thread. Commands and events shuttle across `std::sync::mpsc` channels. A single notification stream is opened on connect and demuxed into the active op (LIST / READ / DELETE) by a `select!` loop, so notifies never get lost between op boundaries. A 20 s watchdog tick wakes the loop frequently enough to surface a stuck transfer instead of spinning forever.
+
+Platform notes:
+- **macOS**: needs Bluetooth consent. The bundled `.app` carries `NSBluetoothAlwaysUsageDescription` (Info.plist) and the App-Sandbox build adds `com.apple.security.device.bluetooth` (entitlements-appstore.plist). A bare `cargo run` on a fresh user account may not trigger the prompt and `btleplug` will silently report no adapter — install the `.app` for the consent flow.
+- **Linux**: BlueZ via DBus; user must be in the `bluetooth` group.
+- **Windows**: WinRT BLE, no extra setup.
+
 ## How the binaries are wired
 
 The GUI is intentionally thin: it builds a `stbox-viz animate …` command line, spawns it as a child process, streams stdout/stderr into the live log panel, and lets the user cancel mid-run.

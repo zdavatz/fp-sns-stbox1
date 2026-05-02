@@ -91,6 +91,7 @@ Each application follows the same layout:
 - `STBOX1_UPDATE_ENV` / `STBOX1_UPDATE_INV` — sensor polling intervals (timer ticks)
 - `STBOX1_LOG_AUDIO` (SDDataLogFileX only) — gates all `BSP_AUDIO_IN_*` calls and `.wav` file creation. Default `0`. Set to `1` only on unmodified hardware. On the 3.3V-modded board `BSP_AUDIO_IN_Init` blocks with no return, which hangs `fx_thread` mid-START_LOG before it can write sensor or GPS samples. Keep it off unless you actively need the on-board microphone.
 - `STBOX1_LOG_BATTERY` (SDDataLogFileX only) — gates the STC3115 fuel-gauge path and `BatNNN.csv` file creation. Default `1`. Gauge init (`BSP_GG_Init`) runs once per boot on first START_LOG; I²C failure is non-fatal — writes a marker to the error log and skips battery logging for the remainder of the boot, without taking sensor/GPS logging down. Set to `0` only if the STC3115 ever hangs the way the MIC did on hardware-modified boards.
+- `STBOX1_ENABLE_BLE_SYNC` (SDDataLogFileX only) — gates the BLE FileSync stack (advertising + GATT + ThreadX BLE thread). Default `1`. Set to `0` to remove ~28 KB flash + 4.5 KB BSS; the rest of the logger is byte-identical and the `BleSync_ThreadX_Init()` call from `App_ThreadX_Init` becomes a no-op returning `TX_SUCCESS`.
 
 **I²C4 timing investigation for STC3115 (24.4.2026)**: the ST v1.6.0 → v2.0.0 update replaced the I²C4 timing `0xA040184A` (~145 kHz at PCLK1=160 MHz, explicitly chosen to stay under the STC3115's 400 kHz Fast-Mode ceiling) with `0x00F07BFF` (~421 kHz) across all four I²C instances. The 421 kHz value is above the STC3115 Fast-Mode spec, so we reverted `MX_I2C4_Init` in `Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_bus.c` only (I2C1/2/3 keep the newer timing since the MEMS sensors there are Fast-Mode Plus capable). **The revert alone did not fix the failure** — Peter's 24.4.2026 13:26 field test on the reverted build still logged `gas gauge init FAIL`, falsifying the timing hypothesis. The safer timing stays in place, but the real root cause is elsewhere. See the diagnostic probe below.
 
@@ -189,6 +190,39 @@ The firmware parses only `$GNRMC` and `$GNGGA` sentences. All other NMEA sentenc
 Validated on Peter's 23.4.2026 15:11 UTC test with `build Apr 23 2026 17:04:49`: 82 701 sensor rows over 826 s, of which 82 320 at Δtick = 1 (100 Hz) + 368 at Δtick = 0 (same-tick burst-writes) — no Δtick = 13 runs anywhere in the file. GPS held 10 Hz (7 543 fixes at Δtick = 10, 336 at Δtick = 20 from occasional dropped fixes, 1 × 1.3 s gap). Sustained 100 Hz sensor + 10 Hz GPS across 13.8 minutes — the starvation is gone.
 
 Data collected via the ST BLE Sensor app uses a slightly different format (date/time columns instead of raw ms timestamp).
+
+## BLE FileSync — download SD-card files over Bluetooth (SDDataLogFileX)
+
+The SDDataLogFileX firmware advertises as `STBoxSync` with PIN-secure pairing (PIN `123456`) and exposes a tiny custom GATT service so the host can download recorded files without removing the SD card. Two characteristics live under the BlueST features service (`00000000-0001-11e1-9ab4-0002a5d5c51b`):
+
+| Characteristic | UUID | Properties |
+|---|---|---|
+| FileCmd  | `00000080-0010-11e1-ac36-0002a5d5c51b` | write w/o response |
+| FileData | `00000040-0010-11e1-ac36-0002a5d5c51b` | notify |
+
+Opcodes (one byte + optional payload — payload is the filename without trailing NUL):
+
+| Opcode | Meaning | FileData reply |
+|---|---|---|
+| `0x01` LIST | enumerate SD root | `name,size\n` rows + single `\n` terminator |
+| `0x02` READ `<name>` | stream file body | raw bytes; total length matches the LIST size |
+| `0x03` DELETE `<name>` | drop file | single status byte |
+| `0x04` STOP_LOG | gracefully close active session | no FileData reply (host re-checks via LIST) |
+
+Status bytes used by READ/DELETE replies: `0x00` OK, `0xB0` BUSY (logging in progress, send STOP_LOG first), `0xE1` NOT_FOUND, `0xE2` IO_ERROR, `0xE3` BAD_REQUEST. READ and DELETE are rejected with `BUSY` while a `Sens*.csv` or `Gps*.csv` is open for writing — host calls STOP_LOG first to flush the active session.
+
+**Firmware-side architecture** (all under `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/`):
+
+- `Core/Src/ble_sync.c` — owns one ThreadX thread (priority 14, below the FileX writer at 12 and the GPS thread at 11 so SD bandwidth always wins). Calls `bluetooth_init()` once, then loops `if (hci_event) { hci_event=0; hci_user_evt_proc(); } BleFileSync_Tick(); tx_thread_sleep(1);`. The Tick is what advances the LIST/READ state machine without blocking the HCI event pump.
+- `Core/Src/ble_filesync.c` — the FileCmd/FileData characteristics + the `CurrentOp` state machine. On notify congestion `aci_gatt_srv_notify` returns INSUFFICIENT_RESOURCES; we don't drop bytes — the LIST stays in `ST_LIST_EMIT` and the READ rewinds the file cursor with `fx_file_relative_seek(SEEK_BACK)`, both retry on next Tick.
+- `Core/Src/ble_implementation.c`, `ble_function.c` — minimal X-CUBE-BLEMGR glue (mandatory globals + `set_board_name` + connection/pair callbacks + the ext-config callbacks for the flags we leave on in `ble_implementation.h`).
+- `Core/Src/ble_spi.c`, `hci_tl_interface.c` — isolated SPI1 driver bypassing the shared `Drivers/BSP/SensorTileBoxPro/` BSP entirely (the BLEDualProgram BSP and the SDDataLogFileX BSP both export the same `BSP_*` symbols, so they can't coexist — bypassing the BSP for the BLE link sidesteps the collision and keeps the stack debuggable in isolation).
+- `Core/inc/RTE_Components.h`, `ble_manager_conf.h`, `stm32wb07_06_conf.h`, `ble_list_utils.h` — config headers expected by the X-CUBE-BLEMGR + STM32WB07_06 middleware. Copied from BLEDualProgram and trimmed for our use.
+- `FileX/App/app_filex.c` — adds two public hooks: `Ble_RequestStopLog()` posts `COMMAND_STOP_LOG` into `MessageQueue` via a dedicated static `MessageData_t` (separate from the read-thread ring buffer to avoid races); `Ble_IsLoggingActive()` returns whether `SensorsFileOpen || GpsFileOpen` so the BUSY guard can decide.
+
+Build cost: text +28.7 KB / bss +4.5 KB vs the no-BLE build. Gated on `STBOX1_ENABLE_BLE_SYNC 1` in `Core/inc/stbox1_config.h` (default on); flip to `0` to remove the entire stack.
+
+The most ergonomic way to use this is the MovementLogger GUI's BLE FileSync panel (see "MovementLogger GUI" below). For ad-hoc poking, any generic GATT client works — write `01` to FileCmd, watch FileData stream the listing.
 
 ## Visualization
 
@@ -342,6 +376,18 @@ Cross-platform (Win/Mac/Linux) drag-and-drop wrapper around `stbox-viz animate`.
 - Top-right of the title strip: the app logo, drawn as a frameless `egui::ImageButton` that opens `mailto:<support>` via `ctx.open_url(OpenUrl::new_tab("mailto:..."))`. Bake the PNG into the binary with `include_bytes!("../assets/icon.png")`, decode once with `image::load_from_memory` (default-features off, only `png` enabled), and lazy-upload to `ctx.load_texture` on the first frame. Reuse the same PNG bytes in `egui::IconData` passed to `ViewportBuilder::with_icon` so the OS chrome / Dock / taskbar carry the logo too.
 
 Workspace at `Utilities/rust/Cargo.toml` lists `stbox-viz` and `stbox-viz-gui` as members. The vendored `Utilities/rust/winit-patched/` is `exclude`d from the workspace (it ships its own workspace) and wired in via `[patch.crates-io] winit = { path = "winit-patched" }`. **The Mac App Store winit patch from the workspace `CLAUDE.md` is required** — eframe → winit 0.30 calls `_CGSSetWindowBackgroundBlurRadius` (private CoreGraphics) which Apple's binary scanner rejects. The fork's patch replaces `Window::set_blur` with a no-op and comments out the now-unused `NSInteger`/`AnyObject` imports in `ffi.rs` so `RUSTFLAGS=-Dwarnings` doesn't trip on them. Verify after every release build: `nm target/release/MovementLogger | grep CGSSetWindowBackgroundBlur` must return nothing. **eframe must stay on 0.29 or newer**: 0.28 drags in winit 0.29 alongside 0.30, the patch only matches the 0.30 path, and the private symbol slips back into the binary through the unpatched 0.29 dep.
+
+### BLE FileSync panel (v0.1.4+)
+
+Collapsible "BLE FileSync" section in the central panel — talks to a SensorTile.box running the SDDataLogFileX firmware (see "BLE FileSync — download SD-card files over Bluetooth" above for the wire protocol). Workflow: Scan (5 s) → click STBoxSync → Connect (OS pops Bluetooth permission + PIN dialog, PIN `123456`) → Refresh file list → tick rows → Download selected. Files saved to `csv/` (configurable). `Sens*.csv` and `*_gps.csv` auto-route into the form's Sensor / GPS slots so the user can hit Generate without re-dragging.
+
+Backend lives in `src/ble.rs`. Uses `btleplug` (cross-platform: CoreBluetooth on macOS, BlueZ on Linux, WinRT on Windows) on a tokio current-thread runtime that lives on a single dedicated worker thread. `std::sync::mpsc` channels shuttle commands and events to/from the egui side. **One notification stream per connection, not per op** — opened on `Connect`, demuxed inside a `tokio::select!` between the command channel and the stream itself. Per-op streams (`p.notifications().await` per LIST/READ) risk losing the first packet if the box notifies before the `await` is parked. A 200 ms watchdog tick wakes the loop frequently enough to surface a stuck transfer instead of spinning.
+
+Status-byte detection on READ: only treat a single-byte first notify as an error when the byte is in `{0xB0, 0xE1, 0xE2, 0xE3}` (`is_status_byte`). A 1-byte CSV/log file (whose lone byte is plain ASCII) streams correctly because no legitimate file ever starts with one of those high-range bytes.
+
+Disconnect mid-op: tearing down the peripheral surfaces an explicit error like `READ Sens005.csv aborted by disconnect at 1234/5678 B` and sets state back to Idle — no orphan worker spinning on a dead stream.
+
+macOS specifics: the bundled `.app` carries `NSBluetoothAlwaysUsageDescription` (`assets/Info.plist.template`) and the App-Sandbox build adds `com.apple.security.device.bluetooth` (`entitlements-appstore.plist`). A bare `cargo run` on a fresh user account may not trigger the consent prompt and `btleplug` will silently report no adapter — install the `.app` for the proper permission flow.
 
 ### Releases
 

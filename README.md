@@ -163,6 +163,30 @@ File timestamps: FileX has no RTC, so `UpdateFileXClock()` seeds the FAT date/ti
 
 The error log also contains stage markers from START_LOG: `sens header written`, `gps header written`, and (if audio is enabled) `mic init begin` / `mic init ok` / `mic init FAIL`. A hang during boot leaves the last successful marker visible on the SD, which makes it trivial to localize which init step is the problem.
 
+### BLE FileSync — download SD-card files over Bluetooth (SDDataLogFileX)
+
+The SDDataLogFileX firmware advertises as **`STBoxSync`** with PIN-secure pairing (PIN `123456`) and exposes a tiny custom GATT service for downloading recorded files without removing the SD card. Two characteristics live under the BlueST features service (`00000000-0001-11e1-9ab4-0002a5d5c51b`):
+
+| Characteristic | UUID | Properties |
+|---|---|---|
+| FileCmd  | `00000080-0010-11e1-ac36-0002a5d5c51b` | write w/o response |
+| FileData | `00000040-0010-11e1-ac36-0002a5d5c51b` | notify |
+
+Opcodes (one byte + optional payload — payload is the filename without trailing NUL):
+
+| Opcode | Meaning | FileData reply |
+|---|---|---|
+| `0x01` LIST | enumerate SD root | one ASCII line per file `name,size\n`, terminator `\n` |
+| `0x02` READ `<name>` | stream file body | raw bytes; total length matches the LIST size |
+| `0x03` DELETE `<name>` | drop file | single status byte |
+| `0x04` STOP_LOG | gracefully close active session | no FileData reply (host re-checks via LIST) |
+
+Status bytes used by READ/DELETE replies: `0x00` OK, `0xB0` BUSY (logging in progress, send STOP_LOG first), `0xE1` NOT_FOUND, `0xE2` IO_ERROR, `0xE3` BAD_REQUEST. READ and DELETE are rejected with `BUSY` while a `Sens*.csv` or `Gps*.csv` is open for writing.
+
+The easiest way to use this is the `MovementLogger` GUI's **BLE FileSync** panel — see [its README](Utilities/rust/stbox-viz-gui/README.md). For ad-hoc poking, any generic GATT client (nRF Connect on iOS/Android, LightBlue on macOS) works: write `01` to FileCmd, watch FileData stream the listing.
+
+The feature is gated on `STBOX1_ENABLE_BLE_SYNC 1` in `Core/inc/stbox1_config.h` (default on). Set it to `0` to remove the entire BLE stack and reclaim ~28 KB of flash.
+
 ### Firmware Update via SD Card
 
 The firmware can be updated without BLE, JTAG, or ST-Link — just the SD card:
@@ -310,4 +334,4 @@ This software release is compatible with:
 This repo also ships two companion tools for working with the data the firmware writes to the SD card:
 
 - **`stbox-viz`** — Rust CLI that turns `SensNNN.csv` + `GpsNNN.csv` into interactive Plotly HTML, sensor PNGs, pump-cadence spectrograms, and animated session videos. Source at `Utilities/rust/stbox-viz/`.
-- **`MovementLogger`** — cross-platform (Win/Mac/Linux) drag-and-drop GUI front-end for `stbox-viz animate`. Drop sensor CSV + GPS + camera footage, fill in a handful of optional fields, click Generate. Source at `Utilities/rust/stbox-viz-gui/` — see [its README](Utilities/rust/stbox-viz-gui/README.md). Tagged releases (`vX.Y.Z`) produce binaries for Linux, macOS (Intel + Apple Silicon, with a `.app` bundle and an optional notarized DMG) and Windows via `.github/workflows/release.yml`.
+- **`MovementLogger`** — cross-platform (Win/Mac/Linux) drag-and-drop GUI front-end for `stbox-viz animate`, with a built-in **BLE FileSync** panel (v0.1.4+) that scans for `STBoxSync`, lists SD-card files over BLE and downloads them straight into the form's drop zone — no card swap. Source at `Utilities/rust/stbox-viz-gui/` — see [its README](Utilities/rust/stbox-viz-gui/README.md). Tagged releases (`vX.Y.Z`) produce binaries for Linux, macOS (Intel + Apple Silicon, with a `.app` bundle and an optional notarized DMG) and Windows via `.github/workflows/release.yml`.
