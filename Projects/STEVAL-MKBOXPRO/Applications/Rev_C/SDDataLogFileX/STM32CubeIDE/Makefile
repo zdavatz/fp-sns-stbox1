@@ -48,7 +48,12 @@ INCLUDES = \
   -I$(ROOT)/Drivers/BSP/Components/lis2mdl \
   -I$(ROOT)/Drivers/BSP/Components/lps22df \
   -I$(ROOT)/Drivers/BSP/Components/stts22h \
-  -I$(ROOT)/Drivers/BSP/Components/stc3115
+  -I$(ROOT)/Drivers/BSP/Components/stc3115 \
+  -I$(ROOT)/Middlewares/ST/STM32_BLE_Manager/Inc \
+  -I$(ROOT)/Middlewares/ST/STM32WB07_06/utils \
+  -I$(ROOT)/Middlewares/ST/STM32WB07_06/includes \
+  -I$(ROOT)/Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic \
+  -I$(ROOT)/Middlewares/Third_Party/parson
 
 CFLAGS = $(CPU) $(DEFS) $(INCLUDES) -O2 -Wall -Wno-format -fdata-sections -ffunction-sections -g3
 
@@ -62,7 +67,26 @@ TARGET = SDDataLogFileX
 C_SOURCES = \
   $(APP)/Core/Src/main.c \
   $(APP)/Core/Src/app_threadx.c \
+  $(APP)/Core/Src/ble_spi.c \
+  $(APP)/Core/Src/ble_sync.c \
+  $(APP)/Core/Src/ble_implementation.c \
+  $(APP)/Core/Src/ble_function.c \
+  $(APP)/Core/Src/ble_filesync.c \
+  $(APP)/Core/Src/hci_tl_interface.c \
   $(APP)/Core/Src/gps_nmea.c \
+  $(ROOT)/Middlewares/Third_Party/parson/parson.c \
+  $(ROOT)/Middlewares/ST/STM32_BLE_Manager/Src/ble_manager.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/utils/ble_list.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/hci_parser.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic/hci_tl.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/stm32wb07_06_dev_config.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/stm32wb07_06_events.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/stm32wb07_06_events_cb.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/stm32wb07_06_hci_le.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/controller/stm32wb07_06_gap_aci.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/controller/stm32wb07_06_gatt_aci.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/controller/stm32wb07_06_hal_aci.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/controller/stm32wb07_06_l2cap_aci.c \
   $(APP)/Core/Src/stm32u5xx_hal_msp.c \
   $(APP)/Core/Src/stm32u5xx_hal_timebase_tim.c \
   $(APP)/Core/Src/stm32u5xx_it.c \

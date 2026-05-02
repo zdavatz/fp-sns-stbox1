@@ -1,6 +1,6 @@
 [package]
 name = "movement-logger"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "MovementLogger — drag-and-drop GUI front-end for stbox-viz animate. SensorTile.box pumpfoil session video generator."
 license = "GPL-3.0-only"
@@ -26,6 +26,16 @@ chrono = "0.4"
 # logo. Default-features off to avoid pulling JPEG/TIFF/etc. — we only
 # ever load the PNG that's baked in via include_bytes!.
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# BLE backend for the FileSync panel (download Sens/Gps/Bat/log files
+# from the SensorTile.box without swapping the SD card). btleplug uses
+# CoreBluetooth on macOS, BlueZ on Linux, WinRT on Windows — runs on a
+# tokio runtime that lives on a single worker thread so the egui UI
+# stays sync. `time` for connection timeouts, `sync` for `Mutex`.
+btleplug = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+futures = "0.3"
+uuid = "1"
 
 # Build-time icon embedding for Windows .exe (so explorer / taskbar
 # show the MovementLogger icon without an MSIX wrapper). No-op on other

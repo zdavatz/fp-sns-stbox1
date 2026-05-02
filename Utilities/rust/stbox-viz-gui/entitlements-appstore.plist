@@ -19,5 +19,10 @@
          output-folder picker also works). -->
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
+    <!-- Bluetooth LE access for the FileSync panel (scan + connect to
+         STBoxSync, read SD-card files over GATT). Required under the
+         App Sandbox; the system shows a one-time consent prompt. -->
+    <key>com.apple.security.device.bluetooth</key>
+    <true/>
 </dict>
 </plist>

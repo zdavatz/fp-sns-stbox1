@@ -1015,6 +1015,29 @@ void BSP_PB_Callback(Button_TypeDef Button)
 }
 
 /**
+  * @brief  Post a STOP_LOG message into the FileX writer queue from the
+  *         BLE thread. Owned MessageData_t (separate from the read-thread
+  *         ring buffer) keeps button + BLE stops from racing on the same
+  *         storage. Idempotent — second call while already stopped is a
+  *         no-op because COMMAND_STOP_LOG is itself idempotent.
+  * @retval None
+  */
+void Ble_RequestStopLog(void)
+{
+  static MessageData_t  ble_stop_msg;
+  static MessageData_t *ble_stop_msg_ptr = &ble_stop_msg;
+  ble_stop_msg.CommandType = COMMAND_STOP_LOG;
+  /* Don't block the BLE thread; if the queue is momentarily full, the
+     host can resend STOP_LOG on the next opcode. */
+  (void)tx_queue_send(&MessageQueue, &ble_stop_msg_ptr, TX_NO_WAIT);
+}
+
+int Ble_IsLoggingActive(void)
+{
+  return (SensorsFileOpen || GpsFileOpen) ? 1 : 0;
+}
+
+/**
   * @brief  Build error log filename from compile date
   *         Format: Error_Log_Pump_Tsueri_dd.mm.yyyy.log
   * @param  buf: output buffer (at least 45 bytes)

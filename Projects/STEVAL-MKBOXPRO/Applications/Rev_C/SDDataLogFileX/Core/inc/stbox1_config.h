@@ -65,6 +65,14 @@ extern "C" {
    MIC did on hardware-modified boards. */
 #define STBOX1_LOG_BATTERY 1
 
+/* BLE file-sync service (lets the host download SensNNN.csv / GpsNNN.csv /
+   BatNNN.csv / Error_Log_*.log over BLE — no SD-card swap). Default off
+   while the BlueNRG-LP middleware is being wired up incrementally; flip
+   to 1 once ble_sync.c carries the real GATT service + thread.
+   When 0, the BLE thread is never spawned and BleSync_ThreadX_Init()
+   compiles to a no-op so the existing logger build is unaffected. */
+#define STBOX1_ENABLE_BLE_SYNC 1
+
 #define STTS22H_ODR 1.0f /* ODR = 1.0Hz */
 #define ISM330DHCX_ACC_ODR 104.0f /* ODR = 104Hz */
 #define ISM330DHCX_ACC_FS 4 /* FS = 4g */

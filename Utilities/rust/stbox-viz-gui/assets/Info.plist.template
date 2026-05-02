@@ -34,5 +34,10 @@
     <true/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <!-- macOS BLE consent prompt text. Shown the first time the
+         FileSync panel scans for STBoxSync; without this string the
+         CoreBluetooth call returns "denied" silently. -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>MovementLogger uses Bluetooth to scan for the SensorTile.box (STBoxSync) and download recorded sensor / GPS / battery files from its SD card.</string>
 </dict>
 </plist>

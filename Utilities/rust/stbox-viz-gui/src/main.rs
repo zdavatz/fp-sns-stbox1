@@ -14,6 +14,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ble;
+
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,6 +24,8 @@ use std::sync::{
     mpsc, Arc, Mutex,
 };
 use std::thread;
+
+use ble::{BleBackend, BleCmd, BleEvent};
 
 /// Bundled-into-binary 512×512 PNG. The build pipeline already
 /// generates this file at the canonical asset path; including it as
@@ -91,7 +95,50 @@ struct AppState {
     /// Cached GPU texture for the top-right logo. Lazily uploaded on
     /// first frame so the egui context is available.
     icon_tex: Option<egui::TextureHandle>,
+
+    // ----- BLE FileSync state -------------------------------------------
+    /// Worker-thread backend. Lazily spawned on first BLE button click
+    /// so the tokio runtime doesn't start unless the user actually opens
+    /// the panel.
+    ble: Option<BleBackend>,
+    /// Discovered STBoxSync peripherals from the most recent scan.
+    ble_devices: Vec<BleDevice>,
+    /// Connection lifecycle state — drives which buttons are enabled.
+    ble_state: BleState,
+    /// File listing returned by the most recent LIST. Each row carries
+    /// a checkbox the user can flip before hitting "Download selected".
+    ble_files: Vec<BleFile>,
+    /// One-line status badge (last `Status`/`Error` event from the worker).
+    ble_status: String,
+    /// Where downloaded files land. Defaults to a `csv/` subfolder so
+    /// they slot straight into the existing visualisation path.
+    ble_out_dir: PathBuf,
 }
+
+#[derive(Clone, Debug)]
+struct BleDevice {
+    id: String,
+    name: String,
+    rssi: Option<i16>,
+}
+
+#[derive(Clone, Debug)]
+struct BleFile {
+    name: String,
+    size: u64,
+    selected: bool,
+    downloaded: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BleState {
+    Idle,
+    Scanning,
+    Connecting,
+    Connected,
+}
+
+impl Default for BleState { fn default() -> Self { BleState::Idle } }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mount {
@@ -364,17 +411,262 @@ fn push_log(log: &Arc<Mutex<Vec<String>>>, line: String) {
 
 impl AppState {
     fn new() -> Self {
-        let output_dir = std::env::current_dir()
-            .map(|d| d.join("gif"))
-            .unwrap_or_else(|_| PathBuf::from("gif"));
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let output_dir = cwd.join("gif");
+        let ble_out_dir = cwd.join("csv");
         Self {
             output_dir,
+            ble_out_dir,
             tz_offset_h: 3.0,
             fps: 15,
             ..Self::default()
         }
     }
 
+    fn ensure_ble(&mut self) -> &BleBackend {
+        if self.ble.is_none() {
+            self.ble = Some(BleBackend::spawn());
+        }
+        self.ble.as_ref().unwrap()
+    }
+
+    /// Drain pending BLE events into the visible state. Called once per
+    /// frame; egui repaints on a timer while a BLE op is in progress so
+    /// events don't sit in the channel for long.
+    fn pump_ble_events(&mut self) {
+        let Some(b) = self.ble.as_ref() else { return; };
+        let events = b.try_recv_all();
+        for e in events {
+            match e {
+                BleEvent::Status(s) => self.ble_status = s,
+                BleEvent::Discovered { id, name, rssi } => {
+                    if !self.ble_devices.iter().any(|d| d.id == id) {
+                        self.ble_devices.push(BleDevice { id, name, rssi });
+                    }
+                }
+                BleEvent::ScanStopped => {
+                    self.ble_state = BleState::Idle;
+                    self.ble_status = format!("scan done ({} found)", self.ble_devices.len());
+                }
+                BleEvent::Connected => {
+                    self.ble_state = BleState::Connected;
+                    self.ble_status = "connected".into();
+                }
+                BleEvent::Disconnected => {
+                    self.ble_state = BleState::Idle;
+                    self.ble_files.clear();
+                    self.ble_status = "disconnected".into();
+                }
+                BleEvent::ListEntry { name, size } => {
+                    self.ble_files.push(BleFile {
+                        name, size, selected: true, downloaded: false,
+                    });
+                }
+                BleEvent::ListDone => {
+                    self.ble_status = format!("listing done ({} files)", self.ble_files.len());
+                }
+                BleEvent::ReadStarted { name, size } => {
+                    self.ble_status = format!("reading {name} ({size} B)…");
+                }
+                BleEvent::ReadProgress { name, bytes_done } => {
+                    self.ble_status = format!("reading {name}: {bytes_done} B");
+                }
+                BleEvent::ReadDone { name, content } => {
+                    match save_downloaded_file(&self.ble_out_dir, &name, &content) {
+                        Ok(path) => {
+                            self.ble_status = format!("saved {} ({} B)", path.display(), content.len());
+                            for f in self.ble_files.iter_mut() {
+                                if f.name == name { f.downloaded = true; }
+                            }
+                            // Auto-route into the existing animate
+                            // pipeline so the user can immediately hit
+                            // Generate without re-dragging.
+                            self.auto_route_downloaded(&name, &path);
+                            push_log(&self.log, format!("ble: saved {}", path.display()));
+                        }
+                        Err(e) => {
+                            self.ble_status = format!("save failed: {e}");
+                            push_log(&self.log, format!("ble error: {e}"));
+                        }
+                    }
+                }
+                BleEvent::Error(msg) => {
+                    self.ble_status = format!("error: {msg}");
+                    push_log(&self.log, format!("ble error: {msg}"));
+                    if matches!(self.ble_state, BleState::Scanning | BleState::Connecting) {
+                        self.ble_state = BleState::Idle;
+                    }
+                }
+            }
+        }
+    }
+
+    /// If the saved file is a Sens*.csv or matching _gps.csv, set it on
+    /// the top-of-form slots so the user doesn't need to hit Pick…
+    fn auto_route_downloaded(&mut self, name: &str, path: &Path) {
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with("_gps.csv") {
+            self.gps_csv = Some(path.into());
+        } else if lower.starts_with("sens") && lower.ends_with(".csv") {
+            self.sensor_csv = Some(path.into());
+            if self.gps_csv.is_none() {
+                self.gps_csv = guess_gps_for(path);
+            }
+        }
+    }
+}
+
+/// Save a downloaded file under `dir`, creating the directory if
+/// needed. Returns the resolved destination path.
+fn save_downloaded_file(dir: &Path, name: &str, content: &[u8]) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(name);
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
+impl AppState {
+    fn ui_ble_panel(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("BLE FileSync (download from STBoxSync)")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Scan, connect (PIN 123456), list SD files, download.",
+                    )
+                    .small()
+                    .color(egui::Color32::from_gray(180)),
+                );
+                ui.add_space(4.0);
+
+                // ----- Action buttons -------------------------------
+                ui.horizontal(|ui| {
+                    let scanning  = matches!(self.ble_state, BleState::Scanning | BleState::Connecting);
+                    let connected = matches!(self.ble_state, BleState::Connected);
+                    if ui
+                        .add_enabled(!scanning && !connected, egui::Button::new("Scan"))
+                        .clicked()
+                    {
+                        self.ble_devices.clear();
+                        self.ble_state = BleState::Scanning;
+                        let b = self.ensure_ble();
+                        b.send(BleCmd::Scan);
+                    }
+                    if ui
+                        .add_enabled(connected, egui::Button::new("Refresh file list"))
+                        .clicked()
+                    {
+                        self.ble_files.clear();
+                        if let Some(b) = self.ble.as_ref() { b.send(BleCmd::List); }
+                    }
+                    if ui
+                        .add_enabled(connected, egui::Button::new("STOP_LOG"))
+                        .on_hover_text("Tells the box to gracefully close any active session — required before READ if logging is busy")
+                        .clicked()
+                    {
+                        if let Some(b) = self.ble.as_ref() { b.send(BleCmd::StopLog); }
+                    }
+                    if ui
+                        .add_enabled(connected, egui::Button::new("Disconnect"))
+                        .clicked()
+                    {
+                        if let Some(b) = self.ble.as_ref() { b.send(BleCmd::Disconnect); }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if !self.ble_status.is_empty() {
+                            ui.label(
+                                egui::RichText::new(&self.ble_status)
+                                    .small()
+                                    .color(egui::Color32::LIGHT_BLUE),
+                            );
+                        }
+                    });
+                });
+
+                // ----- Discovered devices --------------------------
+                if !self.ble_devices.is_empty()
+                    && !matches!(self.ble_state, BleState::Connected)
+                {
+                    ui.add_space(4.0);
+                    ui.label("Discovered:");
+                    let devices = self.ble_devices.clone();
+                    for d in devices {
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "{} [{}]",
+                                d.name,
+                                d.rssi.map(|r| format!("{r} dBm")).unwrap_or_else(|| "?".into())
+                            ));
+                            if ui.button("Connect").clicked() {
+                                self.ble_state = BleState::Connecting;
+                                self.ble_status = "connecting…".into();
+                                if let Some(b) = self.ble.as_ref() {
+                                    b.send(BleCmd::Connect(d.id.clone()));
+                                }
+                            }
+                        });
+                    }
+                }
+
+                // ----- File list / download ------------------------
+                if matches!(self.ble_state, BleState::Connected) {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Save to:");
+                        let mut s = self.ble_out_dir.display().to_string();
+                        if ui.text_edit_singleline(&mut s).changed() {
+                            self.ble_out_dir = PathBuf::from(s);
+                        }
+                        if ui.button("Browse…").clicked() {
+                            if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                                self.ble_out_dir = p;
+                            }
+                        }
+                    });
+
+                    if self.ble_files.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No file list yet — hit Refresh.")
+                                .small()
+                                .color(egui::Color32::from_gray(170)),
+                        );
+                    } else {
+                        ui.add_space(4.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(160.0)
+                            .id_salt("ble-file-list")
+                            .show(ui, |ui| {
+                                for f in self.ble_files.iter_mut() {
+                                    ui.horizontal(|ui| {
+                                        ui.checkbox(&mut f.selected, "");
+                                        ui.label(format!("{:>10} B  {}", f.size, f.name));
+                                        if f.downloaded {
+                                            ui.colored_label(egui::Color32::LIGHT_GREEN, "✓");
+                                        }
+                                    });
+                                }
+                            });
+
+                        ui.add_space(4.0);
+                        if ui.button("Download selected").clicked() {
+                            if let Some(b) = self.ble.as_ref() {
+                                for f in self.ble_files.iter() {
+                                    if f.selected && !f.downloaded {
+                                        b.send(BleCmd::Read {
+                                            name: f.name.clone(),
+                                            size: f.size,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+    }
+}
+
+impl AppState {
     fn ingest_dropped(&mut self, files: &[egui::DroppedFile]) {
         for f in files {
             let Some(path) = f.path.as_ref() else { continue };
@@ -418,6 +710,10 @@ impl eframe::App for AppState {
             self.ingest_dropped(&dropped);
         }
         let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
+
+        // Drain BLE worker events into AppState before laying out the
+        // UI so the FileSync panel renders the latest state every frame.
+        self.pump_ble_events();
 
         // Lazy-load the in-app logo on the first frame after the egui
         // context becomes available.
@@ -512,6 +808,11 @@ impl eframe::App for AppState {
                     file_row(ui, "Board STL", &mut self.board_stl, &[("STL", &["stl"])]);
                     ui.end_row();
                 });
+
+            ui.separator();
+
+            // ----- BLE FileSync panel ---------------------------------
+            self.ui_ble_panel(ui);
 
             ui.separator();
 
@@ -669,6 +970,16 @@ impl eframe::App for AppState {
         }
         if self.running.load(Ordering::SeqCst) {
             self.last_status = None;
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+        }
+
+        // Same idea for BLE: while a scan / connect / list / read is in
+        // flight or has just emitted progress, keep the UI ticking so
+        // the status badge updates without waiting on user input.
+        if matches!(
+            self.ble_state,
+            BleState::Scanning | BleState::Connecting | BleState::Connected
+        ) {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
     }
