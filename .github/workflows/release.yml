@@ -108,13 +108,16 @@ jobs:
           linker = "aarch64-linux-gnu-gcc"
           EOF
 
-      # eframe needs xkbcommon + fontconfig headers on Linux x86_64.
+      # eframe needs xkbcommon + fontconfig + GL headers on Linux x86_64,
+      # and btleplug (BLE FileSync) pulls in libdbus-sys for the BlueZ
+      # backend → libdbus-1-dev. Without it the build dies in
+      # libdbus-sys-0.2.7 with "Package dbus-1 was not found".
       - name: install Linux GUI build deps
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         working-directory: .
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libfontconfig1-dev libgl1-mesa-dev
+          sudo apt-get install -y libxkbcommon-dev libfontconfig1-dev libgl1-mesa-dev libdbus-1-dev
 
       - name: cargo build --release (CLI only)
         if: matrix.gui == false
