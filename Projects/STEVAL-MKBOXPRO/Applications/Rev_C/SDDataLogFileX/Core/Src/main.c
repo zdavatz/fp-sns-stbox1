@@ -54,6 +54,7 @@
 #include "SensorTileBoxPro_env_sensors.h"
 #include "SensorTileBoxPro_motion_sensors.h"
 #include "gps_nmea.h"
+#include "buzzer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -169,7 +170,13 @@ int main(void)
   /* Init Mems Sensors */
   InitMemsSensors();
   BootStageBlink(3);
-  
+
+  /* Audible "boot complete" indicator on the piezo (PE13 / TIM1_CH3).
+     Two short ascending tones (~240 ms total) right before ThreadX takes
+     over. Useful in the field where the LED isn't always visible. */
+  Buzzer_Init();
+  Buzzer_BootDone();
+
   /* USER CODE END 2 */
 
   MX_ThreadX_Init();
