@@ -30,7 +30,15 @@ extern "C" {
 
 #define USE_MEMORY_POOL_ALLOCATION               1
 
-#define TX_APP_MEM_POOL_SIZE                     1024
+/* 8 KB covers the BLE sync thread's 4 KB stack plus tx_byte_pool overhead
+ * with comfortable headroom. The original 1 KB was sized for an empty
+ * App_ThreadX_Init that allocated nothing — when the 4 KB BLE thread was
+ * added, tx_byte_allocate silently returned NO_MEMORY, App_ThreadX_Init
+ * propagated the error, and app_azure_rtos.c hit its `while(1){}` BEFORE
+ * tx_kernel_enter, so no thread (including fx_thread) ever ran. The
+ * symptom was 3 green BootStageBlinks then dark forever, with the SD
+ * card completely empty. */
+#define TX_APP_MEM_POOL_SIZE                     (1024*8)
 
 /* 14 KB covers fx_thread (4 KB) + read_thread (4 KB) + gps_thread (2 KB) +
  * MessageQueue (~400 B) + tx_byte_pool overhead. 10 KB was too tight after

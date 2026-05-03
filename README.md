@@ -187,7 +187,7 @@ The easiest way to use this is the `MovementLogger` GUI's **BLE FileSync** panel
 
 A reader-friendly walkthrough of the protocol + firmware/GUI architecture (with per-platform download links to the latest GUI release) is at [**Documentation/BLE_FileSync.pdf**](Documentation/BLE_FileSync.pdf). Send to field testers via `~/software/pegelstand/whatsapp/send-doc.mjs <jid> Documentation/BLE_FileSync.pdf "<caption>"`. Update `BLE_FileSync.html` and re-render the PDF whenever the wire protocol or download links change.
 
-The feature is gated on `STBOX1_ENABLE_BLE_SYNC 1` in `Core/inc/stbox1_config.h` (default on). Set it to `0` to remove the entire BLE stack and reclaim ~28 KB of flash. The no-BLE build is also useful as a diagnostic when a fresh box's boot blink sequence completes (1/2/3 green) but the LED then goes dark with both an empty SD card *and* no `STBoxSync` advertisement — see CLAUDE.md ("Reserve-box bisect") for the full rationale.
+The feature is gated on `STBOX1_ENABLE_BLE_SYNC 1` in `Core/inc/stbox1_config.h` (default on). Set it to `0` to remove the entire BLE stack and reclaim ~28 KB of flash. The no-BLE build is also useful as a diagnostic when a fresh box's boot blink sequence completes (1/2/3 green) but the LED then goes dark with both an empty SD card *and* no `STBoxSync` advertisement — see CLAUDE.md ("Reserve-box bisect") for the full rationale. The first reported case of that symptom (3.5.2026) was traced to `TX_APP_MEM_POOL_SIZE` being too small for the BLE thread's stack, fixed by bumping it from 1 KB to 8 KB in `AZURE_RTOS/App/app_azure_rtos_config.h`.
 
 ### Firmware Update via SD Card
 
