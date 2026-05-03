@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BLE FileSync — how the SensorTile.box ↔ MovementLogger sync works</title>
+<style>
+  @page { size: A4; margin: 22mm 20mm; }
+  body { font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+         font-size: 10.5pt; line-height: 1.45; color: #222; }
+  h1 { font-size: 18pt; margin: 0 0 4pt 0; }
+  h2 { font-size: 13pt; margin: 16pt 0 6pt 0; border-bottom: 1px solid #ccc; padding-bottom: 2pt; }
+  h3 { font-size: 11pt; margin: 12pt 0 4pt 0; }
+  p { margin: 4pt 0 6pt 0; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5pt;
+         background: #f3f3f3; padding: 1px 4px; border-radius: 3px; }
+  pre  { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9pt;
+         background: #f6f6f6; padding: 8pt 10pt; border-radius: 4px;
+         border: 1px solid #e3e3e3; overflow-x: auto; line-height: 1.35; }
+  ul { margin: 4pt 0 6pt 18pt; padding: 0; }
+  li { margin: 2pt 0; }
+  table { border-collapse: collapse; margin: 6pt 0 8pt 0; font-size: 10pt; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 4pt 7pt; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; }
+  .meta { color: #666; font-size: 9.5pt; margin-bottom: 12pt; }
+  .note { background: #fff8e1; border-left: 3px solid #f0b400; padding: 6pt 10pt;
+          margin: 8pt 0; font-size: 10pt; }
+  .arrow { color: #888; }
+</style>
+</head>
+<body>
+
+<h1>BLE FileSync</h1>
+<p class="meta">How the SensorTile.box hands SD-card files to MovementLogger over Bluetooth — short technical breakdown. v0.1.4+ firmware, MovementLogger v0.1.4+. May 2026.</p>
+
+<h2>Why</h2>
+<p>Before BLE FileSync the only way to get sensor / GPS / battery / error-log files off the box was popping the SD card and plugging it into a reader. In the field that means screwdriver out, lose the tiny screws on the boat, swap card, screw back. BLE FileSync removes that round-trip: open the GUI, scan, connect once with a PIN, download what you want.</p>
+
+<h2>The two pieces</h2>
+<table>
+  <tr><th>Side</th><th>Where</th><th>What it does</th></tr>
+  <tr>
+    <td>Firmware</td>
+    <td><code>Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Core/Src/ble_*.c</code></td>
+    <td>Brings up the BlueNRG-LP, advertises as <code>STBoxSync</code>, registers two custom GATT characteristics, parses opcodes, walks the SD card, streams file bytes back over notifications.</td>
+  </tr>
+  <tr>
+    <td>GUI</td>
+    <td><code>Utilities/rust/stbox-viz-gui/src/ble.rs</code> + the new "BLE FileSync" panel in <code>main.rs</code></td>
+    <td>btleplug + tokio worker thread. Scan / connect / send opcodes / collect notifies / save files to disk. Auto-routes downloaded CSVs into the existing animate form.</td>
+  </tr>
+</table>
+
+<h2>Wire protocol</h2>
+<p>Two characteristics, both under the BlueST features service that the X-CUBE-BLEMGR middleware already registers:</p>
+<table>
+  <tr><th>Characteristic</th><th>UUID</th><th>Properties</th></tr>
+  <tr><td>FileCmd</td><td><code>00000080-0010-11e1-ac36-0002a5d5c51b</code></td><td>write w/o response</td></tr>
+  <tr><td>FileData</td><td><code>00000040-0010-11e1-ac36-0002a5d5c51b</code></td><td>notify</td></tr>
+</table>
+
+<p>Opcodes (one byte + optional payload — payload is the filename without trailing NUL):</p>
+<table>
+  <tr><th>Opcode</th><th>Meaning</th><th>FileData reply</th></tr>
+  <tr><td><code>0x01</code> LIST</td><td>enumerate SD root</td><td>one ASCII line per file <code>name,size\n</code>, terminator <code>\n</code></td></tr>
+  <tr><td><code>0x02</code> READ &lt;name&gt;</td><td>stream file body</td><td>raw bytes; total length matches the LIST size</td></tr>
+  <tr><td><code>0x03</code> DELETE &lt;name&gt;</td><td>drop file</td><td>single status byte</td></tr>
+  <tr><td><code>0x04</code> STOP_LOG</td><td>gracefully close active session</td><td>none — host re-checks via LIST</td></tr>
+</table>
+
+<p>Status bytes used by READ / DELETE replies: <code>0x00</code> OK, <code>0xB0</code> BUSY, <code>0xE1</code> NOT_FOUND, <code>0xE2</code> IO_ERROR, <code>0xE3</code> BAD_REQUEST. READ and DELETE are rejected with <code>BUSY</code> while a <code>Sens*.csv</code> or <code>Gps*.csv</code> is open for writing — host calls STOP_LOG first.</p>
+
+<h2>Firmware-side architecture</h2>
+<p>One ThreadX thread at priority 14 owns the BLE stack. Below the FileX writer (12) and the GPS thread (~11) so SD bandwidth and GPS line assembly always win — BLE never starves the logger.</p>
+
+<pre>// Core/Src/ble_sync.c — the entire BLE thread loop
+for (;;)
+{
+    if (hci_event) { hci_event = 0; hci_user_evt_proc(); }
+    BleFileSync_Tick();           // advance LIST / READ state machine
+    tx_thread_sleep(1);           // 10 ms
+}</pre>
+
+<p>The opcode handler (<code>ble_filesync.c</code>) is a small state machine. <code>write_request_filecmd()</code> runs inside the HCI callback, parses the opcode, sets the next state. <code>BleFileSync_Tick()</code> runs at thread priority outside the callback and does the work — FileX directory walks, file reads, notify writes — so the HCI event pump never blocks. On notify congestion we don't drop bytes: LIST stays in <code>ST_LIST_EMIT</code> and READ rewinds with <code>fx_file_relative_seek(SEEK_BACK)</code>, both retry on the next tick.</p>
+
+<p>Module map:</p>
+<ul>
+  <li><code>ble_sync.c</code> — owns the ThreadX thread; calls <code>bluetooth_init()</code> once then loops the HCI / Tick pair shown above.</li>
+  <li><code>ble_filesync.c</code> — the FileCmd/FileData characteristics + the LIST / READ / DELETE / STOP_LOG state machine.</li>
+  <li><code>ble_implementation.c</code>, <code>ble_function.c</code> — minimal X-CUBE-BLEMGR glue (mandatory globals + <code>set_board_name</code> + connection / pair callbacks).</li>
+  <li><code>ble_spi.c</code>, <code>hci_tl_interface.c</code> — isolated SPI1 driver bypassing the shared <code>SensorTileBoxPro</code> BSP. The BLEDualProgram BSP and the SDDataLogFileX BSP both export the same <code>BSP_*</code> symbols and can't coexist; bypassing the BSP for the BLE link sidesteps the collision and keeps the stack debuggable in isolation.</li>
+  <li><code>FileX/App/app_filex.c</code> — gains two public hooks: <code>Ble_RequestStopLog()</code> posts <code>COMMAND_STOP_LOG</code> into the FileX writer's <code>MessageQueue</code>; <code>Ble_IsLoggingActive()</code> tells the BUSY guard whether <code>SensorsFileOpen</code> or <code>GpsFileOpen</code>.</li>
+</ul>
+
+<p>Build cost vs the no-BLE build: text +28.7 KB, BSS +4.5 KB. Gated on <code>STBOX1_ENABLE_BLE_SYNC 1</code> in <code>stbox1_config.h</code> (default on); flip to 0 to remove the entire stack.</p>
+
+<h2>GUI-side architecture</h2>
+<p>The egui UI is sync, btleplug is async — bridge with one tokio current-thread runtime on a dedicated worker thread. Commands and events shuttle across two <code>std::sync::mpsc</code> channels. The UI drains events on every frame; the worker awaits inside the runtime.</p>
+
+<p>The key design decision: <strong>one notification stream per connection, not per op.</strong> btleplug's <code>Peripheral::notifications()</code> returns a stream from "subscription start". Opening a fresh one per LIST / READ risks losing the first row / chunk if the box notifies before the <code>await</code> is parked. So the stream is opened once on connect and demuxed inside a single <code>tokio::select!</code> over the command channel + the stream + a 200 ms watchdog tick:</p>
+
+<pre>tokio::select! {
+    cmd   = arx.recv()      => state.handle_command(cmd).await,
+    notif = stream.next()   => state.handle_notification(notif).await,
+    _     = &amp;mut watchdog   => state.tick_watchdog(),
+}</pre>
+
+<p>Notifications get dispatched into whichever op is in flight (<code>CurrentOp::Listing</code> / <code>CurrentOp::Reading</code> / <code>CurrentOp::Idle</code>). Disconnect mid-op tears down the peripheral and surfaces an explicit error like <code>READ Sens005.csv aborted by disconnect at 1234/5678 B</code> — no orphan worker spinning on a dead stream. The watchdog wakes every 200 ms so a real 20 s notify drought (link drop, stuck firmware) surfaces a timeout error instead of hanging.</p>
+
+<p>READ status-byte detection is a small but important detail: a single-byte first notify is only treated as an error when the byte is in <code>{0xB0, 0xE1, 0xE2, 0xE3}</code>. A 1-byte CSV / log file (whose lone byte is plain ASCII well below 0x80) streams correctly because no legitimate file ever starts with one of those high-range status codes.</p>
+
+<h2>UI flow</h2>
+<p>Collapsible "BLE FileSync" panel between the file summary and the animation parameters:</p>
+<ol>
+  <li><strong>Scan</strong> — 5 s scan, lists every <code>STBoxSync</code> peripheral with RSSI.</li>
+  <li><strong>Connect</strong> — first time the OS pops a Bluetooth permission prompt and a pairing dialog (PIN <code>123456</code>).</li>
+  <li><strong>Refresh file list</strong> — sends LIST, populates a checklist of <code>name + size + checkbox</code>. All rows pre-ticked.</li>
+  <li><strong>Download selected</strong> — for each ticked file: send READ, accumulate raw bytes until the LIST size is reached, write to the chosen output folder (default <code>csv/</code>).</li>
+  <li>Files matching <code>Sens*.csv</code> or <code>*_gps.csv</code> auto-route into the form's Sensor / GPS slots so the user can hit Generate without re-dragging.</li>
+  <li><strong>STOP_LOG</strong> — needed if the box is mid-session; READ refuses to read currently-open log files with <code>BUSY</code>.</li>
+</ol>
+
+<h2>Platform notes</h2>
+<ul>
+  <li><strong>macOS</strong>: needs Bluetooth consent. The bundled <code>.app</code> carries <code>NSBluetoothAlwaysUsageDescription</code> in <code>Info.plist</code>, and the App-Sandbox build adds <code>com.apple.security.device.bluetooth</code> in the entitlements plist. A bare <code>cargo run</code> on a fresh user account may not trigger the prompt and btleplug will silently report no adapter — install the <code>.app</code> for the consent flow.</li>
+  <li><strong>Linux</strong>: BlueZ via DBus; user must be in the <code>bluetooth</code> group. The release workflow apt-installs <code>libdbus-1-dev</code> for btleplug's BlueZ backend.</li>
+  <li><strong>Windows</strong>: WinRT BLE, no extra setup.</li>
+</ul>
+
+<div class="note"><strong>Relation to the SD-card update path:</strong> BLE FileSync only <em>reads</em> from the card (and optionally DELETEs). Firmware updates still go via DFU (preferred) or by dropping <code>firmware.bin</code> on the SD root — those paths haven't changed.</div>
+
+</body>
+</html>
