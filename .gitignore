@@ -31,3 +31,7 @@ png/video_frames/
 whatsapp/auth/
 whatsapp/node_modules/
 whatsapp/package-lock.json
+
+# Rust workspace build artefacts
+Utilities/rust/target/
+Utilities/rust/*/target/

@@ -52,7 +52,16 @@ extern "C" {
 UINT MX_FileX_Init(VOID *memory_ptr);
 
 /* USER CODE BEGIN EFP */
+/* Posts a STOP_LOG message into the FileX writer's queue. Called from the
+   BLE thread when the host sends a STOP_LOG opcode — mirrors what the
+   user button does, but routes through a dedicated static MessageData_t
+   so concurrent button + BLE stops don't share a buffer. */
+void Ble_RequestStopLog(void);
 
+/* Returns non-zero while any log file (Sens/Gps) is currently open for
+   writing. The BUSY guard in ble_filesync rejects READ/DELETE on those
+   files so the FAT doesn't get pulled out from under the writer. */
+int  Ble_IsLoggingActive(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

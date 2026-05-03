@@ -163,6 +163,30 @@ File timestamps: FileX has no RTC, so `UpdateFileXClock()` seeds the FAT date/ti
 
 The error log also contains stage markers from START_LOG: `sens header written`, `gps header written`, and (if audio is enabled) `mic init begin` / `mic init ok` / `mic init FAIL`. A hang during boot leaves the last successful marker visible on the SD, which makes it trivial to localize which init step is the problem.
 
+### BLE FileSync — download SD-card files over Bluetooth (SDDataLogFileX)
+
+The SDDataLogFileX firmware advertises as **`STBoxSync`** with PIN-secure pairing (PIN `123456`) and exposes a tiny custom GATT service for downloading recorded files without removing the SD card. Two characteristics live under the BlueST features service (`00000000-0001-11e1-9ab4-0002a5d5c51b`):
+
+| Characteristic | UUID | Properties |
+|---|---|---|
+| FileCmd  | `00000080-0010-11e1-ac36-0002a5d5c51b` | write w/o response |
+| FileData | `00000040-0010-11e1-ac36-0002a5d5c51b` | notify |
+
+Opcodes (one byte + optional payload — payload is the filename without trailing NUL):
+
+| Opcode | Meaning | FileData reply |
+|---|---|---|
+| `0x01` LIST | enumerate SD root | one ASCII line per file `name,size\n`, terminator `\n` |
+| `0x02` READ `<name>` | stream file body | raw bytes; total length matches the LIST size |
+| `0x03` DELETE `<name>` | drop file | single status byte |
+| `0x04` STOP_LOG | gracefully close active session | no FileData reply (host re-checks via LIST) |
+
+Status bytes used by READ/DELETE replies: `0x00` OK, `0xB0` BUSY (logging in progress, send STOP_LOG first), `0xE1` NOT_FOUND, `0xE2` IO_ERROR, `0xE3` BAD_REQUEST. READ and DELETE are rejected with `BUSY` while a `Sens*.csv` or `Gps*.csv` is open for writing.
+
+The easiest way to use this is the `MovementLogger` GUI's **BLE FileSync** panel — see [its README](Utilities/rust/stbox-viz-gui/README.md). For ad-hoc poking, any generic GATT client (nRF Connect on iOS/Android, LightBlue on macOS) works: write `01` to FileCmd, watch FileData stream the listing.
+
+The feature is gated on `STBOX1_ENABLE_BLE_SYNC 1` in `Core/inc/stbox1_config.h` (default on). Set it to `0` to remove the entire BLE stack and reclaim ~28 KB of flash.
+
 ### Firmware Update via SD Card
 
 The firmware can be updated without BLE, JTAG, or ST-Link — just the SD card:
@@ -204,6 +228,8 @@ Rust crate at `Utilities/rust/stbox-viz/` — single binary, no Python/venv requ
     --title "PumpGraph Mirco" --subtitle "ONIX Albatross 1160"
 ```
 
+A reader-friendly walkthrough of the full fusion pipeline — which sensor inputs go into Madgwick, why the magnetometer is dropped, and what each downstream consumer does with the quaternion / baro / GPS streams — is at [**Documentation/Sensor_Fusion.pdf**](Documentation/Sensor_Fusion.pdf).
+
 `combined` runs Madgwick 6DOF fusion on raw acc/gyro, detects rides from sustained GPS movement (≥3 km/h, ≥10 s, merged across <30 s gaps), anchors the baro water reference at GPS-stationary samples with temperature compensation, and emits a Plotly HTML using the CDN JS. 23-minute session → 1.2 MB HTML in ~10 s. The HTML opens on the **first ride** by default; a button bar above the chart (`Ride 1` / `Ride 2` / …) swaps between rides — each button updates the map (only that ride's GPS trace is drawn), the shared x-axis range of the time-series panels, and the map centre + zoom. There's deliberately no "All rides" button: showing every on-shore GPS point at once drowned out the actual action, and the full-session x-axis made the time-series panels extend past where any ride actually happened.
 
 The speed panel uses an **acceleration-gated** position-derived speed (haversine on GPS lat/lon deltas). Samples where `|Δspeed|/Δt > 15 km/h/s` (≈4 m/s²) and `v > 15 km/h` are rejected as multipath-induced position jumps before the 5 s rolling median. SUPfoil paddle strokes produce 1–3 m/s², anything above ~4 m/s² implies a ≥4 m position jump inside the module's ~5–10 m horizontal-error envelope. Measured effect on the 22.4.2026 Ermioni session: raw max 83.7 km/h → after gate 29.5 km/h → after smoothing 17.6 km/h. Without the gate the 5 s median alone couldn't suppress 30 km/h multipath spikes.
@@ -227,6 +253,13 @@ Cross-panel inspection: hovering shows a vertical spike line through every panel
 | `--sensor-offset SEC` | `animate` | start time in GIF |
 | `--title TEXT` | `animate` | title card (green, bold, 2 s intro) |
 | `--subtitle TEXT` | `animate` | subtitle (light blue) |
+| `--at HH:MM[:SS]` | `animate` | render one GIF for an exact wall-clock window (bypasses pitch-oscillation session detection) |
+| `--tz-offset-h H` | `animate` | UTC offset for `--at` (3 = EEST/Greek summer, 2 = CEST) |
+| `--date YYYY-MM-DD` | `animate` | recording date for `--at` (defaults to sensor file mtime) |
+| `--duration SEC` | `animate` | length of the `--at` window (default = video duration if `--video`, else 60 s) |
+| `--auto-skip` | `animate` | skip carry/transition seconds before pumping starts |
+| `--dock-height-m H` | `animate` | dock height above water for the height panel (Ermioni harbour wall = 0.75) |
+| `--board-stl FILE` | `animate` | render the side-view panel as a 3D rotating mesh (`/Users/zdavatz/software/fingerfoil/stl/0_combined.stl` is canonical) instead of a 2D line |
 
 CSV column names from the on-device firmware (both `Time [mS]` legacy and the current `Time [10ms]`) are auto-detected. GPS CSV is picked up automatically as `<stem>_gps.csv` next to the sensor CSV.
 
@@ -295,3 +328,10 @@ This software release is compatible with:
 
 - [**ST BLE Sensor Android application**](https://play.google.com/store/apps/details?id=com.st.bluems)  V5.0.0 (or higher)
 - [**ST BLE Sensor iOS application**](https://apps.apple.com/it/app/st-ble-sensor/id993670214)  V5.0.0 (or higher)
+
+## Companion desktop tooling
+
+This repo also ships two companion tools for working with the data the firmware writes to the SD card:
+
+- **`stbox-viz`** — Rust CLI that turns `SensNNN.csv` + `GpsNNN.csv` into interactive Plotly HTML, sensor PNGs, pump-cadence spectrograms, and animated session videos. Source at `Utilities/rust/stbox-viz/`.
+- **`MovementLogger`** — cross-platform (Win/Mac/Linux) drag-and-drop GUI front-end for `stbox-viz animate`, with a built-in **BLE FileSync** panel (v0.1.4+) that scans for `STBoxSync`, lists SD-card files over BLE and downloads them straight into the form's drop zone — no card swap. Source at `Utilities/rust/stbox-viz-gui/` — see [its README](Utilities/rust/stbox-viz-gui/README.md). Tagged releases (`vX.Y.Z`) produce binaries for Linux x86_64, macOS Apple Silicon (with a `.app` bundle and a fully-notarized + stapled DMG — works offline from v0.1.6 onwards) and Windows x86_64 via `.github/workflows/release.yml`. Intel Mac was dropped after v0.1.5; v0.1.5 and earlier DMGs are also unsigned (no Apple secrets were configured on the repo before v0.1.6) — start from v0.1.6 if Gatekeeper rejects an older download.

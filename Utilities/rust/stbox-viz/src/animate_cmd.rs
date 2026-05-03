@@ -15,6 +15,7 @@
 //! side-by-side MOV next to camera footage.
 
 use crate::baro;
+use crate::board3d;
 use crate::butter::{butter4_lowpass, filtfilt};
 use crate::euler::quats_to_euler_deg;
 use crate::fusion;
@@ -53,6 +54,13 @@ pub struct AnimateArgs<'a> {
     /// heights so that dock-anchored windows display dock = +dock_h,
     /// water = 0, foiling = actual lift. 0 by default.
     pub dock_height_m: f64,
+    /// Optional binary-STL of the board mesh. When provided, the side-
+    /// view panel renders a 3D-rotated mesh instead of the 2D line.
+    pub board_stl: Option<&'a std::path::Path>,
+    /// Where the IMU is physically mounted on the board. Picks
+    /// `R_mount`, the camera angle, and the accel-only-tilt
+    /// pre-flip path. Default is mast.
+    pub mount: board3d::MountKind,
 }
 
 pub fn run(args: &AnimateArgs) -> Result<()> {
@@ -72,6 +80,19 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
 
     let sample_hz: usize = 100;
 
+    // Optional 3D-board-mesh load. Only used in the side-view panel.
+    // We keep it Option<board3d::Mesh> so the line-fallback path
+    // works unchanged for users who don't pass --board-stl.
+    let board_mesh: Option<board3d::Mesh> = if let Some(stl) = args.board_stl {
+        println!("loading board STL {} (3D side-view enabled, mount={:?})",
+                 stl.display(), args.mount);
+        let m = board3d::Mesh::load_binary_stl(stl, args.mount)?;
+        println!("  {} triangles", m.tris.len());
+        Some(m)
+    } else {
+        None
+    };
+
     // Nose angle for animation: 0.7 Hz Butterworth + 10 s baseline.
     // Pump frequency on this hardware is ~0.5 Hz. With a 0.7 Hz cutoff
     // the pump fundamental sits well inside the passband (~5 % loss)
@@ -89,8 +110,9 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
     // session; the --at mode slices it later. Fails gracefully if no
     // GPS CSV is next to the sensor file.
     let base_ticks_session = samples[0].ticks;
-    let (height_full, speed_at_sensor, gps_lat_full, gps_lon_full, gps_t_full):
-        (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) = {
+    let (height_full, speed_at_sensor, gps_lat_full, gps_lon_full, gps_t_full,
+         yaw_full_rad):
+        (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f32>) = {
         let gps_path = guess_gps_path(args.sensor_csv);
         if let Some(gp) = gps_path {
             let mut gps_rows = load_gps_csv(&gp)?;
@@ -153,11 +175,124 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             let height_offset: Vec<f64> = if args.dock_height_m != 0.0 {
                 height.iter().map(|h| h + args.dock_height_m).collect()
             } else { height };
-            (height_offset, speed_aligned, lats, lons, gps_t_s)
+            // Per-sample yaw from GPS course-over-ground when speed
+            // > 4 km/h (Ayano's data: pumping starts at ~4 km/h, foiling
+            // sustains 13–20 km/h). Below threshold, hold the last
+            // good value — board doesn't significantly rotate while
+            // it's being carried/parked. Only used when --board-stl
+            // is given.
+            let courses: Vec<f64> = gps_rows.iter().map(|g| g.course_deg).collect();
+            let yaw_rad = board3d::yaw_from_gps(
+                &sensor_t_s, &gps_t_s, &courses, &smooth, 4.0);
+            (height_offset, speed_aligned, lats, lons, gps_t_s, yaw_rad)
         } else {
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
         }
     };
+
+    // Pump count per sample, gated on GPS speed > 4 km/h so carry/
+    // walking/dock impacts don't inflate it. Cumulative count.
+    let pump_count_full: Vec<u32> = {
+        let n = samples.len();
+        if n == 0 { Vec::new() } else {
+            let mag: Vec<f64> = samples.iter()
+                .map(|s| (s.acc[0]*s.acc[0] + s.acc[1]*s.acc[1] + s.acc[2]*s.acc[2]).sqrt())
+                .collect();
+            let half = sample_hz / 2;
+            let mut csum = vec![0.0; n + 1];
+            for i in 0..n { csum[i + 1] = csum[i] + mag[i]; }
+            let dyn_acc: Vec<f64> = (0..n).map(|i| {
+                let lo = i.saturating_sub(half);
+                let hi = (i + half + 1).min(n);
+                mag[i] - (csum[hi] - csum[lo]) / (hi - lo) as f64
+            }).collect();
+            let thresh = 80.0;
+            let refractory: i64 = (sample_hz * 3 / 10) as i64;
+            let mut count = 0u32;
+            let mut last_peak: i64 = -1_000_000;
+            let mut out = vec![0u32; n];
+            for i in 1..n.saturating_sub(1) {
+                let on_water = !speed_at_sensor.is_empty()
+                    && speed_at_sensor[i] > 4.0;
+                if on_water
+                    && dyn_acc[i] > thresh
+                    && dyn_acc[i] > dyn_acc[i-1]
+                    && dyn_acc[i] >= dyn_acc[i+1]
+                    && (i as i64 - last_peak) > refractory
+                {
+                    count += 1;
+                    last_peak = i as i64;
+                }
+                out[i] = count;
+            }
+            if n > 0 { out[n - 1] = count; }
+            out
+        }
+    };
+
+    // 3D-board calibration via a single reference quaternion.
+    //
+    // We pick `q_mount` from a stable foiling moment (GPS speed >
+    // 10 km/h sustained) and treat that quaternion as "the IMU's
+    // orientation when the board is level". For every frame we
+    // compute `q_rel = conj(q_mount) * q_now` — this is the actual
+    // 3-axis rotation of the board *relative to its level pose*,
+    // independent of any IMU-mount-axis confusion.
+    //
+    // Earlier attempts decomposed the quaternion into Tait-Bryan
+    // pitch/roll/yaw or into per-axis Z-components, but those all
+    // require correct assumptions about IMU axis labels — which
+    // turn out to be wrong on this hardware (port_offset = 77°
+    // proved the IMU is mounted with its sensor axes far from where
+    // we expected). Using the full quaternion bypasses the axis-
+    // label question entirely.
+    let q_mount: Option<[f64; 4]> = {
+        let foil_idxs: Vec<usize> = if !speed_at_sensor.is_empty() {
+            speed_at_sensor.iter().enumerate()
+                .filter(|(_, s)| **s > 10.0).map(|(i, _)| i).collect()
+        } else { Vec::new() };
+        if foil_idxs.len() >= 100 {
+            // Average quaternion over the foiling phase. Single-
+            // sample calibration was sensitive to whatever instan-
+            // taneous roll/pitch the rider had at that moment (e.g.
+            // a slight bank during a carve), which polluted the
+            // "level" reference and surfaced as phantom lateral
+            // motion during pumping. Averaging across many samples
+            // washes the per-stroke variation out.
+            //
+            // Quaternions live on the double-cover SO(3) so q and
+            // -q represent the same rotation; before summing we
+            // flip the sign of any sample whose dot-product with
+            // the running average is negative. With samples already
+            // close in orientation (all foiling) this aligns them
+            // to the same hemisphere, so direct component-wise
+            // averaging then renormalising yields a clean mean.
+            let first = quats[foil_idxs[0]];
+            let mut sum = [0.0f64; 4];
+            for &i in &foil_idxs {
+                let q = quats[i];
+                let dot = first[0]*q[0] + first[1]*q[1] + first[2]*q[2] + first[3]*q[3];
+                let s = if dot >= 0.0 { 1.0 } else { -1.0 };
+                sum[0] += s * q[0]; sum[1] += s * q[1];
+                sum[2] += s * q[2]; sum[3] += s * q[3];
+            }
+            let n = (sum[0]*sum[0] + sum[1]*sum[1] + sum[2]*sum[2] + sum[3]*sum[3]).sqrt();
+            let q_avg = if n > 1e-9 {
+                [sum[0]/n, sum[1]/n, sum[2]/n, sum[3]/n]
+            } else {
+                quats[foil_idxs[foil_idxs.len() / 2]]
+            };
+            println!("  3D calibration: q_mount = mean of {} foiling samples = \
+                      [{:.3}, {:.3}, {:.3}, {:.3}]",
+                     foil_idxs.len(), q_avg[0], q_avg[1], q_avg[2], q_avg[3]);
+            Some(q_avg)
+        } else {
+            println!("  3D calibration: no foiling phase (<100 samples > 10 km/h), \
+                      using identity — board appears at IMU's raw orientation");
+            None
+        }
+    };
+    let q_mount_conj = q_mount.map(|q| board3d::quat_conj(&q));
 
     // --at mode: bypass session detection and render exactly one GIF
     // covering [at, at + duration). The window is computed from the
@@ -438,6 +573,83 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             Some(&height_window)
         } else { None };
 
+        // Build a slice of "tilt quaternions" — pitch+roll only,
+        // derived from a low-pass-filtered accelerometer reading.
+        //
+        // Accel-only attitude has a known failure mode: when linear
+        // acceleration is comparable to gravity (e.g. the rider hits
+        // a wave or pump-pushes hard), the accel vector points in a
+        // direction unrelated to "down" and the rendered foil flips
+        // sideways for a frame or two. Smoothing the accel with a
+        // ~0.5 s rolling mean (50 samples at 100 Hz) preserves the
+        // ~1 Hz pump-pitch signal but rejects sub-100-ms linear-
+        // acceleration spikes.
+        //
+        // With deck-mount the chip's +Z faces down, so we pre-flip
+        // accel Y and Z (180° around X) to get a right-side-up
+        // gravity reading before extracting the pitch+roll angles.
+        // Mast-mount has the chip oriented differently and uses the
+        // Madgwick quaternion path directly (no accel pre-flip), so
+        // tilt_quats is only built for the deck branch.
+        let tilt_quats: Vec<fusion::Quat> = if args.mount == board3d::MountKind::Deck {
+            let smooth_window: usize = (sample_hz / 4).max(1); // 0.25 s
+            let half = smooth_window / 2;
+            let n_total = samples.len();
+            let mut acc_smooth: Vec<[f64; 3]> = Vec::with_capacity(n_total);
+            for i in 0..n_total {
+                let lo = i.saturating_sub(half);
+                let hi = (i + half + 1).min(n_total);
+                let mut sx = 0.0; let mut sy = 0.0; let mut sz = 0.0;
+                for j in lo..hi {
+                    sx += samples[j].acc[0];
+                    sy += samples[j].acc[1];
+                    sz += samples[j].acc[2];
+                }
+                let cnt = (hi - lo) as f64;
+                acc_smooth.push([sx / cnt, sy / cnt, sz / cnt]);
+            }
+            // The chip's labelled X is along the box's *short*
+            // dimension (lateral on the board), Y is along the long
+            // dimension = nose-tail. Pitch (nose-up) → AccY, roll
+            // (port-up) → AccX. The unary minuses on ay/az are the
+            // 180°-around-X pre-flip for chip-Z-down deck mount.
+            acc_smooth.iter().map(|a| {
+                let ax = a[0];
+                let ay = -a[1];
+                let az = -a[2];
+                let n = (ax * ax + ay * ay + az * az).sqrt();
+                if n > 1e-9 {
+                    let (ax, ay, az) = (ax / n, ay / n, az / n);
+                    let pitch = (-ay).atan2((ax * ax + az * az).sqrt());
+                    let roll  = ax.atan2(az);
+                    let cp = (pitch * 0.5).cos();
+                    let sp = (pitch * 0.5).sin();
+                    let cr = (roll * 0.5).cos();
+                    let sr = (roll * 0.5).sin();
+                    [cp * cr, cp * sr, sp * cr, -sp * sr]
+                } else {
+                    [1.0, 0.0, 0.0, 0.0]
+                }
+            }).collect()
+        } else {
+            Vec::new()
+        };
+        // Source of per-frame quaternions for the 3D mesh: tilt-only
+        // (deck mount) or full Madgwick (mast mount, where the mesh
+        // path uses `quat_strip_yaw(quat_conj(q))` to drop the gyro-
+        // drifted yaw).
+        let quats_for_3d: &[fusion::Quat] = match args.mount {
+            board3d::MountKind::Deck => &tilt_quats,
+            board3d::MountKind::Mast => &quats,
+        };
+        let quats_slice: Option<&[fusion::Quat]> = if board_mesh.is_some() {
+            Some(&quats_for_3d[at_s..at_e])
+        } else { None };
+        let yaw_slice: Option<&[f32]> = if board_mesh.is_some()
+            && !yaw_full_rad.is_empty()
+        {
+            Some(&yaw_full_rad[at_s..at_e])
+        } else { None };
         render_session_gif(
             &nose_corrected[at_s..at_e],
             0,
@@ -452,6 +664,19 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             map_data,
             water_set_t,
             foil_start_t,
+            board_mesh.as_ref(),
+            quats_slice,
+            q_mount_conj,
+            yaw_slice,
+            // Re-zero the cumulative pump count at at-window start
+            // so the displayed counter starts at 0 for this clip.
+            {
+                let off = pump_count_full[at_s];
+                let pc: Vec<u32> = pump_count_full[at_s..at_e].iter()
+                    .map(|&v| v - off).collect();
+                Some(pc)
+            }.as_deref(),
+            args.mount,
         )?;
         println!("Saved {}", gif_path.display());
 
@@ -504,6 +729,8 @@ pub fn run(args: &AnimateArgs) -> Result<()> {
             None,  // legacy session-detection mode skips the map panel
             None,  // and the phase boundaries
             None,
+            None, None, None, None, None,  // 3D mesh/quats/q_mount/yaw + pump_count — only --at mode
+            args.mount,
         )?;
         println!("Saved {}", gif_path.display());
 
@@ -658,6 +885,10 @@ fn resolve_session_date(arg: Option<&str>, sensor_path: &Path) -> Result<NaiveDa
 fn guess_gps_path(sensor_path: &Path) -> Option<PathBuf> {
     let stem = sensor_path.file_stem()?.to_str()?.to_string();
     let parent = sensor_path.parent()?;
+    if let Some(rest) = stem.strip_prefix("Sens") {
+        let gps = parent.join(format!("Gps{}.csv", rest));
+        if gps.exists() { return Some(gps); }
+    }
     let gps = parent.join(format!("{}_gps.csv", stem));
     if gps.exists() { Some(gps) } else { None }
 }
@@ -760,6 +991,17 @@ fn render_session_gif(
     map: Option<(&[f64], &[f64], &[f64])>,  // (lat, lon, time_s) within window
     water_set_t: Option<f64>,   // seconds when board enters water
     foil_start_t: Option<f64>,  // seconds when foiling begins
+    // 3D side-view inputs. `mesh` + `quats` engage the 3D path;
+    // `q_mount_conj` (when Some) calibrates the mesh to a level
+    // reference; otherwise the line fallback is used.
+    board3d_mesh: Option<&board3d::Mesh>,
+    quats: Option<&[fusion::Quat]>,
+    q_mount_conj: Option<[f64; 4]>,
+    yaw_rad: Option<&[f32]>,
+    // Cumulative pump count per sample, aligned with `nose`. When
+    // None, the displayed Pumps counter shows 0.
+    pump_count: Option<&[u32]>,
+    mount: board3d::MountKind,
 ) -> Result<()> {
     // Subsample so the GIF's wall-clock playback matches the data
     // window exactly. Two pitfalls to avoid:
@@ -813,6 +1055,14 @@ fn render_session_gif(
     let drop_angle = nose[drop_idx];
     let drop_flash_end = drop_time + 2.0;
 
+    // Pump counter consumed from caller. Caller computes peaks in
+    // the dynamic-acceleration magnitude (one peak per pump stroke)
+    // using the full sensor stream and passes the cumulative count
+    // per sample sliced to the at-window.
+    let pump_count_at_sample: Vec<u32> = pump_count
+        .map(|s| s.to_vec())
+        .unwrap_or_else(|| vec![0u32; nose.len()]);
+
     // Scales are computed PER FRAME inside draw_frame from the
     // history-up-to-now slices, so the y-max grows with the trace.
     // Earlier frames get a tight scale that highlights the small early
@@ -827,6 +1077,57 @@ fn render_session_gif(
     let root = BitMapBackend::gif(out_path, (w, h), delay_ms)?
         .into_drawing_area();
 
+    // Push-off frame index + carry-phase yaw offset.
+    //
+    // After push_off (foiling phase) we strip the Madgwick yaw entirely
+    // because the 6DOF fusion has no magnetometer reference and drifts.
+    // Before push_off (carry phase) we use the *full* body-to-world
+    // quaternion so the rendered foil rotates as Ayano turns the board
+    // in his hands while walking.
+    //
+    // To avoid a yaw discontinuity at push_off, we subtract the
+    // body-to-world Z-twist of the quaternion sampled at push_off from
+    // every carry frame. That makes the carry-phase yaw equal zero
+    // at push_off, smoothly matching the stripped foiling yaw.
+    let push_off_idx: Option<usize> = water_set_t.zip(quats).map(|(t, qs)| {
+        ((t * sample_hz as f64).round() as usize).min(qs.len().saturating_sub(1))
+    });
+    let q_twist_pushoff: [f64; 4] = match (push_off_idx, quats) {
+        (Some(idx), Some(qs)) => {
+            let p = board3d::quat_conj(&qs[idx]);
+            let (qw, qz) = (p[0], p[3]);
+            let n = (qw * qw + qz * qz).sqrt();
+            if n > 1e-9 { [qw / n, 0.0, 0.0, qz / n] } else { [1.0, 0.0, 0.0, 0.0] }
+        }
+        _ => [1.0, 0.0, 0.0, 0.0],
+    };
+    let q_twist_pushoff_inv = board3d::quat_conj(&q_twist_pushoff);
+
+    // Carry-phase orientation corrections (applied per-frame
+    // depending on whether the rider is in foil-up or foil-down
+    // sub-pose; see below for the deck-up direction check):
+    //
+    // 1. 180° around the board's pitch axis (body frame). Foil-up
+    //    only — corrects the inverted mast pose so the rendered
+    //    mesh shows deck-up rather than deck-down.
+    //    Under the current mount (board_Y → IMU +Z), the board's
+    //    pitch axis is IMU +Z, so the quaternion is [0, 0, 0, 1].
+    //
+    // 2. 180° around the board's roll axis (body frame). Foil-up
+    //    only — additional correction the rider observed visually:
+    //    after the pitch flip the board still rendered rolled by
+    //    180° vs. the camera footage.
+    //    Roll axis = board +X = IMU +Y, so the quaternion is
+    //    [0, 0, 1, 0].
+    //
+    // 3. 180° around world yaw (Z). Both sub-poses — the gyro-
+    //    integrated yaw is unanchored (GPS course unreliable below
+    //    3 km/h), so the rendered nose tends to face 180° off from
+    //    the rider's actual heading throughout the carry.
+    let q_180_pitch_body: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+    let q_180_roll_body:  [f64; 4] = [0.0, 0.0, 1.0, 0.0];
+    let q_180_yaw_world:  [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+
     println!("  generating {} frames…", n_frames);
     for (frame, &fi) in frame_indices.iter().enumerate() {
         root.fill(&WHITE)?;
@@ -836,6 +1137,71 @@ fn render_session_gif(
         let v_hist = speed_kmh.map(|s| &s[..=fi]);
         let n_abs_hist = nose_abs.map(|s| &s[..=fi]);
         let h_now = height_m.and_then(|s| if s[fi].is_finite() { Some(s[fi]) } else { None });
+        // Per-frame quaternion → mesh rotation.
+        //
+        // The mesh is pre-rotated at load time by the mount transform
+        // `R_mount` (in board3d::Mesh::recentre_unit), so it lives in
+        // the IMU body frame. Madgwick's q is world-to-body, so
+        // conj(q) is body-to-world.
+        //
+        // Phase-dependent yaw handling:
+        //   - Carry phase (fi < push_off_idx): use the FULL body-to-
+        //     world quaternion, with the Z-twist at push_off
+        //     subtracted. This lets the rendered foil yaw with Ayano
+        //     as he turns the board in his hands, while still landing
+        //     at zero yaw at push_off so the transition into foiling
+        //     is seamless.
+        //   - Foiling phase (fi >= push_off_idx): strip the yaw via
+        //     swing-twist decomposition around world Z. Madgwick 6DOF
+        //     yaw drifts (no magnetometer), so we ignore it and let
+        //     the board sit with a fixed heading in the rendered
+        //     scene.
+        let _ = q_mount_conj;
+        let yaw_now = yaw_rad.map(|s| s[fi]);
+        // 3D mesh quaternion. The side-view panel hides the 3D
+        // model entirely until push-off — see the `in_foiling`
+        // gating in draw_frame. Before push-off the Madgwick yaw
+        // has drifted freely (no magnetometer, no GPS course
+        // correction at < 3 km/h), so the rendered carry-phase
+        // orientation isn't trustworthy. We compute a quaternion
+        // here for every frame anyway because the panel falls back
+        // to a "Tragen — keine 3D-Daten" placeholder, and the
+        // value is just unused on those frames.
+        //
+        // For foiling frames: strip the Madgwick yaw via swing-
+        // twist decomposition, leaving only pitch+roll. The board
+        // sits with a fixed heading in the rendered scene; the
+        // side panel cares about pitch/roll, not which way the
+        // nose is pointing.
+        // 3D mesh quaternion. The caller passes accel-only tilt
+        // quaternions (pitch+roll from gravity direction in body
+        // frame, no gyro integration → no yaw drift around the
+        // mast). On top of that we pre-multiply a 180° world-Z
+        // rotation because the STL's nose direction lands at
+        // world-X with the identity tilt quaternion, which puts
+        // the nose toward the camera at -X (= "view from front").
+        // Pre-multiplying by 180°-world-Z rotates the entire
+        // scene around the vertical, putting the nose at world+X
+        // = into the screen for a camera at -X = "view from
+        // behind the tail."
+        let _ = (yaw_now, q_twist_pushoff_inv,
+                 q_180_pitch_body, q_180_roll_body,
+                 push_off_idx, q_mount_conj);
+        let q_rel_now: Option<[f64; 4]> = quats.map(|qs| match mount {
+            // Deck mount: caller passes accel-only tilt quaternions;
+            // pre-multiply 180° world-Z so the STL nose lands at
+            // world+X for a camera at world−X (= "view from behind
+            // the tail").
+            board3d::MountKind::Deck => board3d::quat_mul(&q_180_yaw_world, &qs[fi]),
+            // Mast mount: caller passes Madgwick world-to-body
+            // quaternions. Conjugate to get body-to-world, then
+            // strip the gyro-drifted yaw via swing-twist
+            // decomposition so the rendered foil keeps a fixed
+            // heading (the side-view panel only cares about
+            // pitch+roll).
+            board3d::MountKind::Mast => board3d::quat_strip_yaw(&board3d::quat_conj(&qs[fi])),
+        });
+        let pump_count_now = pump_count_at_sample[fi];
         draw_frame(
             &root,
             &title_line,
@@ -853,6 +1219,11 @@ fn render_session_gif(
             map,
             water_set_t,
             foil_start_t,
+            board3d_mesh,
+            q_rel_now,
+            yaw_now,
+            pump_count_now,
+            mount,
         )?;
         root.present()?;
         if frame % 100 == 0 {
@@ -882,6 +1253,15 @@ fn draw_frame<DB: DrawingBackend>(
     map: Option<(&[f64], &[f64], &[f64])>,
     water_set_t: Option<f64>,
     foil_start_t: Option<f64>,
+    // 3D side-view inputs. When `mesh` is Some AND pitch/roll/yaw are
+    // all Some, the board side-view panel renders a 3D-rasterized
+    // board mesh instead of the 2D line. Otherwise the legacy line
+    // path is used.
+    mesh: Option<&board3d::Mesh>,
+    q_rel_now: Option<[f64; 4]>,
+    yaw_rad_now: Option<f32>,
+    pump_count: u32,
+    mount: board3d::MountKind,
 ) -> Result<(), anyhow::Error>
 where
     DB::ErrorType: 'static,
@@ -1033,32 +1413,116 @@ where
     }
 
     // Board
-    bc.draw_series(std::iter::once(PathElement::new(
-        vec![(tail_x, tail_y), (nose_x, nose_y)],
-        RGBColor(34, 102, 170).stroke_width(10),
-    ))).map_err(|e| anyhow::anyhow!("board: {e:?}"))?;
-    bc.draw_series(std::iter::once(Circle::new(
-        (nose_x, nose_y), 7, RGBColor(220, 20, 20).filled(),
-    ))).map_err(|e| anyhow::anyhow!("nose: {e:?}"))?;
-    bc.draw_series(std::iter::once(Rectangle::new(
-        [(tail_x - 0.03, tail_y - 0.03), (tail_x + 0.03, tail_y + 0.03)],
-        RGBColor(34, 68, 102).filled(),
-    ))).map_err(|e| anyhow::anyhow!("tail: {e:?}"))?;
+    // Board: 3D-rasterized mesh if --board-stl provided, we have
+    // pitch/roll/yaw for this frame, AND either push-off has
+    // happened (foiling, GPS course reliable) OR a fixed early
+    // start time has elapsed (for clips where the rider is
+    // already foiling at the start of the window and push-off is
+    // outside it). The fixed start gives the visualization a
+    // moment to settle (Madgwick gyro convergence + waiting until
+    // the board is clearly on the water before drawing).
+    const SHOW_3D_FROM_S: f64 = 10.5;
+    let after_push_off = water_set_t.map_or(false, |wt| t_now >= wt);
+    let elapsed_enough = t_now >= SHOW_3D_FROM_S;
+    let show_3d_now = after_push_off || elapsed_enough;
+    let render_3d = mesh.is_some() && q_rel_now.is_some() && show_3d_now;
+    if render_3d {
+        let m = mesh.unwrap();
+        // Render the 3D board into a bitmap that fills the entire
+        // board_area panel. We blit directly on `board_area` with
+        // pixel coordinates rather than going via the chart because
+        // plotters' chart-coord-to-pixel mapping for `BitMapElement`
+        // doesn't reliably hit our intended rectangle when the panel
+        // layout has margins + label areas.
+        let (panel_w, panel_h) = board_area.dim_in_pixel();
+        // Build the body-to-world rotation matrix directly from the
+        // calibrated relative quaternion. q_rel = conj(q_mount) *
+        // q_now, so applying it to the level-pose STL mesh produces
+        // the actual board orientation regardless of how the IMU is
+        // mounted inside the SensorTile box. Yaw drift from
+        // Madgwick's 6DOF (no magnetometer) is replaced with GPS
+        // course in a future iteration; for now whatever yaw component
+        // is in q_rel comes through.
+        let q_rel = q_rel_now.unwrap();
+        let _ = angle;
+        let _ = yaw_rad_now;
+        let rot = board3d::quat_to_matrix(&q_rel);
+        let cam = board3d::Camera::iso(mount);
+        let frame = board3d::render_with_matrix(
+            m, rot, &cam, panel_w, panel_h, [34, 102, 170],
+        );
+        // RGBA → RGB. Transparent pixels become white so the bitmap
+        // blends with the surrounding panel background.
+        let mut rgb = vec![255u8; (frame.w * frame.h * 3) as usize];
+        for i in 0..(frame.w * frame.h) as usize {
+            if frame.rgba[i * 4 + 3] != 0 {
+                rgb[i * 3]     = frame.rgba[i * 4];
+                rgb[i * 3 + 1] = frame.rgba[i * 4 + 1];
+                rgb[i * 3 + 2] = frame.rgba[i * 4 + 2];
+            }
+        }
+        if let Some(elem) = plotters::element::BitMapElement::with_owned_buffer(
+            (0i32, 0i32), (frame.w, frame.h), rgb)
+        {
+            board_area.draw(&elem)
+                .map_err(|e| anyhow::anyhow!("board3d blit: {e:?}"))?;
+        }
+    } else if !show_3d_now {
+        // Carry phase: no 3D model, no 2D line. Just the water
+        // surface (already drawn above) plus a centered placeholder
+        // text indicating that 3D data isn't available yet.
+        let (panel_w, panel_h) = board_area.dim_in_pixel();
+        let txt = "Tragen — keine 3D-Daten";
+        board_area.draw(&Text::new(
+            txt.to_string(),
+            ((panel_w as i32) / 2 - 130, (panel_h as i32) / 2 - 12),
+            (FONT, 24).into_font().color(&RGBColor(120, 120, 120)),
+        )).map_err(|e| anyhow::anyhow!("carry placeholder: {e:?}"))?;
+    } else {
+        bc.draw_series(std::iter::once(PathElement::new(
+            vec![(tail_x, tail_y), (nose_x, nose_y)],
+            RGBColor(34, 102, 170).stroke_width(10),
+        ))).map_err(|e| anyhow::anyhow!("board: {e:?}"))?;
+        bc.draw_series(std::iter::once(Circle::new(
+            (nose_x, nose_y), 7, RGBColor(220, 20, 20).filled(),
+        ))).map_err(|e| anyhow::anyhow!("nose: {e:?}"))?;
+        bc.draw_series(std::iter::once(Rectangle::new(
+            [(tail_x - 0.03, tail_y - 0.03), (tail_x + 0.03, tail_y + 0.03)],
+            RGBColor(34, 68, 102).filled(),
+        ))).map_err(|e| anyhow::anyhow!("tail: {e:?}"))?;
+    }
 
-    // Nose angle / time overlays
+    // Nose angle / time / pump overlays. The Nasenwinkel and Pumps
+    // values are meaningless while the rider is still carrying the
+    // board (no foiling motion, the IMU's "pitch" is whatever the
+    // board's hold orientation happens to be), so we suppress them
+    // until push-off. The Zeit clock stays on always.
     let (bw, _bh) = board_area.dim_in_pixel();
-    board_area.draw(&Text::new(
-        format!("Nasenwinkel: {:+.1}°", angle),
-        (30, 70),
-        (FONT, 22).into_font().color(&RGBColor(220, 20, 20)),
-    )).map_err(|e| anyhow::anyhow!("angle_txt: {e:?}"))?;
+    if show_3d_now {
+        board_area.draw(&Text::new(
+            format!("Nasenwinkel: {:+.1}°", angle),
+            (30, 70),
+            (FONT, 22).into_font().color(&RGBColor(220, 20, 20)),
+        )).map_err(|e| anyhow::anyhow!("angle_txt: {e:?}"))?;
+    }
     let tm = (t_now / 60.0) as u32;
     let ts = ((t_now % 60.0) as u32).min(59);
+    let th = ((t_now * 100.0) as u32 % 100).min(99);
     board_area.draw(&Text::new(
-        format!("Zeit: {}:{:02}", tm, ts),
-        (bw as i32 - 180, 40),
+        format!("Zeit: {}:{:02}.{:02}", tm, ts, th),
+        (bw as i32 - 200, 40),
         (FONT, 20).into_font().color(&BLACK),
     )).map_err(|e| anyhow::anyhow!("time_txt: {e:?}"))?;
+    if show_3d_now {
+        // Pump counter — sum of dynamic-acc peaks gated on speed
+        // > 4 km/h. Hidden during carry so it doesn't read as
+        // "0 pumps" while the rider is just walking with the board.
+        board_area.draw(&Text::new(
+            format!("Pumps: {}", pump_count),
+            (bw as i32 - 180, 70),
+            (FONT, 22).into_font().color(&RGBColor(34, 102, 170)),
+        )).map_err(|e| anyhow::anyhow!("pump_txt: {e:?}"))?;
+    }
 
     // Drop-in flash
     if t_now >= drop_time && t_now <= drop_flash_end {
@@ -1196,6 +1660,18 @@ where
         vec![(t_now, -zoom_lim), (t_now, zoom_lim)],
         RGBColor(220, 20, 20).stroke_width(2),
     ))).map_err(|e| anyhow::anyhow!("cursor: {e:?}"))?;
+    // Current value label at top of panel, just right of the cursor.
+    if let Some(val) = nose_hist.iter().rev().find(|v| v.is_finite()).copied() {
+        let plotted = val.clamp(-zoom_lim, zoom_lim);
+        zc.draw_series(std::iter::once(Circle::new(
+            (t_now, plotted), 4, RGBColor(220, 20, 20).filled(),
+        ))).ok();
+        zc.draw_series(std::iter::once(Text::new(
+            format!("{:+.1}°", val),
+            (t_now + 0.2, zoom_lim * 0.78),
+            (FONT, 18).into_font().color(&RGBColor(220, 20, 20)),
+        ))).ok();
+    }
 
     // --- Height-above-water panel (baro, GPS-anchored, TC-corrected) ---
     if let (Some(area), Some(h_data)) = (&height_area, height_hist) {
@@ -1244,6 +1720,19 @@ where
             vec![(t_now, -0.1), (t_now, 0.9)],
             RGBColor(220, 20, 20).stroke_width(2),
         ))).map_err(|e| anyhow::anyhow!("height cursor: {e:?}"))?;
+        // Current value label at top of panel, just right of the cursor.
+        if let Some(val) = h_data.iter().rev().find(|v| v.is_finite()).copied() {
+            let plotted = val.clamp(height_bot, height_top);
+            hc.draw_series(std::iter::once(Circle::new(
+                (t_now, plotted), 4, RGBColor(220, 20, 20).filled(),
+            ))).ok();
+            let span = (height_top - height_bot).max(0.1);
+            hc.draw_series(std::iter::once(Text::new(
+                format!("{:.2} m", val),
+                (t_now + 0.2, height_top - span * 0.12),
+                (FONT, 18).into_font().color(&RGBColor(220, 20, 20)),
+            ))).ok();
+        }
     }
 
     // --- Speed panel (km/h, GPS-derived, smoothed) ---
@@ -1303,6 +1792,20 @@ where
             vec![(t_now, 0.0), (t_now, speed_top)],
             RGBColor(220, 20, 20).stroke_width(2),
         ))).map_err(|e| anyhow::anyhow!("speed cursor: {e:?}"))?;
+        // Current value label at top of panel, just right of the cursor.
+        // Y position is below the phase labels (which sit at speed_top * 0.92)
+        // so the value badge doesn't collide with them.
+        if let Some(val) = v_data.iter().rev().find(|v| v.is_finite()).copied() {
+            let plotted = val.clamp(0.0, speed_top);
+            vc.draw_series(std::iter::once(Circle::new(
+                (t_now, plotted), 4, RGBColor(220, 20, 20).filled(),
+            ))).ok();
+            vc.draw_series(std::iter::once(Text::new(
+                format!("{:.1} km/h", val),
+                (t_now + 0.2, speed_top * 0.78),
+                (FONT, 18).into_font().color(&RGBColor(220, 20, 20)),
+            ))).ok();
+        }
     }
 
     // --- Full-range panel: absolute orientation pitch (un-detrended) ---
@@ -1350,6 +1853,18 @@ where
         vec![(t_now, -y_lim), (t_now, y_lim)],
         RGBColor(220, 20, 20).stroke_width(2),
     ))).map_err(|e| anyhow::anyhow!("cursor: {e:?}"))?;
+    // Current value label at top of panel, just right of the cursor.
+    if let Some(val) = abs_or_corrected.iter().rev().find(|v| v.is_finite()).copied() {
+        let plotted = val.clamp(-y_lim, y_lim);
+        gc.draw_series(std::iter::once(Circle::new(
+            (t_now, plotted), 4, RGBColor(220, 20, 20).filled(),
+        ))).ok();
+        gc.draw_series(std::iter::once(Text::new(
+            format!("{:+.1}°", val),
+            (t_now + 0.2, y_lim * 0.78),
+            (FONT, 18).into_font().color(&RGBColor(220, 20, 20)),
+        ))).ok();
+    }
 
     Ok(())
 }

@@ -91,6 +91,7 @@ Each application follows the same layout:
 - `STBOX1_UPDATE_ENV` / `STBOX1_UPDATE_INV` — sensor polling intervals (timer ticks)
 - `STBOX1_LOG_AUDIO` (SDDataLogFileX only) — gates all `BSP_AUDIO_IN_*` calls and `.wav` file creation. Default `0`. Set to `1` only on unmodified hardware. On the 3.3V-modded board `BSP_AUDIO_IN_Init` blocks with no return, which hangs `fx_thread` mid-START_LOG before it can write sensor or GPS samples. Keep it off unless you actively need the on-board microphone.
 - `STBOX1_LOG_BATTERY` (SDDataLogFileX only) — gates the STC3115 fuel-gauge path and `BatNNN.csv` file creation. Default `1`. Gauge init (`BSP_GG_Init`) runs once per boot on first START_LOG; I²C failure is non-fatal — writes a marker to the error log and skips battery logging for the remainder of the boot, without taking sensor/GPS logging down. Set to `0` only if the STC3115 ever hangs the way the MIC did on hardware-modified boards.
+- `STBOX1_ENABLE_BLE_SYNC` (SDDataLogFileX only) — gates the BLE FileSync stack (advertising + GATT + ThreadX BLE thread). Default `1`. Set to `0` to remove ~28 KB flash + 4.5 KB BSS; the rest of the logger is byte-identical and the `BleSync_ThreadX_Init()` call from `App_ThreadX_Init` becomes a no-op returning `TX_SUCCESS`.
 
 **I²C4 timing investigation for STC3115 (24.4.2026)**: the ST v1.6.0 → v2.0.0 update replaced the I²C4 timing `0xA040184A` (~145 kHz at PCLK1=160 MHz, explicitly chosen to stay under the STC3115's 400 kHz Fast-Mode ceiling) with `0x00F07BFF` (~421 kHz) across all four I²C instances. The 421 kHz value is above the STC3115 Fast-Mode spec, so we reverted `MX_I2C4_Init` in `Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_bus.c` only (I2C1/2/3 keep the newer timing since the MEMS sensors there are Fast-Mode Plus capable). **The revert alone did not fix the failure** — Peter's 24.4.2026 13:26 field test on the reverted build still logged `gas gauge init FAIL`, falsifying the timing hypothesis. The safer timing stays in place, but the real root cause is elsewhere. See the diagnostic probe below.
 
@@ -190,7 +191,42 @@ Validated on Peter's 23.4.2026 15:11 UTC test with `build Apr 23 2026 17:04:49`:
 
 Data collected via the ST BLE Sensor app uses a slightly different format (date/time columns instead of raw ms timestamp).
 
+## BLE FileSync — download SD-card files over Bluetooth (SDDataLogFileX)
+
+The SDDataLogFileX firmware advertises as `STBoxSync` with PIN-secure pairing (PIN `123456`) and exposes a tiny custom GATT service so the host can download recorded files without removing the SD card. Two characteristics live under the BlueST features service (`00000000-0001-11e1-9ab4-0002a5d5c51b`):
+
+| Characteristic | UUID | Properties |
+|---|---|---|
+| FileCmd  | `00000080-0010-11e1-ac36-0002a5d5c51b` | write w/o response |
+| FileData | `00000040-0010-11e1-ac36-0002a5d5c51b` | notify |
+
+Opcodes (one byte + optional payload — payload is the filename without trailing NUL):
+
+| Opcode | Meaning | FileData reply |
+|---|---|---|
+| `0x01` LIST | enumerate SD root | `name,size\n` rows + single `\n` terminator |
+| `0x02` READ `<name>` | stream file body | raw bytes; total length matches the LIST size |
+| `0x03` DELETE `<name>` | drop file | single status byte |
+| `0x04` STOP_LOG | gracefully close active session | no FileData reply (host re-checks via LIST) |
+
+Status bytes used by READ/DELETE replies: `0x00` OK, `0xB0` BUSY (logging in progress, send STOP_LOG first), `0xE1` NOT_FOUND, `0xE2` IO_ERROR, `0xE3` BAD_REQUEST. READ and DELETE are rejected with `BUSY` while a `Sens*.csv` or `Gps*.csv` is open for writing — host calls STOP_LOG first to flush the active session.
+
+**Firmware-side architecture** (all under `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/`):
+
+- `Core/Src/ble_sync.c` — owns one ThreadX thread (priority 14, below the FileX writer at 12 and the GPS thread at 11 so SD bandwidth always wins). Calls `bluetooth_init()` once, then loops `if (hci_event) { hci_event=0; hci_user_evt_proc(); } BleFileSync_Tick(); tx_thread_sleep(1);`. The Tick is what advances the LIST/READ state machine without blocking the HCI event pump.
+- `Core/Src/ble_filesync.c` — the FileCmd/FileData characteristics + the `CurrentOp` state machine. On notify congestion `aci_gatt_srv_notify` returns INSUFFICIENT_RESOURCES; we don't drop bytes — the LIST stays in `ST_LIST_EMIT` and the READ rewinds the file cursor with `fx_file_relative_seek(SEEK_BACK)`, both retry on next Tick.
+- `Core/Src/ble_implementation.c`, `ble_function.c` — minimal X-CUBE-BLEMGR glue (mandatory globals + `set_board_name` + connection/pair callbacks + the ext-config callbacks for the flags we leave on in `ble_implementation.h`).
+- `Core/Src/ble_spi.c`, `hci_tl_interface.c` — isolated SPI1 driver bypassing the shared `Drivers/BSP/SensorTileBoxPro/` BSP entirely (the BLEDualProgram BSP and the SDDataLogFileX BSP both export the same `BSP_*` symbols, so they can't coexist — bypassing the BSP for the BLE link sidesteps the collision and keeps the stack debuggable in isolation).
+- `Core/inc/RTE_Components.h`, `ble_manager_conf.h`, `stm32wb07_06_conf.h`, `ble_list_utils.h` — config headers expected by the X-CUBE-BLEMGR + STM32WB07_06 middleware. Copied from BLEDualProgram and trimmed for our use.
+- `FileX/App/app_filex.c` — adds two public hooks: `Ble_RequestStopLog()` posts `COMMAND_STOP_LOG` into `MessageQueue` via a dedicated static `MessageData_t` (separate from the read-thread ring buffer to avoid races); `Ble_IsLoggingActive()` returns whether `SensorsFileOpen || GpsFileOpen` so the BUSY guard can decide.
+
+Build cost: text +28.7 KB / bss +4.5 KB vs the no-BLE build. Gated on `STBOX1_ENABLE_BLE_SYNC 1` in `Core/inc/stbox1_config.h` (default on); flip to `0` to remove the entire stack.
+
+The most ergonomic way to use this is the MovementLogger GUI's BLE FileSync panel (see "MovementLogger GUI" below). For ad-hoc poking, any generic GATT client works — write `01` to FileCmd, watch FileData stream the listing.
+
 ## Visualization
+
+**User-facing fusion explainer** at `Documentation/Sensor_Fusion.{html,pdf}` (rendered by headless Chrome: `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --disable-gpu --no-pdf-header-footer --print-to-pdf=Sensor_Fusion.pdf "file://$PWD/Sensor_Fusion.html"`). Short walkthrough of the six recorded inputs (3D gyro, 3D accel, 3D compass, baro, GPS pos, GPS speed), which two go into Madgwick (gyro+accel), why the LIS2MDL is dropped, and what each downstream consumer does with the quaternion / baro / GPS streams. Send to field testers via `~/software/pegelstand/whatsapp/send-doc.mjs <jid> Documentation/Sensor_Fusion.pdf "<caption>"`. Update the HTML and re-render the PDF whenever the fusion pipeline changes.
 
 All visualisation is done by the `stbox-viz` Rust crate at `Utilities/rust/stbox-viz/`. Single binary, no Python runtime. Four subcommands:
 
@@ -202,6 +238,8 @@ All visualisation is done by the `stbox-viz` Rust crate at `Utilities/rust/stbox
 | `animate` | animated GIF of board orientation per session, optional combined MOV | SensNNN.csv + optional camera video |
 
 Build: `cd Utilities/rust/stbox-viz && cargo build --release`. Binary at `target/release/stbox-viz`. Crate source layout: `io.rs`, `fusion.rs` (Madgwick 6DOF), `euler.rs`, `session.rs` (pitch-oscillation detection), `gps.rs` (haversine + ride detection), `baro.rs` (TC + GPS-anchored water reference), `butter.rs` (4th-order Butterworth + filtfilt), `spectrogram.rs` (scipy-equivalent STFT via `rustfft`), `html.rs` (Plotly JSON emission), `plot_common.rs` (shared `plotters` helpers), and one `*_cmd.rs` per subcommand.
+
+GPS auto-detection (used by `combined` and `animate`) accepts two naming forms next to the sensor CSV: the firmware's on-card layout `SensNNN.csv` ↔ `GpsNNN.csv` (preferred — works directly from a mounted SD card), and the legacy `<stem>.csv` ↔ `<stem>_gps.csv` form for renamed/exported CSVs. Earlier versions only matched the legacy form, which silently failed on raw SD content (`combined` would log "no GPS CSV found" and skip ride detection). See `guess_gps_path` in `main.rs` and `animate_cmd.rs`.
 
 ### Combined HTML (`stbox-viz combined`)
 
@@ -272,6 +310,30 @@ Per-session GIFs showing board orientation in real time. **Five panels when GPS 
 
 **Panel labels are horizontal** (drawn in their own 40-px title strip above each chart), not the rotated `y_desc` plotters defaults. Title strips also keep the labels from being overdrawn by chart grid pixels.
 
+**3D foil mesh in the side-view panel (`--board-stl <FILE>`, 27.4.2026)**: when set, the side-view panel renders the full hydrofoil STL (`/Users/zdavatz/software/fingerfoil/stl/0_combined.stl` is the canonical one) as a 3D-rasterized mesh whose orientation comes from the Madgwick quaternion. A pure software rasterizer in `board3d.rs` (no GPU, no winit dependency) loads the binary STL once, pre-rotates it by a hard-coded mount transform `R_mount` (board frame → IMU body frame), then per-frame applies the body-to-world quaternion and projects through a fixed camera into a 600×400 RGBA buffer. Camera is set up as a **pure side view from port** (`eye = (0, 3.2, 0.5)`, `up = world +Z`) so the board's nose-tail axis projects horizontally on screen and a pitch rotation around the lateral axis becomes purely vertical screen motion — no diagonal upper-left/lower-right wobble that came from the earlier 3/4-isometric angle.
+
+Mount transform (derived empirically from Ayano's 25.4.2026 Ermioni data): `IMU +X = -board +Z` (mast-down direction, anchored by AccX ≈ −1g during foiling), `IMU +Y = +board +X` (nose direction), `IMU +Z = +board +Y` (port direction). The pump-axis swap (Y/Z compared to a plausibly-symmetric earlier mount) was needed because pumps physically rotate the board around its lateral axis, and with the swap that maps to gyro Y oscillations rather than Z — making the rendered pump motion read as pitch (forward) instead of roll (sideways).
+
+**3D model only rendered after push-off (28.4.2026)**: the side-view 3D foil is **hidden during the entire carry phase** and only appears once `water_set_t` is reached (= sustained GPS speed > 4 km/h) **OR** a fixed time threshold of 10.5 s has elapsed (for clips where the rider is already foiling at the start of the at-window and push-off falls outside it). During carry the panel shows a centered "Tragen — keine 3D-Daten" placeholder over the scrolling water surface.
+
+Reason: the LSM6DSV16X has no magnetometer fusion (the on-board LIS2MDL is unusable due to iron distortion — see the `compass` subcommand notes below) and GPS course-over-ground is unreliable below ~3 km/h. So during the carry phase Madgwick's gyro-integrated yaw drifts freely with no absolute reference. We tried compensating with hand-tuned 180° + 90° corrections that we faded in/out at sec 13, but every fade introduced a visible rotation the rider never made (the SLERP itself, not the IMU), and every snap left a one-frame discontinuity. The cleanest fix is to admit we don't have enough sensor data during carry to render the orientation faithfully, and just hide it until we do.
+
+**Foiling-phase 3D rendering uses accel-only tilt (28.4.2026, replaces Madgwick)**: the 3D mesh's body-to-world quaternion is now derived directly from the accelerometer (gravity direction in body frame), not from Madgwick. The accelerometer is low-pass-filtered with a 0.25-sec rolling mean to suppress sub-100 ms linear-acceleration spikes (e.g. brief pump-push impulses or wave hits) while still tracking the ~1 Hz pump-pitch signal. Pitch+roll are extracted via standard atan2 formulas from the smoothed accel vector and reconstructed into a quaternion with no yaw component.
+
+Why drop Madgwick for the 3D rendering: gyro bias integrated around body-Z manifests as a slow rotation around the rendered foil's mast axis even after `quat_strip_yaw` — strip_yaw only removes rotation around the **world** Z axis, but during pumping the body-Z (mast direction) tilts away from world-Z, so a body-Z gyro drift survives. Visually this read as the rendered foil "spinning around its mast" during a clean straight ride. Accel-only attitude has its own failure mode (centripetal acceleration during a turn inflates apparent roll, and a brief sub-200 ms accel spike during a pump push can flip the rendered foil sideways for a frame), but the 0.25-sec smoothing tames both. Madgwick's quaternions are still computed via `fusion::compute_quaternions` and used for the **other** outputs (nose-angle pump trace, push-off-Winkel flash); only the 3D mesh path uses the accel-only path.
+
+**Mount transform for deck-mount boxes (28.4.2026)**: when the SensorTile.box is mounted on top of the deck rather than on the mast (Peter's 28.4.2026 setup), the chip's printed +Z axis faces *down* through the deck (AccZ ≈ −1 g at level pose). The accel-only tilt code pre-flips Y and Z (180° around X) on the smoothed accelerometer reading before computing pitch+roll, so the resulting quaternion is in a "right-side-up" body frame regardless of which direction the chip's +Z is mounted. `R_mount` is identity for this path. A 180°-world-Z rotation is then pre-multiplied onto the rendered quaternion to align the STL's nose with world+X (away from the camera at world−X = view from behind the tail). Camera position is `eye = (-3, 0, 0.7)`, looking forward toward the nose.
+
+The chip's longer dimension is along chip-Y (= board's nose-tail), and chip-X is along the board's lateral axis. So pitch (nose-up forward pump) shows up as a change in AccY, and roll (port-up lateral lean) shows up as a change in AccX — the formulas use `pitch = atan2(-ay, sqrt(ax²+az²))` and `roll = atan2(ax, az)` accordingly.
+
+**Crash exposes the deck-mount weakness (28.4.2026)**: Peter's clip ends with a wipeout where the board flipped and the mast pointed straight up out of the water. Both sensor and GPS log writes stopped simultaneously in the *same* tick (UTC 06:15:28.70, sec 20.7 of the 23.24-sec at-window) — classic brown-out signature from water entering the box electronics. Confirmed: the deck-mounted box is exposed when the board flips during a crash. Mast-mount sessions don't have this exposure because the mast typically stays attached and the IMU stays out of the water. Trade-off: deck-mount gives a cleaner attitude estimate (chip-Z aligned with gravity at level), mast-mount survives crashes.
+
+**`--mount mast|deck` flag (28.4.2026)**: the deck-mount support landed in commit `9f5bda72` *replaced* the mast-mount geometry instead of branching on it — so when Ayano's 25.4.2026 clip was regenerated with the new code the foil rendered on its side (deck-mount accel pre-flip + identity `R_mount` + tail-camera applied to mast-mount data). Now both setups live behind `--mount`, default `mast` (older invocations keep working). The flag picks three things together: (1) `R_mount` — `(-z, x, y)` for mast, identity for deck; (2) camera eye — port-side `(0, 3.2, 0.5)` for mast, behind-the-tail `(-3, 0, 0.7)` for deck; (3) per-frame quaternion source for the 3D mesh — Madgwick `quat_strip_yaw(quat_conj(q))` for mast, accel-only tilt with the 180°-X pre-flip for deck. **Mast-mount also recovers the carry-phase tail-place pose**: Madgwick integrates the gyro continuously, so a 90° pitch around the lateral axis (board placed vertical with the tail on the water just before push-off) renders correctly. The deck path's accel-only attitude can't represent that transient pose because gravity briefly aligns with the board's nose-tail direction. Use `--mount deck` for Peter's 28.4.2026 box; default for everything else.
+
+**Per-cursor value labels in time-series panels (28.4.2026)**: each of the four time-series panels (Pump-Detail, Höhe über Wasser, Geschwindigkeit, Nasenwinkel) now draws a small filled red circle at the current data point and a red text label just to the right of the cursor showing the live value (`±X.X°` / `X.XX m` / `X.X km/h` / `±X.X°`). Source-of-truth is the latest finite sample in each panel's history slice. Y position is panel-top minus ~12 % of the y-range so the badge doesn't collide with the static phase-band labels (Tragen / Rennen / Foilen) at `speed_top * 0.92`. Field-tester feedback after the first build with this on: "looks good!" — confirms the read-while-watching value is more useful than scanning the y-axis.
+
+**Carry-phase suppression of nose-angle + pump counter overlays**: the "Nasenwinkel: ±X.X°" and "Pumps: N" text in the side-view panel are also hidden until push-off — they're meaningless while the rider is just walking (the IMU's "pitch" reading is whatever angle the carry hold puts the mast at, and pump count is gated to speed > 4 km/h anyway). The `Zeit:` clock stays on always and now shows hundredths-of-a-second resolution (`M:SS.HH`) for tighter video sync.
+
 Without `--at`, session detection is **pitch-oscillation based** (≥ 0.3 Hz over ≥ 30 s, merging < 60 s gaps). Smooth-flight pumpfoil data without clear pitch oscillation won't register — use `combined` (GPS-based) instead for those.
 
 ### Compass Validity (`stbox-viz compass`)
@@ -304,6 +366,70 @@ The toolchain path is auto-detected by platform in `config.mk` at the repository
 Both Makefiles include `config.mk` via `-include $(ROOT)/config.mk` with a fallback default. The path can also be overridden per invocation: `make TOOLCHAIN=/other/path`.
 
 SDDataLogFileX Makefile also exposes `GPS_RATE_HZ` (default 10) that gets passed into `stbox1_config.h` as `-DGPS_RATE_HZ=<n>` and drives `UBX-CFG-RATE` in `gps_nmea.c`. Override per invocation, e.g. `make GPS_RATE_HZ=5` for 5 Hz or `make GPS_RATE_HZ=25` for the max rate. The header has a `[1, 25]` `#error` guard (UART ceiling at 38400 baud with only GGA + RMC enabled). IDE builds that don't define the macro get the 10 Hz default.
+
+## MovementLogger GUI
+
+Cross-platform (Win/Mac/Linux) drag-and-drop wrapper around `stbox-viz animate`. Source at `Utilities/rust/stbox-viz-gui/`, binary called `MovementLogger`. Drop a sensor CSV (auto-pairs the matching `_gps.csv`), an optional camera `.mov`/`.mp4`, and an optional board `.stl`; fill in `--at`, `--tz-offset-h`, `--mount`, etc. in the form; click Generate. The GUI shells out to the bundled `stbox-viz` CLI (looked up next to its own `current_exe()` first, then PATH) so the heavy plotters/rustfft/gif deps stay out of the GUI binary, and stdout/stderr stream into the live log panel.
+
+**Window-layout conventions** (these apply to *all* egui apps, not just MovementLogger):
+
+- The version goes in the **OS window title only**, via `ViewportBuilder::with_title(format!("AppName {}", env!("CARGO_PKG_VERSION")))` and the same string as the `eframe::run_native` app id. **Don't** also put `ui.heading("AppName 1.2.3")` at the top of the central panel — the OS chrome already shows it on every platform; duplicating it is just noise.
+- A short tagline inside the window is fine if it adds context the title bar doesn't (e.g. "SensorTile.box pumpfoil session video generator"). Make it `ui.hyperlink_to(tagline, repo_url)` so users can jump to the project page.
+- Top-right of the title strip: the app logo, drawn as a frameless `egui::ImageButton` that opens `mailto:<support>` via `ctx.open_url(OpenUrl::new_tab("mailto:..."))`. Bake the PNG into the binary with `include_bytes!("../assets/icon.png")`, decode once with `image::load_from_memory` (default-features off, only `png` enabled), and lazy-upload to `ctx.load_texture` on the first frame. Reuse the same PNG bytes in `egui::IconData` passed to `ViewportBuilder::with_icon` so the OS chrome / Dock / taskbar carry the logo too.
+
+Workspace at `Utilities/rust/Cargo.toml` lists `stbox-viz` and `stbox-viz-gui` as members. The vendored `Utilities/rust/winit-patched/` is `exclude`d from the workspace (it ships its own workspace) and wired in via `[patch.crates-io] winit = { path = "winit-patched" }`. **The Mac App Store winit patch from the workspace `CLAUDE.md` is required** — eframe → winit 0.30 calls `_CGSSetWindowBackgroundBlurRadius` (private CoreGraphics) which Apple's binary scanner rejects. The fork's patch replaces `Window::set_blur` with a no-op and comments out the now-unused `NSInteger`/`AnyObject` imports in `ffi.rs` so `RUSTFLAGS=-Dwarnings` doesn't trip on them. Verify after every release build: `nm target/release/MovementLogger | grep CGSSetWindowBackgroundBlur` must return nothing. **eframe must stay on 0.29 or newer**: 0.28 drags in winit 0.29 alongside 0.30, the patch only matches the 0.30 path, and the private symbol slips back into the binary through the unpatched 0.29 dep.
+
+### BLE FileSync panel (v0.1.4+)
+
+Collapsible "BLE FileSync" section in the central panel — talks to a SensorTile.box running the SDDataLogFileX firmware (see "BLE FileSync — download SD-card files over Bluetooth" above for the wire protocol). Workflow: Scan (5 s) → click STBoxSync → Connect (OS pops Bluetooth permission + PIN dialog, PIN `123456`) → Refresh file list → tick rows → Download selected. Files saved to `csv/` (configurable). `Sens*.csv` and `*_gps.csv` auto-route into the form's Sensor / GPS slots so the user can hit Generate without re-dragging.
+
+Backend lives in `src/ble.rs`. Uses `btleplug` (cross-platform: CoreBluetooth on macOS, BlueZ on Linux, WinRT on Windows) on a tokio current-thread runtime that lives on a single dedicated worker thread. `std::sync::mpsc` channels shuttle commands and events to/from the egui side. **One notification stream per connection, not per op** — opened on `Connect`, demuxed inside a `tokio::select!` between the command channel and the stream itself. Per-op streams (`p.notifications().await` per LIST/READ) risk losing the first packet if the box notifies before the `await` is parked. A 200 ms watchdog tick wakes the loop frequently enough to surface a stuck transfer instead of spinning.
+
+Status-byte detection on READ: only treat a single-byte first notify as an error when the byte is in `{0xB0, 0xE1, 0xE2, 0xE3}` (`is_status_byte`). A 1-byte CSV/log file (whose lone byte is plain ASCII) streams correctly because no legitimate file ever starts with one of those high-range bytes.
+
+Disconnect mid-op: tearing down the peripheral surfaces an explicit error like `READ Sens005.csv aborted by disconnect at 1234/5678 B` and sets state back to Idle — no orphan worker spinning on a dead stream.
+
+macOS specifics: the bundled `.app` carries `NSBluetoothAlwaysUsageDescription` (`assets/Info.plist.template`) and the App-Sandbox build adds `com.apple.security.device.bluetooth` (`entitlements-appstore.plist`). A bare `cargo run` on a fresh user account may not trigger the consent prompt and `btleplug` will silently report no adapter — install the `.app` for the proper permission flow.
+
+### Releases
+
+GitHub Actions workflow at `.github/workflows/release.yml`. Tag `vX.Y.Z` and push — the workflow runs the per-platform matrix (Linux x86_64 + aarch64 CLI-only, macOS Apple Silicon, Windows x86_64), packages each as `MovementLogger-vX.Y.Z-<target>.tar.gz`/`.zip` with SHA256, and attaches everything to a GitHub Release. The macOS path also assembles a `MovementLogger.app` bundle (with `stbox-viz` shipped inside `Contents/MacOS/` so the GUI's `current_exe()`-relative lookup finds it) and a notarized DMG named `MovementLogger-vX.Y.Z-macos-aarch64.dmg`.
+
+**Intel Mac dropped after v0.1.5.** Through v0.1.5 the workflow built both `x86_64-apple-darwin` and `aarch64-apple-darwin`, then `lipo`'d into a universal DMG. Removed because (a) every Mac shipped since late 2020 is Apple Silicon, (b) the `macos-13` Actions runner queue was wedging release builds for 30+ minutes waiting for an Intel runner that never picked up. The change is one matrix entry deleted from `build` and the `macos-store` job simplified to a single aarch64 cargo build (no `lipo`, no universal binary). Anyone needing an Intel build builds locally: `cargo build --release --target x86_64-apple-darwin -p movement-logger`.
+
+**Re-using a tag after deletion is allowed but races the publish step.** The publish job runs with `if: always() && (one of build/macos-store/windows-msix succeeded)`, which means even a *cancelled* run still triggers publish if at least one job had completed successfully. So `gh run cancel` on a release run after `macos-store` succeeded WILL publish the partial release before the workflow fully terminates. If you then delete the tag and re-push to fix something, the new run can't `gh release create` because the release already exists. Either delete the GitHub release first (`gh release delete vX.Y.Z --yes --cleanup-tag`) or accept that the originally-published artefacts stay live and the new run's matching-name uploads collide.
+
+**Notarize + staple the .app, not just the DMG (v0.1.6+).** v0.1.5 stapled only the DMG file. When the user drags the .app out to /Applications, Gatekeeper looks for a notarization ticket on the .app itself; if none is found locally it falls back to an online lookup. Field tester Peter, often offline on a sailboat, hit `nicht geöffnet` because the online lookup failed. The fix re-orders the steps in `macos-store` so the .app is notarized + stapled BEFORE the DMG is built (`ditto -c -k --keepParent .app .zip` → `notarytool submit zip --wait` → `stapler staple .app` → `hdiutil create dmg`), with the DMG also notarized + stapled afterwards as belt-and-suspenders. A `spctl -a -vvv --type execute` sanity check after the .app staple makes a future workflow regression fail loud instead of silently shipping an unverified .app.
+
+**The Apple signing secrets must be set per-repo — there is no org-level default for personal accounts.** The original global CLAUDE.md note ("the same secret names as `~/software/rust2xml` so org-level secrets carry over") is wrong for `zdavatz/*` repos because `zdavatz` is a user account, not a GitHub org. Each new repo that wants notarized DMGs needs all 10 secrets set explicitly:
+
+```sh
+REPO=zdavatz/<new-repo>
+gh secret set APPLE_TEAM_ID         --repo "$REPO" --body '4B37356EGR'
+gh secret set APPLE_API_KEY_ID      --repo "$REPO" --body '7B9HFNP99B'
+gh secret set APPLE_API_ISSUER_ID   --repo "$REPO" --body '69a6de70-0490-47e3-e053-5b8c7c11a4d1'
+gh secret set APPLE_API_KEY_P8                  --repo "$REPO" < <(base64 -i ~/.apple/AuthKey_7B9HFNP99B.p8)
+gh secret set MACOS_DEVELOPER_ID_CERTIFICATE    --repo "$REPO" < <(base64 -i ~/Library/Mobile\ Documents/com~apple~CloudDocs/ywesee/p12/developer_id_application.p12)
+gh secret set MACOS_CERTIFICATE                 --repo "$REPO" < <(base64 -i ~/Library/Mobile\ Documents/com~apple~CloudDocs/ywesee/p12/mac_app_distribution.p12)
+gh secret set MACOS_INSTALLER_CERTIFICATE       --repo "$REPO" < <(base64 -i ~/Library/Mobile\ Documents/com~apple~CloudDocs/ywesee/p12/mac_installer_distribution.p12)
+read -s -p "p12 password: " P; echo
+for S in MACOS_CERTIFICATE_PASSWORD MACOS_INSTALLER_CERTIFICATE_PASSWORD MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD; do
+  printf '%s' "$P" | gh secret set "$S" --repo "$REPO"
+done; unset P
+```
+
+The `if:` gates on `env.APPLE_API_KEY_P8 != '' && env.MACOS_DEVELOPER_ID_CERTIFICATE != ''` will silently skip notarization when any required secret is missing, so a fresh repo's first release ships an unsigned binary unless these are set first. Verify with `gh secret list --repo "$REPO"` — should show all 10 names.
+
+Optional store paths (mirrored from rust2xml, gated on repo/org variables):
+
+| Var | Effect |
+|---|---|
+| `vars.MACOS_STORE_ENABLED == 'true'` | aarch64 `.app` → signed DMG (Developer ID, notarized) → optional Mac App Store `.pkg` upload via altool/iTMSTransporter. **Must be set explicitly per repo** (`gh variable set MACOS_STORE_ENABLED --repo … --body 'true'`) — there's no org-level default. Without it the macos-store job is silently skipped and no DMG ever lands on the GitHub Release. |
+| `vars.MSSTORE_ENABLED == 'true'` | MSIX pack → signed → optional Microsoft Store devcenter REST submission. |
+
+The workflow uses **the same secret names as `~/software/rust2xml`** so org-level secrets carry over without repo-level setup: `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_INSTALLER_CERTIFICATE`, `MACOS_INSTALLER_CERTIFICATE_PASSWORD`, `MACOS_DEVELOPER_ID_CERTIFICATE`, `MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`, `APPLE_TEAM_ID`, `MACOS_PROVISIONING_PROFILE`, `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`, `MSSTORE_TENANT_ID`, `MSSTORE_CLIENT_ID`, `MSSTORE_CLIENT_SECRET`, plus `vars.MSSTORE_APP_ID`. Bundle id is `com.ywesee.movementlogger` (separate from rust2xml's `com.ywesee.rust2xml`) — needs its own App Store Connect record + provisioning profile before the Mac App Store gate flips on.
+
+Local sanity build: `cd Utilities/rust && cargo build --release -p movement-logger -p stbox-viz`. Re-run the `nm` check above whenever bumping eframe/winit.
 
 ## WhatsApp CLI
 

@@ -10,6 +10,7 @@
 mod animate_cmd;
 mod baro;
 mod bin_util;
+mod board3d;
 mod butter;
 mod compass_cmd;
 mod euler;
@@ -132,7 +133,34 @@ enum Cmd {
         /// actual lift above water. Default 0 (no offset).
         #[arg(long, default_value_t = 0.0)]
         dock_height_m: f64,
+        /// Path to a binary STL of the board (fingerfoil's
+        /// `1_board.stl` is the canonical one). When set, the side-
+        /// view panel renders the board as a 3D rotating mesh driven
+        /// by Madgwick pitch+roll plus GPS-course yaw, instead of
+        /// the simple 2D line. See issue #4 for the data plan.
+        #[arg(long)]
+        board_stl: Option<PathBuf>,
+        /// Where the SensorTile.box is physically mounted on the
+        /// board. `mast` (default) — strapped to the mast with chip
+        /// +X pointing along the mast; used for Ayano's Ermioni
+        /// sessions. `deck` — on top of the deck, long axis
+        /// nose-tail, chip +Z facing down through the deck; used
+        /// for Peter's 28.4.2026 session.
+        #[arg(long, value_enum, default_value_t = MountArg::Mast)]
+        mount: MountArg,
     },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum MountArg { Mast, Deck }
+
+impl From<MountArg> for board3d::MountKind {
+    fn from(m: MountArg) -> Self {
+        match m {
+            MountArg::Mast => board3d::MountKind::Mast,
+            MountArg::Deck => board3d::MountKind::Deck,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -149,7 +177,7 @@ fn main() -> Result<()> {
         Cmd::Animate { sensor_csv, output, fps, session, video,
                        video_offset, sensor_offset, title, subtitle,
                        at, duration, tz_offset_h, date, auto_skip,
-                       dock_height_m } => {
+                       dock_height_m, board_stl, mount } => {
             animate_cmd::run(&animate_cmd::AnimateArgs {
                 sensor_csv: &sensor_csv,
                 output_dir: &output,
@@ -166,6 +194,8 @@ fn main() -> Result<()> {
                 date: date.as_deref(),
                 auto_skip,
                 dock_height_m,
+                board_stl: board_stl.as_deref(),
+                mount: mount.into(),
             })
         }
     }
@@ -330,6 +360,10 @@ fn run_combined(sensor_path: &Path, output: &Path, beta: f64,
 fn guess_gps_path(sensor_path: &Path) -> Option<PathBuf> {
     let stem = sensor_path.file_stem()?.to_str()?.to_string();
     let parent = sensor_path.parent()?;
+    if let Some(rest) = stem.strip_prefix("Sens") {
+        let gps = parent.join(format!("Gps{}.csv", rest));
+        if gps.exists() { return Some(gps); }
+    }
     let gps = parent.join(format!("{}_gps.csv", stem));
     if gps.exists() { Some(gps) } else { None }
 }

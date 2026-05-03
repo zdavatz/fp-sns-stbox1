@@ -15,6 +15,3 @@ plotters = { version = "0.3", features = ["bitmap_encoder", "bitmap_backend", "l
 rustfft = "6"
 gif = "0.13"
 
-[profile.release]
-lto = true
-codegen-units = 1
