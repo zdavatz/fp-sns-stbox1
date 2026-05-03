@@ -185,6 +185,8 @@ Status bytes used by READ/DELETE replies: `0x00` OK, `0xB0` BUSY (logging in pro
 
 The easiest way to use this is the `MovementLogger` GUI's **BLE FileSync** panel — see [its README](Utilities/rust/stbox-viz-gui/README.md). For ad-hoc poking, any generic GATT client (nRF Connect on iOS/Android, LightBlue on macOS) works: write `01` to FileCmd, watch FileData stream the listing.
 
+A reader-friendly walkthrough of the protocol + firmware/GUI architecture (with per-platform download links to the latest GUI release) is at [**Documentation/BLE_FileSync.pdf**](Documentation/BLE_FileSync.pdf). Send to field testers via `~/software/pegelstand/whatsapp/send-doc.mjs <jid> Documentation/BLE_FileSync.pdf "<caption>"`. Update `BLE_FileSync.html` and re-render the PDF whenever the wire protocol or download links change.
+
 The feature is gated on `STBOX1_ENABLE_BLE_SYNC 1` in `Core/inc/stbox1_config.h` (default on). Set it to `0` to remove the entire BLE stack and reclaim ~28 KB of flash.
 
 ### Firmware Update via SD Card
