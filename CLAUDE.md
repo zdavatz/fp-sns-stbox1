@@ -107,7 +107,17 @@ Each application follows the same layout:
 ```sh
 dfu-util -d 0483:df11 -a 0 -s 0x08000000:mass-erase:force -D firmware.bin
 ```
-The `:mass-erase:force` modifier wipes both banks before downloading, so afterwards the chip has only one firmware copy and the bank-mapping question becomes irrelevant. STM32CubeProgrammer's "Full Chip Erase" via the GUI achieves the same.
+The `:mass-erase:force` modifier wipes both banks before downloading, so afterwards the chip has only one firmware copy and the bank-mapping question becomes irrelevant. STM32CubeProgrammer's "Full Chip Erase" via the GUI achieves the same. Append `:leave` (`mass-erase:force:leave`) to make `dfu-util` exit DFU mode and reboot the chip into the freshly-flashed image in one shot — saves the manual unplug/replug cycle.
+
+**Reserve-box "3 green blinks → dark + SD empty + BLE silent" → no-BLE bisect (3.5.2026)**: Peter's reserve box (different physical SensorTile.box PRO than the field-test unit) ran the v0.1.6-era firmware and showed an unusual symptom — the boot blink sequence completed correctly (1/2/3 green, so `main()` reached `MX_ThreadX_Init`), but afterwards the green LED stayed dark *and* the SD card stayed completely empty (no `FW_INFO.TXT`, no `Error_Log_Pump_Tsueri_*.log`) *and* the GUI's BLE scan didn't see `STBoxSync`. Mass-erase + `:leave` reflash didn't change behaviour, so flash-bank state was ruled out.
+
+The diagnostic logic: both `FW_INFO.TXT` and the error log are written immediately after `fx_media_open` succeeds, before any user action — neither file existing means fx_thread never reached the SD mount call. Combined with BLE also being silent, the suspects are (a) `tx_kernel_enter` never reached, (b) both threads independently hanging on hardware-dependent first calls (fx_thread on `fx_media_open` for SD, BLE thread on `bluetooth_init` for the WB07_06 SPI handshake), or (c) something deeper at the clock/power level that survives 3 blinks but kills both threads.
+
+The bisect: build with `STBOX1_ENABLE_BLE_SYNC 0` and reflash via DFU. Result is 121 KB instead of 152 KB — same logger code, same SD mount path, but the BLE thread isn't registered and `bluetooth_init` is never called. If the no-BLE build boots and writes to SD → BLE init is the cause (the WB07_06 chip on the reserve box may have different power-up timing or an SPI quirk vs the field-test box). If still dark with empty SD → not BLE-related; suspect SD card hardware/format or something at the kernel-entry level.
+
+Cheap parallel test before the rebuild: swap to a known-good FAT32 SD card from the working box. Rules out SD media issues without any code change.
+
+**Send firmware to a field tester via WhatsApp**: `~/software/pegelstand/whatsapp/send-doc.mjs <jid> <path-to-firmware.bin> "<caption>"`. Use `send-doc.mjs` (not `send.mjs`, which is image-only) for `.bin` files — it auto-detects mime type by extension and sends as a document. JID for Peter Schmidlin: `41795493645@s.whatsapp.net`. Auth lives in `~/software/pegelstand/whatsapp/auth/`; no separate login needed if pegelstand was already paired.
 
 ## SD Card Data Format (SDDataLogFileX)
 
