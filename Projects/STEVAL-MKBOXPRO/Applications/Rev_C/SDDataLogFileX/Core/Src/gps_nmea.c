@@ -458,6 +458,27 @@ void GPS_Init(void)
   sprintf(buf, "msg=%s ", ack_str(r_msg));
   gps_log_append(buf);
 
+  /* Step 4b: switch the navigation engine's dynamic-platform model to Sea
+     (CFG-NAVSPG-DYNMODEL = 5). The factory default is Portable (0), which
+     assumes automotive-class accelerations and tunes the Kalman filter
+     accordingly — at low SUPfoil/wing speeds (1–10 km/h) this collapses
+     the reported ground speed (NMEA RMC Speed field) toward zero even
+     while position is clearly advancing. Sea model expects low-g, low-
+     acceleration motion over water and trusts the Doppler velocity
+     instead of suppressing it. CFG-VALSET layers 0x07 = RAM+BBR+Flash so
+     the change persists across power cycles. */
+  uint8_t valset_p[9] = {
+    0x00,                               /* version */
+    0x07,                               /* layers: RAM | BBR | Flash */
+    0x00, 0x00,                         /* transaction (none) + reserved */
+    0x21, 0x00, 0x11, 0x20,             /* key CFG-NAVSPG-DYNMODEL (LE) */
+    0x05                                /* value: 5 = Sea */
+  };
+  int r_dyn = ubx_send_retry(0x06, 0x8A, valset_p, sizeof(valset_p), 300, 3);
+  sprintf(buf, "dyn=%s(Sea) ", ack_str(r_dyn));
+  gps_log_append(buf);
+  HAL_Delay(50);
+
   /* Step 5: persist everything (rate + port + msg config) to BBR + Flash
      + EEPROM so the module boots in the right config next time. */
   uint8_t save_p[13] = {0};
