@@ -885,6 +885,10 @@ fn resolve_session_date(arg: Option<&str>, sensor_path: &Path) -> Result<NaiveDa
 fn guess_gps_path(sensor_path: &Path) -> Option<PathBuf> {
     let stem = sensor_path.file_stem()?.to_str()?.to_string();
     let parent = sensor_path.parent()?;
+    if let Some(rest) = stem.strip_prefix("Sens") {
+        let gps = parent.join(format!("Gps{}.csv", rest));
+        if gps.exists() { return Some(gps); }
+    }
     let gps = parent.join(format!("{}_gps.csv", stem));
     if gps.exists() { Some(gps) } else { None }
 }

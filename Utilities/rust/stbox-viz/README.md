@@ -18,11 +18,16 @@ Binary lands at `target/release/stbox-viz`.
 ## Usage
 
 ```sh
-./target/release/stbox-viz combined ../../../csv/peter_22.4.2026_1250.csv -o ../../../html/
+./target/release/stbox-viz combined /Volumes/SDCARD/Sens000.csv -o html/
 ```
 
-The GPS CSV is picked up automatically as `<stem>_gps.csv` next to the
-sensor CSV. Output filename is `viz_<stem>.html`.
+The GPS CSV is auto-detected next to the sensor CSV. Two naming forms
+are accepted:
+
+- `SensNNN.csv` ↔ `GpsNNN.csv` — the firmware's on-card layout (preferred)
+- `<stem>.csv` ↔ `<stem>_gps.csv` — legacy form for renamed/exported CSVs
+
+Output filename is `viz_<stem>.html`.
 
 ### Time-axis options (`combined`)
 
