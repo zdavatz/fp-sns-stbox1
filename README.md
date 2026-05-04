@@ -189,6 +189,8 @@ A reader-friendly walkthrough of the protocol + firmware/GUI architecture (with 
 
 The feature is gated on `STBOX1_ENABLE_BLE_SYNC 1` in `Core/inc/stbox1_config.h` (default on). Set it to `0` to remove the entire BLE stack and reclaim ~28 KB of flash. The no-BLE build is also useful as a diagnostic when a fresh box's boot blink sequence completes (1/2/3 green) but the LED then goes dark with both an empty SD card *and* no `STBoxSync` advertisement — see CLAUDE.md ("Reserve-box bisect") for the full rationale. The first reported case of that symptom (3.5.2026) was traced to `TX_APP_MEM_POOL_SIZE` being too small for the BLE thread's stack, fixed by bumping it from 1 KB to 8 KB in `AZURE_RTOS/App/app_azure_rtos_config.h`.
 
+A second symptom of the same area — green LED freezes mid-session, BLE never advertises, sensor/battery CSVs cut off at exactly the same tick after ~10 s — was traced (4.5.2026) to the BlueNRG-LP EXTI11 IRQ being armed at NVIC priority 0. When the BLE chip's IRQ line chatters, the handler's `while (is_data_available())` loop never returns and starves SDMMC + ThreadX. Fixed in three places: ISR loop bounded to 16 events per entry (`hci_tl_interface.c`), EXTI priority lowered from 0 → 14 (`ble_implementation.c`), and `bluetooth_init()` now returns the manager-init status so the BLE thread skips arming the IRQ on a non-responding chip and writes `ble: init OK` / `ble: init FAIL rc=N` to the error log (`ble_sync.c`). The logger keeps running even when BLE can't come up. See CLAUDE.md ("EXTI11 priority-0 storm + ISR endless-loop") for the smoking-gun trace and post-fix verification checklist.
+
 ### Firmware Update via SD Card
 
 The firmware can be updated without BLE, JTAG, or ST-Link — just the SD card:

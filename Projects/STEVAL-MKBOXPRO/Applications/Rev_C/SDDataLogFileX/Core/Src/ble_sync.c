@@ -18,6 +18,9 @@
 #include "ble_implementation.h"
 #include "ble_filesync.h"
 #include "hci_tl_interface.h"
+#include "app_filex.h"
+
+#include <stdio.h>
 
 extern void hci_user_evt_proc(void);
 
@@ -34,8 +37,23 @@ static void ble_sync_thread_entry(ULONG arg)
 
   /* Brings up the SPI-1/HCI link, registers GAP, sets the random address,
      and starts advertising as STBoxSync. set_board_name() is called from
-     within init_ble_manager(). */
-  bluetooth_init();
+     within init_ble_manager(). Non-zero return = the BlueNRG-LP didn't
+     answer the HCI handshake — most likely the chip is in a bad power
+     state. We must NOT arm the EXTI in that case: a stuck-high IRQ line
+     would otherwise storm the NVIC indefinitely and starve fx_thread
+     mid-write (the symptom Peter sees as "10 s logging then frozen
+     green LED, BLE never advertises"). */
+  uint8_t init_rc = bluetooth_init();
+  if (init_rc != 0U)
+  {
+    char m[48];
+    sprintf(m, "ble: init FAIL rc=%u - thread bailing", (unsigned)init_rc);
+    ErrorLog_Write(m);
+    /* Park the thread so it never rearms the IRQ. fx_thread continues
+       writing the log untouched. */
+    for (;;) { tx_thread_sleep(1000); }
+  }
+  ErrorLog_Write("ble: init ok - arming EXTI11 at NVIC prio 14");
 
   /* Hook EXTI11 → hci_tl_lowlevel_isr — this is what flips `hci_event`
      from the NVIC when the BlueNRG-LP raises its IRQ line. */

@@ -193,7 +193,18 @@ void hci_tl_lowlevel_init(void)
 
 void hci_tl_lowlevel_isr(void)
 {
-  while (is_data_available()) {
+  /* Bound the drain loop. If the BlueNRG IRQ pin is stuck high (chip in a
+     bad state, or it never boots cleanly), the original `while
+     (is_data_available())` spins forever inside the ISR — at the original
+     NVIC priority 0 that preempted SDMMC + SysTick + everything, and
+     fx_thread could never resume mid-write. Caps the loop to 16 events
+     per IRQ; if the line is still high after that, we just exit and the
+     next pending edge will re-fire the handler at its (now lowered)
+     priority, giving the rest of the system a chance to run. */
+  for (uint8_t i = 0; i < 16U; i++) {
+    if (!is_data_available()) {
+      break;
+    }
     if (hci_notify_asynch_evt(NULL)) {
       return;
     }

@@ -14,7 +14,7 @@
 #include "ble_filesync.h"
 #include "hci_tl_interface.h"
 
-void bluetooth_init(void)
+uint8_t bluetooth_init(void)
 {
   /* GAP / security setup — values come from ble_manager_conf.h */
   ble_stack_value.config_value_offsets                    = CONFIG_VALUE_OFFSETS;
@@ -46,14 +46,26 @@ void bluetooth_init(void)
      the host has to invalidate its GATT cache itself. */
   ble_stack_value.force_rescan = ble_stack_value.enable_secure_connection ? 0 : 1;
 
-  init_ble_manager();
+  /* Returns BLE_STATUS_SUCCESS (0) when the BlueNRG-LP HCI handshake +
+     GATT services init both worked; non-zero when the chip didn't
+     respond or the host couldn't register a service. ble_sync.c uses
+     this to skip arming the SPI EXTI IRQ on a dead chip — otherwise
+     a stuck-high IRQ line would storm the CPU and starve fx_thread. */
+  return (uint8_t)init_ble_manager();
 }
 
 void init_ble_int_for_blue_nrglp(void)
 {
   HAL_EXTI_GetHandle(&H_EXTI, EXTI_LINE);
   HAL_EXTI_RegisterCallback(&H_EXTI, HAL_EXTI_COMMON_CB_ID, hci_tl_lowlevel_isr);
-  HAL_NVIC_SetPriority(HCI_TL_SPI_EXTI_IRQ_N, 0, 0);
+  /* Priority 14 (was 0). Same level as SDMMC1 so an HCI event never
+     preempts an in-flight SD write, and well below UART4-GPS at 6 so
+     the GPS line keeps assembling while BLE is busy. The previous
+     value (0, highest possible) preempted everything including
+     SysTick — when the BlueNRG-LP misbehaved, the EXTI11 handler
+     looping on a stuck IRQ line locked out fx_thread mid-write and
+     froze the green LED in whatever state the last toggle left it. */
+  HAL_NVIC_SetPriority(HCI_TL_SPI_EXTI_IRQ_N, 14, 0);
   HAL_NVIC_EnableIRQ(HCI_TL_SPI_EXTI_IRQ_N);
 }
 

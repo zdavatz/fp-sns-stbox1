@@ -62,6 +62,13 @@ void Ble_RequestStopLog(void);
    writing. The BUSY guard in ble_filesync rejects READ/DELETE on those
    files so the FAT doesn't get pulled out from under the writer. */
 int  Ble_IsLoggingActive(void);
+
+/* Append a timestamped line to the currently-open
+   Error_Log_Pump_Tsueri_<date>.txt. Safe to call from any ThreadX
+   thread; FileX serializes media access internally. No-op while the
+   error log isn't open yet (e.g. very early boot before fx_thread has
+   mounted the SD). Used by the BLE thread to record init OK/FAIL. */
+void ErrorLog_Write(const char *msg);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

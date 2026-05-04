@@ -72,8 +72,11 @@ extern "C" {
 
 /* Implemented in ble_implementation.c. ble_manager.c calls bluetooth_init()
    from init_ble_manager() and ble_init_custom_service() right after the
-   stack is up; the others are weak overrides we leave at the defaults. */
-extern void bluetooth_init(void);
+   stack is up; the others are weak overrides we leave at the defaults.
+   bluetooth_init returns the ble_manager status — non-zero means the
+   BlueNRG-LP didn't come up and the BLE thread should bail without
+   arming the SPI EXTI IRQ. */
+extern uint8_t bluetooth_init(void);
 extern void init_ble_int_for_blue_nrglp(void);
 extern void ble_init_custom_service(void);
 extern void ble_set_custom_advertise_data(uint8_t *manuf_data);
