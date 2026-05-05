@@ -1320,16 +1320,16 @@ void ErrorLog_Close(void)
 }
 
 /**
-  * @brief  Overwrite FW_INFO.TXT at the SD-card root with the current
-  *         firmware fingerprint. Lets the field tester verify which
-  *         binary is actually running by popping the SD card into a
-  *         computer — no need to hunt through the error log.
+  * @brief  Write FW_INFO_v<N>.TXT at the SD-card root with the current
+  *         firmware fingerprint, where <N> is FW_BUILD_NUM. Field tester
+  *         can see which firmware is on the box from the SD listing
+  *         alone — no need to open any file. Old FW_INFO* files (the
+  *         legacy fixed-name FW_INFO.TXT and any older FW_INFO_v*.TXT
+  *         from previously-flashed firmware) are deleted on every boot
+  *         so the listing stays clean.
   *
   *         Same content as the boot marker in the error log (build
-  *         date/time, GPS rate, feature flags, flash footprint), but
-  *         a single small file at a fixed path that's overwritten on
-  *         every boot, so the timestamp + content always reflect the
-  *         currently-active firmware.
+  *         date/time, GPS rate, feature flags, flash footprint).
   *
   *         Caller must already have opened sdio_disk.
   * @retval None
@@ -1338,10 +1338,13 @@ static void WriteFwInfoFile(void)
 {
   FX_FILE info_file;
   CHAR info[200];
+  CHAR fw_info_name[24];
 
   extern uint32_t _sidata, _sdata, _edata;
   ULONG flash_end_addr = (ULONG)&_sidata + ((ULONG)&_edata - (ULONG)&_sdata);
   ULONG flash_kb = (flash_end_addr - 0x08000000UL + 1023) / 1024;
+
+  sprintf(fw_info_name, "FW_INFO_v%u.TXT", (unsigned)FW_BUILD_NUM);
 
   INT len = sprintf(info,
     "fw: v%u build %s %s\r\nGPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
@@ -1351,13 +1354,37 @@ static void WriteFwInfoFile(void)
     STBOX1_LOG_AUDIO, STBOX1_LOG_BATTERY,
     (unsigned long)flash_kb);
 
-  /* Delete any previous version first so a shorter new content cannot
-     leave stale tail bytes from the old file. */
-  fx_file_delete(&sdio_disk, "FW_INFO.TXT");
+  /* Walk the SD root and collect every FW_INFO* filename we find, then
+     delete them all. Two-pass so the directory iterator isn't
+     invalidated mid-iteration. The legacy fixed-name FW_INFO.TXT and
+     any FW_INFO_v*.TXT from previously-flashed firmware both match the
+     7-char prefix. Up to 8 stale entries cleaned per boot — generous
+     headroom; the only way to exceed it is to flash 9+ different builds
+     onto a card without ever booting between each, which doesn't happen. */
+  {
+    CHAR  stale[8][24];
+    UINT  count = 0;
+    CHAR  name[24];
 
-  if (fx_file_create(&sdio_disk, "FW_INFO.TXT") != FX_SUCCESS)
+    if (fx_directory_first_entry_find(&sdio_disk, name) == FX_SUCCESS)
+    {
+      do {
+        if (count < 8 && strncmp(name, "FW_INFO", 7) == 0) {
+          strncpy(stale[count], name, 23);
+          stale[count][23] = '\0';
+          count++;
+        }
+      } while (fx_directory_next_entry_find(&sdio_disk, name) == FX_SUCCESS);
+    }
+
+    for (UINT i = 0; i < count; i++) {
+      fx_file_delete(&sdio_disk, stale[i]);
+    }
+  }
+
+  if (fx_file_create(&sdio_disk, fw_info_name) != FX_SUCCESS)
     return;
-  if (fx_file_open(&sdio_disk, &info_file, "FW_INFO.TXT", FX_OPEN_FOR_WRITE)
+  if (fx_file_open(&sdio_disk, &info_file, fw_info_name, FX_OPEN_FOR_WRITE)
       != FX_SUCCESS)
     return;
 

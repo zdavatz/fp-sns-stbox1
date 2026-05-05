@@ -309,7 +309,7 @@ make
 
 Requires ARM GNU Toolchain (`arm-none-eabi-gcc`). Output binaries are in `build/`.
 
-The SDDataLogFileX Makefile bumps a `.build_counter` file (gitignored) on every invocation and bakes the result in via `-DFW_BUILD_NUM=N`. Output is `build/firmware_v<N>.bin` alongside the unversioned `build/firmware.bin` (the SD-update path needs the exact name). The version number shows up in `FW_INFO.txt` and the error log boot marker (`fw: v<N> build …`) so a field tester can tell two builds apart at a glance even when the compile timestamp is the same minute. See CLAUDE.md ("Build versioning — `FW_BUILD_NUM` counter") for the Make caching gotcha that motivated the `FORCE`-rebuild rule on `app_filex.o`.
+The SDDataLogFileX Makefile bumps a `.build_counter` file (committed) on every invocation and bakes the result in via `-DFW_BUILD_NUM=N`. Output is `build/firmware_v<N>.bin` alongside the unversioned `build/firmware.bin` (the SD-update path needs the exact name). The version number is visible in three places: the binary filename, the boot marker in the error log (`fw: v<N> build …`), and the **SD-card root listing itself** — `FW_INFO_v<N>.TXT` is written at boot with old `FW_INFO*` files cleaned up first, so the field tester sees exactly one fingerprint file matching the running firmware without having to open it. See CLAUDE.md ("Build versioning — `FW_BUILD_NUM` counter") for the Make caching gotcha that motivated the `FORCE`-rebuild rule on `app_filex.o`.
 
 The toolchain path is auto-detected in `config.mk` at the repository root:
 - **macOS**: `$(HOME)/.software/arm-gnu-toolchain/bin` (full ARM GNU Toolchain via .pkg)
