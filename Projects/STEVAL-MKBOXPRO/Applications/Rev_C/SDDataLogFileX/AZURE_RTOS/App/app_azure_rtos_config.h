@@ -47,7 +47,8 @@ extern "C" {
  * BLE thread. 16 KB had no headroom left, and tx_byte_allocate silently
  * returning NO_MEMORY mid-chain in App_ThreadX_Init would skip whichever
  * thread came second — invisible from the LED state. 24 KB is generous
- * and costs only 8 KB more BSS. */
+ * and costs only 8 KB more BSS. (Peter's 6615fa39 bumped 8→16; merging
+ * forward to 24 to keep USB-CDC headroom.) */
 #define TX_APP_MEM_POOL_SIZE                     (1024*24)
 
 /* 14 KB covers fx_thread (4 KB) + read_thread (4 KB) + gps_thread (2 KB) +
