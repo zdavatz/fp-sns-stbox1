@@ -476,11 +476,19 @@ void GPS_Init(void)
      the reported ground speed (NMEA RMC Speed field) toward zero even
      while position is clearly advancing. Sea model expects low-g, low-
      acceleration motion over water and trusts the Doppler velocity
-     instead of suppressing it. CFG-VALSET layers 0x07 = RAM+BBR+Flash so
-     the change persists across power cycles. */
+     instead of suppressing it.
+
+     Layers = 0x01 (RAM only). The first attempt used 0x07 (RAM+BBR+Flash)
+     and got NAK'd on Peter's MAX-M10S (5.5.2026 boot log:
+     `dyn=NAK(Sea)`) — some MAX-M10S firmware variants don't accept a
+     single VALSET targeting all three layers (Flash write timing or
+     atomicity constraints). RAM-only takes effect immediately and the
+     existing UBX-CFG-CFG save step at the end of GPS_Init persists the
+     RAM state to BBR + Flash, so persistence across power cycles is
+     preserved through the legacy save path. */
   uint8_t valset_p[9] = {
     0x00,                               /* version */
-    0x07,                               /* layers: RAM | BBR | Flash */
+    0x01,                               /* layers: RAM only */
     0x00, 0x00,                         /* transaction (none) + reserved */
     0x21, 0x00, 0x11, 0x20,             /* key CFG-NAVSPG-DYNMODEL (LE) */
     0x05                                /* value: 5 = Sea */
