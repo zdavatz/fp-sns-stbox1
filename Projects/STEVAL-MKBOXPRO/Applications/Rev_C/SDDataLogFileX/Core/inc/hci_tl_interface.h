@@ -52,6 +52,8 @@ extern EXTI_HandleTypeDef hexti11;
 /* Exported functions ------------------------------------------------------- */
 int32_t hci_tl_spi_init(void *pConf);
 int32_t hci_tl_spi_de_init(void);
+int32_t hci_tl_spi_reset(void);
+int32_t hci_tl_spi_send(uint8_t *buffer, uint16_t size);
 void    hci_tl_lowlevel_init(void);
 void    hci_tl_lowlevel_isr(void);
 

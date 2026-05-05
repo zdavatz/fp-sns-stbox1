@@ -12,6 +12,10 @@ Projects/*/Applications/*/BLESensorsPnPL/STM32CubeIDE/build/
 Projects/*/Applications/*/SDDataLogFileX/STM32CubeIDE/build/
 Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE/build/
 
+# Per-developer build counter (Makefile bumps this on every invocation;
+# embedded into firmware as FW_BUILD_NUM so each .bin has a unique #N)
+**/STM32CubeIDE/.build_counter
+
 # Temp video extraction
 frames/
 

@@ -191,6 +191,8 @@ The feature is gated on `STBOX1_ENABLE_BLE_SYNC 1` in `Core/inc/stbox1_config.h`
 
 A second symptom of the same area — green LED freezes mid-session, BLE never advertises, sensor/battery CSVs cut off at exactly the same tick after ~10 s — was traced to the BlueNRG-LP EXTI11 IRQ being armed at NVIC priority 0. When the BLE chip's IRQ line chatters, the handler's `while (is_data_available())` loop never returns and starves SDMMC + ThreadX. Fixed in three places: ISR loop bounded to 16 events per entry (`hci_tl_interface.c`), EXTI priority lowered from 0 → 14 (`ble_implementation.c`), and `bluetooth_init()` now returns the manager-init status so the BLE thread skips arming the IRQ on a non-responding chip and writes `ble: init ok` / `ble: init FAIL rc=N` to the error log (`ble_sync.c`). The logger keeps running even when BLE can't come up. See CLAUDE.md ("BLE EXTI11 IRQ-storm fix + ThreadX byte-pool sizing") for the full three-part fix and validation checklist.
 
+A third refinement (5.5.2026) catches a half-dead BlueNRG-LP that ACK's SPI bytes but then hangs the kernel inside `init_ble_manager`'s GATT setup. The new two-stage chip-alive probe in `ble_sync.c::ble_chip_alive_probe()` requires both an SPI ACK *and* a Command Complete response within 500 ms before calling `bluetooth_init`. The probe outcome is recorded in `g_ble_probe_status` and snapshotted into the error log via `ErrorLog_Open` so post-session you can tell whether BLE was up or skipped. Probe + the original three-part fix combined are not sufficient on the 3.3V-hardware-modded SensorTile.box PRO reservebox — even with `STBOX1_ENABLE_BLE_SYNC 0` the same hardware shows non-deterministic SDMMC hangs at random `fx_file_*` operations, suggesting the modded power supply has signal/integrity issues unrelated to BLE. See CLAUDE.md ("Two-stage BLE chip-alive probe" / "Per-step ErrorLog markers") for the diagnostic markers and open-investigation status.
+
 ### Firmware Update via SD Card
 
 The firmware can be updated without BLE, JTAG, or ST-Link — just the SD card:
@@ -301,6 +303,8 @@ make
 ```
 
 Requires ARM GNU Toolchain (`arm-none-eabi-gcc`). Output binaries are in `build/`.
+
+The SDDataLogFileX Makefile bumps a `.build_counter` file (gitignored) on every invocation and bakes the result in via `-DFW_BUILD_NUM=N`. Output is `build/firmware_v<N>.bin` alongside the unversioned `build/firmware.bin` (the SD-update path needs the exact name). The version number shows up in `FW_INFO.txt` and the error log boot marker (`fw: v<N> build …`) so a field tester can tell two builds apart at a glance even when the compile timestamp is the same minute. See CLAUDE.md ("Build versioning — `FW_BUILD_NUM` counter") for the Make caching gotcha that motivated the `FORCE`-rebuild rule on `app_filex.o`.
 
 The toolchain path is auto-detected in `config.mk` at the repository root:
 - **macOS**: `$(HOME)/.software/arm-gnu-toolchain/bin` (full ARM GNU Toolchain via .pkg)

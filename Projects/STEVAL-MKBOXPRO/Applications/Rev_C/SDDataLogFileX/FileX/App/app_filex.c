@@ -20,6 +20,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "app_filex.h"
+#include <string.h>  /* strlen used in ErrorLog_Open's BLE-status line */
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -190,6 +191,7 @@ static void InitClockBaseFromCompileDate(void);
 static void SetClockBaseFromGPS(UINT year, UINT month, UINT day,
                                 UINT hour, UINT minute, UINT second);
 static void UpdateFileXClock(void);
+
 /* USER CODE END PFP */
 
 /**
@@ -397,8 +399,12 @@ static void fx_thread_entry(ULONG thread_input)
             /* Open error log file (append) */
             ErrorLog_Open();
 
+            ErrorLog_Write("fx: COMMAND_START_LOG enter, before fx_file_create Sens");
+
             /* Create a file in the root directory.  */
             status =  fx_file_create(&sdio_disk, file_name);
+
+            ErrorLog_Write("fx: fx_file_create Sens returned");
 
             /* Check the create status.  */
             if (status != FX_SUCCESS)
@@ -433,39 +439,68 @@ static void fx_thread_entry(ULONG thread_input)
               }
             }
 
+            ErrorLog_Write("fx: before fx_file_open Sens");
+
             /* Open the test file.  */
             status =  fx_file_open(&sdio_disk, &SensorsFxFile, file_name, FX_OPEN_FOR_WRITE);
+
+            {
+              CHAR m[64];
+              sprintf(m, "fx: fx_file_open Sens returned status=0x%X", (unsigned)status);
+              ErrorLog_Write(m);
+            }
 
             /* Check the file open status.  */
             if (status != FX_SUCCESS)
             {
-              /* Error opening file, call error handler.  */
+              /* Error opening file — log instead of hard-stopping so
+                 we can see the actual status code in the error log
+                 (Error_Handler closes the log and red-LED-loops). */
+              ErrorLog_Write("fx: FATAL fx_file_open Sens FAILED");
               STBOX1_PRINTF("Error opening SensXXX.csv\r\n");
               Error_Handler(__FILE__, __LINE__);
             }
 
+            ErrorLog_Write("fx: before fx_file_seek Sens");
+
             /* Seek to the beginning of the test file.  */
             status =  fx_file_seek(&SensorsFxFile, 0);
+
+            {
+              CHAR m[64];
+              sprintf(m, "fx: fx_file_seek Sens returned status=0x%X", (unsigned)status);
+              ErrorLog_Write(m);
+            }
 
             /* Check the file seek status.  */
             if (status != FX_SUCCESS)
             {
-              /* Error performing file seek, call error handler.  */
+              ErrorLog_Write("fx: FATAL fx_file_seek Sens FAILED");
               Error_Handler(__FILE__, __LINE__);
             }
             SensorsFileOpen = 1;
             STBOX1_PRINTF("File %s open\r\n", file_name);
 
+            ErrorLog_Write("fx: before fx_file_write Sens header");
+
             /* Write a string to the test file.  */
             status =  fx_file_write(&SensorsFxFile, header, sizeof(header) - 1);
+
+            {
+              CHAR m[64];
+              sprintf(m, "fx: fx_file_write Sens header returned status=0x%X", (unsigned)status);
+              ErrorLog_Write(m);
+            }
 
             /* Check the file write status.  */
             if (status != FX_SUCCESS)
             {
-              /* Error writing to a file, call error handler.  */
+              ErrorLog_Write("fx: FATAL fx_file_write Sens FAILED");
               STBOX1_PRINTF("Error writing SensXXX.csv\r\n");
               Error_Handler(__FILE__, __LINE__);
             }
+
+            ErrorLog_Write("fx: before fx_media_flush after Sens header");
 
             /* Flush so the sens header survives an ungraceful power-off
              * even before the periodic flush kicks in at sample 100. */
@@ -1195,10 +1230,12 @@ static void ErrorLog_Open(void)
   extern uint32_t BootResetCsr;  /* snapshotted in main() after HAL_Init() */
 
   CHAR boot_msg[256];
-  INT len = sprintf(boot_msg, "--- Boot %s %s ---\r\n", __DATE__, __TIME__);
+  INT len = sprintf(boot_msg, "--- Boot v%u %s %s ---\r\n",
+                    (unsigned)FW_BUILD_NUM, __DATE__, __TIME__);
   fx_file_write(&ErrorLogFxFile, boot_msg, len);
   len = sprintf(boot_msg,
-    "fw: build %s %s | GPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    "fw: v%u build %s %s | GPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    (unsigned)FW_BUILD_NUM,
     __DATE__, __TIME__,
     (unsigned)GPS_RATE_HZ,
     STBOX1_LOG_AUDIO, STBOX1_LOG_BATTERY,
@@ -1228,6 +1265,25 @@ static void ErrorLog_Open(void)
   len = sprintf(boot_msg, "reset:%s (CSR=0x%08lX)\r\n",
                 reason, (unsigned long)BootResetCsr);
   fx_file_write(&ErrorLogFxFile, boot_msg, len);
+
+  /* BLE chip-alive probe status. ble_sync_thread runs at lower priority
+     than fx_thread so by the time we get here it has either finished
+     the probe (status set to 0/1/2) or is still mid-handshake (status
+     still 0xFF). The status drives a one-line marker so the field
+     tester / post-session analyzer can tell whether BLE FileSync is
+     available without having to scan from the GUI. */
+#if STBOX1_ENABLE_BLE_SYNC
+  extern volatile uint8_t g_ble_probe_status;
+  const char *ble_msg;
+  switch (g_ble_probe_status)
+  {
+    case 0U:    ble_msg = "ble: chip-alive probe FAILED - BLE disabled this session\r\n"; break;
+    case 1U:    ble_msg = "ble: chip alive, init ok\r\n"; break;
+    case 2U:    ble_msg = "ble: chip alive but init_ble_manager FAILED - BLE disabled\r\n"; break;
+    default:    ble_msg = "ble: probe still pending at error-log open\r\n"; break;
+  }
+  fx_file_write(&ErrorLogFxFile, (CHAR *)ble_msg, strlen(ble_msg));
+#endif
 
   fx_media_flush(&sdio_disk);
 
@@ -1288,7 +1344,8 @@ static void WriteFwInfoFile(void)
   ULONG flash_kb = (flash_end_addr - 0x08000000UL + 1023) / 1024;
 
   INT len = sprintf(info,
-    "fw: build %s %s\r\nGPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    "fw: v%u build %s %s\r\nGPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    (unsigned)FW_BUILD_NUM,
     __DATE__, __TIME__,
     (unsigned)GPS_RATE_HZ,
     STBOX1_LOG_AUDIO, STBOX1_LOG_BATTERY,
