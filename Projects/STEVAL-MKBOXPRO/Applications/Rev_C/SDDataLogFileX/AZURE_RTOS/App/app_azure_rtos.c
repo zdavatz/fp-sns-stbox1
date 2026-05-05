@@ -20,6 +20,29 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "app_azure_rtos.h"
+#include "SensorTileBoxPro.h"
+#include "stm32u5xx_hal.h"
+
+/* Loop the red LED forever in a count-pause-count pattern. Used as a
+   visible halt diagnostic in the four error paths in tx_application_define
+   below — without this, halt-before-tx_kernel_enter shows up as "3 green
+   boot blinks then dark", indistinguishable from a hang anywhere else.
+   Each pattern: `count` 200 ms on/off red blinks, then 1.2 s pause, repeat.
+   Patterns: 2 = tx_app_byte_pool failed, 4 = App_ThreadX_Init failed
+   (BLE thread alloc/create), 6 = fx_app_byte_pool failed, 8 = MX_FileX_Init
+   failed. */
+static void halt_red_morse(uint8_t count)
+{
+  for (;;) {
+    for (uint8_t i = 0; i < count; i++) {
+      BSP_LED_On(LED_RED);
+      HAL_Delay(200);
+      BSP_LED_Off(LED_RED);
+      HAL_Delay(200);
+    }
+    HAL_Delay(1200);
+  }
+}
 
 /* Private variables ---------------------------------------------------------*/
 
@@ -59,7 +82,7 @@ VOID tx_application_define(VOID *first_unused_memory)
                           TX_APP_MEM_POOL_SIZE) != TX_SUCCESS)
   {
     /* USER CODE BEGIN TX_Byte_Pool_Error */
-
+    halt_red_morse(2);
     /* USER CODE END TX_Byte_Pool_Error */
   }
   else
@@ -73,9 +96,7 @@ VOID tx_application_define(VOID *first_unused_memory)
     if (status != TX_SUCCESS)
     {
       /* USER CODE BEGIN  App_ThreadX_Init_Error */
-      while (1)
-      {
-      }
+      halt_red_morse(4);
       /* USER CODE END  App_ThreadX_Init_Error */
     }
     /* USER CODE BEGIN  App_ThreadX_Init_Success */
@@ -87,7 +108,7 @@ VOID tx_application_define(VOID *first_unused_memory)
                           FX_APP_MEM_POOL_SIZE) != TX_SUCCESS)
   {
     /* USER CODE BEGIN FX_Byte_Pool_Error */
-
+    halt_red_morse(6);
     /* USER CODE END FX_Byte_Pool_Error */
   }
   else
@@ -101,9 +122,7 @@ VOID tx_application_define(VOID *first_unused_memory)
     if (status != FX_SUCCESS)
     {
       /* USER CODE BEGIN  MX_FileX_Init_Error */
-      while (1)
-      {
-      }
+      halt_red_morse(8);
       /* USER CODE END  MX_FileX_Init_Error */
     }
     /* USER CODE BEGIN  MX_FileX_Init_Success */
