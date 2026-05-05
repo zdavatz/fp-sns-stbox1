@@ -43,6 +43,16 @@ void HAL_MspInit(void)
 
   /* USER CODE BEGIN MspInit 1 */
 
+  /* Power the VddIO2 IO supply rail. ST's reference BLE firmware
+     (BLEDualProgram) calls this in MspInit + main; without it, GPIO banks
+     fed by VddIO2 read/write silently fail. The "BlueNRG-LP looks dead at
+     init" symptom on this board (bluetooth_init() returning non-zero on a
+     chip that worked under the original ST firmware a week earlier) maps
+     exactly onto a VddIO2-island bank being left unpowered. Cheap to keep
+     enabled even if no BLE-relevant signal is on a VddIO2 pin — costs one
+     bit in PWR->SVMCR. */
+  HAL_PWREx_EnableVddIO2();
+
   /* USER CODE END MspInit 1 */
 }
 
