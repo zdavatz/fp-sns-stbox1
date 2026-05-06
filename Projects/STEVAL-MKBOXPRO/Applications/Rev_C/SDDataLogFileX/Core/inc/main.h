@@ -57,7 +57,9 @@ extern void Error_Handler(char *File,int32_t Line);
 
 /* USER CODE BEGIN EFP */
 extern void ErrorLog_Write(const char *msg);
+extern unsigned int ErrorLog_Flush(void);
 extern void ErrorLog_Close(void);
+extern void DiagBlinkRed(uint8_t n);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

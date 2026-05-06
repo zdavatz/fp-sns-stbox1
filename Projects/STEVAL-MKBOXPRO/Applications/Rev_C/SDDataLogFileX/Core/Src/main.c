@@ -232,7 +232,7 @@ static void PrintInfo(void)
 *         on/off, with a 400 ms gap after the burst so consecutive
 *         bursts are visually distinct from the green BootStageBlink.
 */
-static void DiagBlinkRed(uint8_t n)
+void DiagBlinkRed(uint8_t n)
 {
   for (uint8_t i = 0; i < n; i++) {
     BSP_LED_On(LED_RED);

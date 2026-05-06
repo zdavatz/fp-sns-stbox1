@@ -399,12 +399,58 @@ static void fx_thread_entry(ULONG thread_input)
             /* Open error log file (append) */
             ErrorLog_Open();
 
-            ErrorLog_Write("fx: COMMAND_START_LOG enter, before fx_file_create Sens");
+            /* v13 strategy: pre-write a forward-looking manifest of all the
+               upcoming risky operations as a single batch, then flush ONCE.
+               If any subsequent flush hangs (the v11 failure mode), we still
+               have all the "about to attempt" markers on disk — telling us
+               exactly which step the firmware reached before stalling. The
+               many-writes-one-flush pattern matches the working ErrorLog_Open
+               path on Peter's 3.3V-modded box. */
+            {
+              CHAR m[80];
+              sprintf(m, "fx: COMMAND_START_LOG enter, first create target='%s'", file_name);
+              ErrorLog_Write(m);
+            }
+            ErrorLog_Write("fx: about to call pre-create fx_media_flush");
+            ErrorLog_Write("fx: about to call first fx_file_create Sens");
+            ErrorLog_Write("fx: about to call fx_file_open Sens");
+            ErrorLog_Write("fx: about to call fx_file_seek Sens");
+            ErrorLog_Write("fx: about to call fx_file_write Sens header");
+            ErrorLog_Write("fx: about to call fx_media_flush after Sens header");
+            {
+              UINT fst = ErrorLog_Flush();
+              if (fst != FX_SUCCESS)
+              {
+                /* Best-effort: flush itself failed. Mark it for the next batch
+                   (will land on disk after a later flush survives). */
+                CHAR m[80];
+                sprintf(m, "fx: WARNING manifest flush returned status=0x%X",
+                        (unsigned)fst);
+                ErrorLog_Write(m);
+              }
+            }
+
+            /* Flush any pending FAT writes before creating new files. */
+            {
+              UINT fst = fx_media_flush(&sdio_disk);
+              CHAR m[64];
+              sprintf(m, "fx: pre-create fx_media_flush returned status=0x%X",
+                      (unsigned)fst);
+              ErrorLog_Write(m);
+            }
 
             /* Create a file in the root directory.  */
             status =  fx_file_create(&sdio_disk, file_name);
 
-            ErrorLog_Write("fx: fx_file_create Sens returned");
+            {
+              CHAR m[64];
+              sprintf(m, "fx: first fx_file_create Sens returned status=0x%X",
+                      (unsigned)status);
+              ErrorLog_Write(m);
+            }
+            /* Commit the create's result + the pre-create flush result before
+               attempting the next risky step. */
+            ErrorLog_Flush();
 
             /* Check the create status.  */
             if (status != FX_SUCCESS)
@@ -418,12 +464,28 @@ static void fx_thread_entry(ULONG thread_input)
               }
               else
               {
-                /* Searching one available File */
-                while (status == FX_ALREADY_CREATED)
+                /* Searching one available File. Cap iterations at 256 so a
+                   stuck directory scan becomes visible (would otherwise be
+                   indistinguishable from "hangs forever in fx_file_create"). */
+                ULONG iter = 0;
+                while (status == FX_ALREADY_CREATED && iter < 256U)
                 {
                   sprintf(file_name, "Sens%03d.csv", SDCardCounter);
                   SDCardCounter++;
+                  iter++;
+                  {
+                    CHAR m[80];
+                    sprintf(m, "fx: ALREADY_CREATED loop iter=%lu trying='%s'",
+                            (unsigned long)iter, file_name);
+                    ErrorLog_Write(m);
+                  }
                   status =  fx_file_create(&sdio_disk, file_name);
+                  {
+                    CHAR m[80];
+                    sprintf(m, "fx: ALREADY_CREATED loop iter=%lu returned status=0x%X",
+                            (unsigned long)iter, (unsigned)status);
+                    ErrorLog_Write(m);
+                  }
                   /* Check the create status.  */
                   if (status != FX_SUCCESS)
                   {
@@ -435,6 +497,11 @@ static void fx_thread_entry(ULONG thread_input)
                       Error_Handler(__FILE__, __LINE__);
                     }
                   }
+                }
+                if (iter >= 256U && status == FX_ALREADY_CREATED)
+                {
+                  ErrorLog_Write("fx: FATAL ALREADY_CREATED loop exceeded 256 iter");
+                  Error_Handler(__FILE__, __LINE__);
                 }
               }
             }
@@ -449,6 +516,8 @@ static void fx_thread_entry(ULONG thread_input)
               sprintf(m, "fx: fx_file_open Sens returned status=0x%X", (unsigned)status);
               ErrorLog_Write(m);
             }
+            /* Commit the open's result. */
+            ErrorLog_Flush();
 
             /* Check the file open status.  */
             if (status != FX_SUCCESS)
@@ -1295,6 +1364,17 @@ static void ErrorLog_Open(void)
   * @param  msg: null-terminated string to log
   * @retval None
   */
+/* ErrorLog_Write no longer flushes after every line. The per-write flush
+   pattern was observed to hang on Peter's 3.3V-modded box right after
+   ErrorLog_Open's batched flush succeeded — likely an SD-card post-write
+   busy state the SDMMC driver mishandles. Accumulate writes in the FileX
+   cache instead; explicit ErrorLog_Flush() calls (or any other operation
+   that triggers a flush, like fx_file_create) commit them to disk in
+   the same many-writes-one-flush pattern that ErrorLog_Open uses
+   successfully. Cost of this: if the firmware hangs between flushes,
+   markers since the last flush are lost — but in practice we get more
+   markers on disk, not fewer, because we hit the hanging flush less
+   often. */
 void ErrorLog_Write(const char *msg)
 {
   if (!ErrorLogFileOpen)
@@ -1303,7 +1383,15 @@ void ErrorLog_Write(const char *msg)
   CHAR line[300];
   INT len = sprintf(line, "[%lu ms] %s\r\n", tx_time_get(), msg);
   fx_file_write(&ErrorLogFxFile, line, len);
-  fx_media_flush(&sdio_disk);
+}
+
+/* Explicit flush — call at strategic checkpoints. Returns the FileX
+   status so callers can decide whether to give up. */
+UINT ErrorLog_Flush(void)
+{
+  if (!ErrorLogFileOpen)
+    return FX_SUCCESS;
+  return fx_media_flush(&sdio_disk);
 }
 
 /**
