@@ -48,16 +48,16 @@ extern "C" {
 #define GPS_RATE_HZ 10
 #endif
 
-/* Build counter — bumped by the Makefile on every invocation, embedded
-   into the firmware so two .bin files in a field tester's Downloads
-   folder can be told apart by the on-card FW_INFO.txt + error log
-   ("fw: v42 ...") and by the firmware filename itself
-   (build/firmware_v42.bin). The Makefile passes -DFW_BUILD_NUM=N; for
-   IDE builds (STM32CubeIDE / IAR / Keil) that don't define it we fall
-   back to 0 so the field tester sees "v0" and knows it wasn't a CLI
-   build. */
-#ifndef FW_BUILD_NUM
-#define FW_BUILD_NUM 0
+/* Firmware version — semver string read from the Makefile's .version
+   file and passed in as -DFW_VERSION_STRING="X.Y.Z". Bumped manually
+   via `make bump` (patch) / `make bump-minor` / `make bump-major` —
+   not on every `make`. Used in the boot marker, the FW_INFO_v<X.Y.Z>
+   file at the SD root, and the build/firmware_v<X.Y.Z>.bin filename.
+   For IDE builds (STM32CubeIDE / IAR / Keil) that don't define it we
+   fall back to "0.0.0" so the field tester sees that and knows it
+   wasn't a CLI build. */
+#ifndef FW_VERSION_STRING
+#define FW_VERSION_STRING "0.0.0"
 #endif
 #if (GPS_RATE_HZ < 1) || (GPS_RATE_HZ > 25)
 #error "GPS_RATE_HZ must be in [1, 25] Hz for MAX-M10S at 38400 baud."
