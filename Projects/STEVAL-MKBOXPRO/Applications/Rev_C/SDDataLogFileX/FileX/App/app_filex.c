@@ -1299,12 +1299,12 @@ static void ErrorLog_Open(void)
   extern uint32_t BootResetCsr;  /* snapshotted in main() after HAL_Init() */
 
   CHAR boot_msg[256];
-  INT len = sprintf(boot_msg, "--- Boot v%s %s %s ---\r\n",
-                    FW_VERSION_STRING, __DATE__, __TIME__);
+  INT len = sprintf(boot_msg, "--- Boot v%u %s %s ---\r\n",
+                    (unsigned)FW_BUILD_NUM, __DATE__, __TIME__);
   fx_file_write(&ErrorLogFxFile, boot_msg, len);
   len = sprintf(boot_msg,
-    "fw: v%s build %s %s | GPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
-    FW_VERSION_STRING,
+    "fw: v%u build %s %s | GPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    (unsigned)FW_BUILD_NUM,
     __DATE__, __TIME__,
     (unsigned)GPS_RATE_HZ,
     STBOX1_LOG_AUDIO, STBOX1_LOG_BATTERY,
@@ -1408,9 +1408,9 @@ void ErrorLog_Close(void)
 }
 
 /**
-  * @brief  Write FW_INFO_v<X.Y.Z>.TXT at the SD-card root with the current
-  *         firmware fingerprint, where <X.Y.Z> is FW_VERSION_STRING. Field
-  *         tester can see which firmware is on the box from the SD listing
+  * @brief  Write FW_INFO_v<N>.TXT at the SD-card root with the current
+  *         firmware fingerprint, where <N> is FW_BUILD_NUM. Field tester
+  *         can see which firmware is on the box from the SD listing
   *         alone — no need to open any file. Old FW_INFO* files (the
   *         legacy fixed-name FW_INFO.TXT and any older FW_INFO_v*.TXT
   *         from previously-flashed firmware) are deleted on every boot
@@ -1426,17 +1426,17 @@ static void WriteFwInfoFile(void)
 {
   FX_FILE info_file;
   CHAR info[200];
-  CHAR fw_info_name[40];
+  CHAR fw_info_name[24];
 
   extern uint32_t _sidata, _sdata, _edata;
   ULONG flash_end_addr = (ULONG)&_sidata + ((ULONG)&_edata - (ULONG)&_sdata);
   ULONG flash_kb = (flash_end_addr - 0x08000000UL + 1023) / 1024;
 
-  sprintf(fw_info_name, "FW_INFO_v%s.TXT", FW_VERSION_STRING);
+  sprintf(fw_info_name, "FW_INFO_v%u.TXT", (unsigned)FW_BUILD_NUM);
 
   INT len = sprintf(info,
-    "fw: v%s build %s %s\r\nGPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
-    FW_VERSION_STRING,
+    "fw: v%u build %s %s\r\nGPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    (unsigned)FW_BUILD_NUM,
     __DATE__, __TIME__,
     (unsigned)GPS_RATE_HZ,
     STBOX1_LOG_AUDIO, STBOX1_LOG_BATTERY,

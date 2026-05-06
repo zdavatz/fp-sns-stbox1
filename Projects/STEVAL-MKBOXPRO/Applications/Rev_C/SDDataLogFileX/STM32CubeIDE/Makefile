@@ -19,12 +19,11 @@ CPU = -mcpu=cortex-m33 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard
 # UART saturates even with only GGA+RMC enabled.
 GPS_RATE_HZ ?= 10
 
-# Firmware version — semver-style string read from .version (committed).
-# `make` itself does NOT bump it; use `make bump` to increment the patch
-# component before shipping a new release. Lets the field tester tell
-# two builds apart by a meaningful version, not by an opaque counter.
-VERSION_FILE := .version
-FW_VERSION   := $(shell cat $(VERSION_FILE) 2>/dev/null || echo 0.0.0)
+# Build counter — bumped on every `make` invocation. Lets the field tester
+# tell two builds apart at a glance ("fw#42" vs "fw#43") even when the
+# compile timestamp is the same minute. Counter file is gitignored.
+BUILD_COUNTER_FILE := .build_counter
+FW_BUILD_NUM := $(shell n=$$(cat $(BUILD_COUNTER_FILE) 2>/dev/null || echo 0); n=$$((n+1)); echo $$n > $(BUILD_COUNTER_FILE); echo $$n)
 
 DEFS = \
   -DUSE_HAL_DRIVER \
@@ -33,7 +32,7 @@ DEFS = \
   -DTX_INCLUDE_USER_DEFINE_FILE \
   -DTX_SINGLE_MODE_NON_SECURE=1 \
   -DGPS_RATE_HZ=$(GPS_RATE_HZ) \
-  -DFW_VERSION_STRING=\"$(FW_VERSION)\"
+  -DFW_BUILD_NUM=$(FW_BUILD_NUM)
 
 ASM_DEFS = -DTX_SINGLE_MODE_NON_SECURE=1
 
@@ -600,7 +599,7 @@ vpath %.c $(sort $(dir $(C_SOURCES)))
 vpath %.s $(sort $(dir $(ASM_SOURCES)))
 vpath %.S $(sort $(dir $(ASM_SOURCES_S)))
 
-all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/firmware.bin $(BUILD_DIR)/firmware_v$(FW_VERSION).bin
+all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/firmware.bin $(BUILD_DIR)/firmware_v$(FW_BUILD_NUM).bin
 
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
@@ -618,12 +617,12 @@ $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS)
 $(BUILD_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf
 	$(CP) -O binary $< $@
 
-# app_filex.c bakes in FW_VERSION_STRING via -D on the command line, but
+# app_filex.c bakes in FW_BUILD_NUM via -D on the command line, but
 # make doesn't track command-line defines as dependencies — so a
 # rebuild without source changes would reuse the prior .o file and
-# the new firmware_v<X.Y.Z>.bin would actually report the previous
-# version inside. Mark this .o as always-rebuild to keep the on-card
-# version label honest. Costs a few seconds per build; cheap insurance.
+# the new firmware_v<N>.bin would actually report "v<N-1>" inside.
+# Mark this .o as always-rebuild to keep the on-card version label
+# honest. Costs a few seconds per build; cheap insurance.
 $(BUILD_DIR)/app_filex.o: FORCE
 .PHONY: FORCE
 FORCE:
@@ -635,11 +634,11 @@ $(BUILD_DIR)/firmware.bin: $(BUILD_DIR)/$(TARGET).bin
 	cp $< $@
 
 # Versioned filename — same bytes as firmware.bin, but the filename
-# itself carries the version so two .bin files in Peter's Downloads
-# folder can't be confused. Send `firmware_v<X.Y.Z>.bin` via WhatsApp;
-# Peter can flash it directly with dfu-util (which doesn't care about
-# the name) or rename to `firmware.bin` for the SD path.
-$(BUILD_DIR)/firmware_v$(FW_VERSION).bin: $(BUILD_DIR)/$(TARGET).bin
+# itself carries the build number so two .bin files in Peter's
+# Downloads folder can't be confused. Send `firmware_v<N>.bin` via
+# WhatsApp; Peter can flash it directly with dfu-util (which doesn't
+# care about the name) or rename to `firmware.bin` for the SD path.
+$(BUILD_DIR)/firmware_v$(FW_BUILD_NUM).bin: $(BUILD_DIR)/$(TARGET).bin
 	cp $< $@
 
 $(BUILD_DIR):
@@ -648,25 +647,4 @@ $(BUILD_DIR):
 clean:
 	rm -rf $(BUILD_DIR)
 
-# Bump the patch component of $(VERSION_FILE) by 0.0.1. Run this once
-# per release that you want to ship to a field tester — NOT on every
-# `make`. Use `make bump-minor` / `bump-major` for the larger bumps.
-bump:
-	@v=$$(cat $(VERSION_FILE) 2>/dev/null || echo 0.0.0); \
-	new=$$(echo $$v | awk -F. '{printf "%d.%d.%d", $$1, $$2, $$3+1}'); \
-	echo $$new > $(VERSION_FILE); \
-	echo "version $$v -> $$new"
-
-bump-minor:
-	@v=$$(cat $(VERSION_FILE) 2>/dev/null || echo 0.0.0); \
-	new=$$(echo $$v | awk -F. '{printf "%d.%d.0", $$1, $$2+1}'); \
-	echo $$new > $(VERSION_FILE); \
-	echo "version $$v -> $$new"
-
-bump-major:
-	@v=$$(cat $(VERSION_FILE) 2>/dev/null || echo 0.0.0); \
-	new=$$(echo $$v | awk -F. '{printf "%d.0.0", $$1+1}'); \
-	echo $$new > $(VERSION_FILE); \
-	echo "version $$v -> $$new"
-
-.PHONY: all clean bump bump-minor bump-major
+.PHONY: all clean

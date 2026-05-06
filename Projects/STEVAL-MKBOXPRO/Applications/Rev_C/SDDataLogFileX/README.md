@@ -152,18 +152,16 @@ If boot stops before the 3rd blink, one of the init steps hung — useful for na
 
 If boot hangs at "2 green + N×red + dark", N pins down which sensor's I²C/SPI transaction is blocking. Costs ~3 s of boot time but invaluable when serial debug is unavailable. Discovered Peter's box hang at 2-green-zero-red on 26.4.2026 — meaning `InitMemsSensors()` was never being called, which combined with the fact that newly DFU'd firmware kept exhibiting the same hang regardless of code changes pointed at a flash-bank/option-byte mismatch (the chip was running a stale firmware in one bank while DFU was writing to the other). See "Recovering from a stuck flash bank" below.
 
-**FW_INFO_v<X.Y.Z>.TXT at SD-card root.** On every successful SD-mount the firmware writes a versioned fingerprint file `FW_INFO_v<X.Y.Z>.TXT` (where `<X.Y.Z>` is `FW_VERSION_STRING` from `.version`) at the SD root, e.g. `FW_INFO_v0.0.18.TXT`:
+**FW_INFO_v<N>.TXT at SD-card root.** On every successful SD-mount the firmware writes a versioned fingerprint file `FW_INFO_v<N>.TXT` (where `<N>` is `FW_BUILD_NUM`) at the SD root, e.g. `FW_INFO_v10.TXT`:
 
 ```
-fw: v0.0.18 build May  6 2026 15:42:10
-GPS 10Hz | AUDIO=0 BATTERY=1 | flash ~120KB
+fw: v10 build May  5 2026 09:50:12
+GPS 10Hz | AUDIO=0 BATTERY=1 | flash ~147KB
 ```
 
-Same content as the second line of the `--- Boot ---` marker in `Error_Log_Pump_Tsueri_*.log`. The version is in the **filename itself**, so the field tester can tell which firmware ran from the SD listing alone — no need to open any file. Especially useful after a firmware update to confirm DFU/SD-update actually took: if the expected `FW_INFO_v<X.Y.Z>.TXT` doesn't appear in the listing after copying the new `firmware.bin`, the chip is running a stale firmware copy.
+Same content as the second line of the `--- Boot ---` marker in `Error_Log_Pump_Tsueri_*.log`. The version is in the **filename itself**, so the field tester can tell which firmware ran from the SD listing alone — no need to open any file. Especially useful after a firmware update to confirm DFU/SD-update actually took: if `FW_INFO_v<N+1>.TXT` doesn't appear in the listing after copying the new `firmware.bin`, the chip is running a stale firmware copy.
 
-The version is bumped manually with `make bump` (patch +0.0.1) / `make bump-minor` (+0.1.0) / `make bump-major` (+1.0.0) before shipping a release — `make` itself reads `.version` without modifying it. Pre-v0.0.18 the firmware used an auto-incrementing integer in `.build_counter` (e.g. `FW_INFO_v18.TXT`); the on-disk cleanup logic still recognises and deletes those legacy files.
-
-On every boot the firmware enumerates the SD root and deletes any pre-existing `FW_INFO*` file (the legacy fixed-name `FW_INFO.TXT` from before per-version naming, the older integer-counter `FW_INFO_v<N>.TXT` form, plus any older `FW_INFO_v<X.Y.Z>.TXT` from previously-flashed builds) so the listing always shows exactly one fingerprint file matching the running binary. Implementation: `WriteFwInfoFile()` in `app_filex.c`, called from `CheckAndApplyFirmwareUpdate()` right after `fx_media_open` succeeds. Two-pass enumeration (collect names first, delete after) so the FX directory iterator isn't invalidated mid-iteration; up to 8 stale entries cleaned per boot, generous headroom against any realistic flash history.
+On every boot the firmware enumerates the SD root and deletes any pre-existing `FW_INFO*` file (the legacy fixed-name `FW_INFO.TXT` from before per-version naming, plus any older `FW_INFO_v*.TXT` from previously-flashed builds) so the listing always shows exactly one fingerprint file matching the running binary. Implementation: `WriteFwInfoFile()` in `app_filex.c`, called from `CheckAndApplyFirmwareUpdate()` right after `fx_media_open` succeeds. Two-pass enumeration (collect names first, delete after) so the FX directory iterator isn't invalidated mid-iteration; up to 8 stale entries cleaned per boot, generous headroom against any realistic flash history.
 
 **Recovering from a stuck flash bank (26.4.2026).** STM32U585 has dual-bank flash with a `SWAP_BANK` option byte that selects which physical bank maps to address `0x08000000` at boot. Successful SD-updates toggle this byte, but the documented bank-swap-bug can leave `SWAP_BANK` in an inconsistent state. Symptoms when this happens:
 
