@@ -55,6 +55,7 @@
 #include "SensorTileBoxPro_motion_sensors.h"
 #include "gps_nmea.h"
 #include "buzzer.h"
+#include "ble_sync.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/

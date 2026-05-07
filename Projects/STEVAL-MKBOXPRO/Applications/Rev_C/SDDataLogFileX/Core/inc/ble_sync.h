@@ -28,6 +28,18 @@ extern "C" {
  */
 UINT BleSync_ThreadX_Init(TX_BYTE_POOL *byte_pool);
 
+/**
+ * @brief  Run the full BLE bring-up (chip-alive probe + bluetooth_init +
+ *         EXTI11 arm) synchronously from main() BEFORE MX_ThreadX_Init.
+ *         Called pre-kernel so there is no fx_thread / no concurrent SDMMC
+ *         activity to be corrupted by the BlueNRG-LP HCI_Reset SPI traffic
+ *         on the 3.3V-modded reservebox (issue #12). After this call
+ *         returns the kernel can start; ble_sync_thread sees the result in
+ *         g_ble_probe_status and either enters its event loop (status=1)
+ *         or parks (status=0/2). No-op when STBOX1_ENABLE_BLE_SYNC=0.
+ */
+void BleSync_PreKernelInit(void);
+
 #ifdef __cplusplus
 }
 #endif

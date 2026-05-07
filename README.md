@@ -198,6 +198,23 @@ A third refinement catches a half-dead BlueNRG-LP that ACK's SPI bytes but then 
 
 A fourth gotcha — `bluetooth_init()` returning non-zero on a BlueNRG-LP that worked fine under unmodified ST firmware a week earlier — was traced to a missing `HAL_PWREx_EnableVddIO2()` call in SDDataLogFileX's `HAL_MspInit`. STM32U585 gates the PG[15:2] GPIO bank behind a separate VddIO2 IO supply rail, and the ST reference firmware (BLEDualProgram) enables it explicitly while SDDataLogFileX did not. The chip-presence gate above did its job by parking the BLE thread cleanly, but it was masking a power-island problem rather than a genuinely dead chip. Fixed in `stm32u5xx_hal_msp.c`. **If you regenerate this file from CubeMX, double-check the call survived** — easy to lose during regen.
 
+### First-time BlueNRG-LP OTP setup (one-shot per box)
+
+The BlueNRG-LP chip on the SensorTile.box PRO needs **OTP (One-Time-Programmable) memory programmed with a BLE stack patch** before our SDDataLogFileX firmware can talk to it. From-the-factory boxes typically already have this done, but on hardware-modified boxes (e.g. Peter's 3.3V mod) the chip can be in a state where the OTP is incomplete — symptoms are: BLE never advertises (any device name), `bluetooth_init()` silently fails, and on the 3.3V-modded box the chip's undefined behaviour even drew enough current to crash SDMMC writes (issue #12).
+
+**Our SDDataLogFileX firmware does not do OTP programming itself.** The closed-source-but-public `STSW-BNRGLP-DK` package on st.com has the WLC SPI flasher (`DTM_Updater_SPI.c`); integrating it into our firmware is a TODO (see CLAUDE.md "BlueNRG-LP OTP / WLC flashing" for status). Until then, the one-shot per-box workflow is:
+
+1. Put `dtm.bin` (the BlueNRG-LP stack image) at the SD-card root.
+2. DFU-flash the **ST original firmware** `SensorTile.boxPRO.bin` onto the STM32U585.
+3. Power-cycle the box. The ST firmware checks the BlueNRG-LP's OTP, finds it needs programming, reads `dtm.bin` from SD, writes it via SPI into the BlueNRG-LP RAM, boots the chip from RAM, and burns the OTP fuses. Permanent — survives all subsequent flash/reset cycles.
+4. Optional verification: connect with the *ST BLE Sensor* app on a phone — if connection succeeds, the chip is properly programmed and you can stop here.
+5. Delete `dtm.bin` from the SD card (no longer needed).
+6. DFU-flash our SDDataLogFileX firmware. From now on `bluetooth_init()` talks to a properly initialised chip; BLE FileSync works alongside SDMMC logging without interference.
+
+After step 3, the chip's OTP is permanent. Re-flashing our firmware (DFU or via SD-card update path) does not need step 1–3 to be repeated; just flash the new `firmware.bin` and the chip stays good forever.
+
+`dtm.bin` and `SensorTile.boxPRO.bin` come from ST's pre-built distributions of the BlueNRG-LP stack and the SensorTile.boxPRO function pack respectively. Neither is in this repo; pull from st.com when needed.
+
 ### Firmware Update via SD Card
 
 The firmware can be updated without BLE, JTAG, or ST-Link — just the SD card:

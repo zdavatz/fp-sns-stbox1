@@ -94,55 +94,87 @@ static uint8_t ble_chip_alive_probe(void)
   return 0U;
 }
 
-static void ble_sync_thread_entry(ULONG arg)
+/* Run the entire BLE bring-up (chip-alive probe + bluetooth_init +
+   EXTI11 callback registration) synchronously in main()'s context,
+   BEFORE MX_ThreadX_Init starts the kernel. Reason: on Peter's
+   3.3V-modded reservebox the BlueNRG-LP's HCI_Reset SPI activity
+   leaves the SDMMC peripheral / SD card in a permanently broken
+   state. By doing all of BLE init pre-kernel, fx_thread doesn't
+   exist yet — there's no SDMMC operation to corrupt. After this
+   call returns, the kernel can start; ble_sync_thread will then
+   skip directly to the HCI event-loop, and fx_thread can use SDMMC
+   freely (until a phone connects and triggers BLE FileSync SPI
+   activity, at which point the same problem may resurface). Issue #12. */
+void BleSync_PreKernelInit(void)
 {
-  (void)arg;
-
-  /* Probe BEFORE entering bluetooth_init / init_ble_manager. On a dead
-     chip the probe fails fast; init_ble_manager would otherwise hang
-     the kernel during fx_thread's first tx_thread_sleep yield. */
   uint8_t alive = ble_chip_alive_probe();
   if (!alive)
   {
     g_ble_probe_status = 0U;
-    /* Park forever. fx_thread keeps running. SD logger + GPS + battery
-       all unaffected; only BLE FileSync is disabled this session. */
+    return;  /* ble_sync_thread will see status=0 and park */
+  }
+  uint8_t init_rc = bluetooth_init();
+  if (init_rc != 0U)
+  {
+    g_ble_probe_status = 2U;
+    return;  /* ble_sync_thread will see status=2 and park */
+  }
+  g_ble_probe_status = 1U;
+  init_ble_int_for_blue_nrglp();
+  /* From here BLE is up and advertising; EXTI11 is armed. The kernel
+     hasn't started yet but hci_tl_lowlevel_isr (the EXTI callback)
+     just sets a static flag, so any IRQ that fires between now and
+     ble_sync_thread starting is harmlessly queued. */
+}
+
+static void ble_sync_thread_entry(ULONG arg)
+{
+  (void)arg;
+
+  /* v38 diagnostic: set intermediate values of g_ble_probe_status so the
+     fx_thread periodic logger can show us exactly where the BLE init
+     gets stuck. The terminal codes 0/1/2 (set after each init step
+     succeeds/fails) are kept; the 0xFx codes are intermediate progress
+     markers. Issue #12. */
+  g_ble_probe_status = 0xF0U;  /* thread entered */
+
+  /* Probe BEFORE entering bluetooth_init. */
+  g_ble_probe_status = 0xF1U;  /* about to call ble_chip_alive_probe */
+  uint8_t alive = ble_chip_alive_probe();
+  if (!alive)
+  {
+    g_ble_probe_status = 0U;
     for (;;) {
-      ErrorLog_Write("ble: probe FAILED - parked, no init_ble_manager");
-      tx_thread_sleep(3000);  /* re-write every 30 s so the log keeps
-                                 confirming we're still parked */
+      ErrorLog_Write("ble: probe FAILED - parked");
+      tx_thread_sleep(3000);
     }
   }
+  g_ble_probe_status = 0xF2U;  /* probe returned alive=1, about to call bluetooth_init */
 
   /* Brings up the SPI-1/HCI link, registers GAP, sets the random address,
-     and starts advertising as STBoxSync. set_board_name() is called from
-     within init_ble_manager(). Non-zero return = the BlueNRG-LP ACK'd
-     SPI bytes (probe passed) but the GATT/GAP handshake failed somewhere
-     deeper. We must NOT arm the EXTI in that case: a stuck-high IRQ line
-     would otherwise storm the NVIC indefinitely and starve fx_thread
-     mid-write (the symptom Peter sees as "10 s logging then frozen
-     green LED, BLE never advertises"). */
+     and starts advertising as STBoxSync. */
   ErrorLog_Write("ble: probe OK - calling bluetooth_init");
   uint8_t init_rc = bluetooth_init();
+  g_ble_probe_status = 0xF3U;  /* bluetooth_init returned (any rc) */
+
   if (init_rc != 0U)
   {
     g_ble_probe_status = 2U;
     char m[64];
     sprintf(m, "ble: bluetooth_init returned rc=%u - parking", (unsigned)init_rc);
     ErrorLog_Write(m);
-    /* Park the thread so it never rearms the IRQ. fx_thread continues
-       writing the log untouched. */
     for (;;) {
       ErrorLog_Write("ble: still parked after init FAIL");
       tx_thread_sleep(3000);
     }
   }
-  g_ble_probe_status = 1U;
+  g_ble_probe_status = 0xF4U;  /* about to arm EXTI11 */
   ErrorLog_Write("ble: bluetooth_init OK - arming EXTI11");
 
-  /* Hook EXTI11 → hci_tl_lowlevel_isr — this is what flips `hci_event`
-     from the NVIC when the BlueNRG-LP raises its IRQ line. */
+  /* Hook EXTI11 → hci_tl_lowlevel_isr — what flips `hci_event` from
+     the NVIC when the BlueNRG-LP raises its IRQ line. */
   init_ble_int_for_blue_nrglp();
+  g_ble_probe_status = 1U;  /* SUCCESS: advertising + IRQ armed */
 
   for (;;)
   {
@@ -151,12 +183,7 @@ static void ble_sync_thread_entry(ULONG arg)
       hci_event = 0;
       hci_user_evt_proc();
     }
-    /* Drives the LIST state machine — kept out of the HCI callback so
-       FileX directory walks don't block the event pump. */
     BleFileSync_Tick();
-    /* 10 ms is roughly one ThreadX tick — short enough that connection-
-       interval timing isn't disturbed, long enough that an idle BLE link
-       doesn't burn CPU against the FileX writer. */
     tx_thread_sleep(1);
   }
 }
@@ -190,6 +217,11 @@ UINT BleSync_ThreadX_Init(TX_BYTE_POOL *byte_pool)
 {
   (void)byte_pool;
   return TX_SUCCESS;
+}
+
+void BleSync_PreKernelInit(void)
+{
+  /* No-op when BLE is compiled out. */
 }
 
 #endif /* STBOX1_ENABLE_BLE_SYNC */

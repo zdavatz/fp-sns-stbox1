@@ -1065,6 +1065,38 @@ static void fx_thread_entry(ULONG thread_input)
 #endif /* STBOX1_LOG_BATTERY */
 
               fx_media_flush(&sdio_disk);
+
+#if STBOX1_ENABLE_BLE_SYNC
+              /* v37 diagnostic: log BLE probe-status changes via the
+                 1-Hz periodic flush. ble_sync_thread sets g_ble_probe_status
+                 to 0/1/2 after probe + bluetooth_init complete; if its
+                 ErrorLog_Write calls happened before ErrorLog_Open
+                 (early boot race), they were dropped. This re-emits the
+                 outcome on every change so we see it land. Issue #12. */
+              extern volatile uint8_t g_ble_probe_status;
+              static uint8_t last_logged_probe = 0xFEU;  /* != 0xFF so first 0xFF gets logged */
+              if (g_ble_probe_status != last_logged_probe) {
+                CHAR pmsg[100];
+                const char *meaning = "?";
+                switch (g_ble_probe_status) {
+                  case 0x00: meaning = "probe FAILED"; break;
+                  case 0x01: meaning = "init OK, advertising"; break;
+                  case 0x02: meaning = "probe OK, bluetooth_init FAILED"; break;
+                  case 0xF0: meaning = "thread entered"; break;
+                  case 0xF1: meaning = "stuck in ble_chip_alive_probe (or HCI_Reset send)"; break;
+                  case 0xF2: meaning = "stuck in bluetooth_init (init_ble_manager)"; break;
+                  case 0xF3: meaning = "bluetooth_init returned (transient)"; break;
+                  case 0xF4: meaning = "stuck in init_ble_int_for_blue_nrglp"; break;
+                  case 0xFF: meaning = "thread never started"; break;
+                  default:   meaning = "unknown"; break;
+                }
+                sprintf(pmsg, "ble: probe_status changed 0x%02X -> 0x%02X (%s)",
+                        (unsigned)last_logged_probe,
+                        (unsigned)g_ble_probe_status, meaning);
+                ErrorLog_Write(pmsg);
+                last_logged_probe = g_ble_probe_status;
+              }
+#endif
             }
           }
           BSP_LED_Toggle(LED_GREEN);

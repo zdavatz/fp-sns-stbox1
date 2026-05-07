@@ -211,10 +211,27 @@ ADDITIONAL_COMP : [ST25DV64KC](https://www.st.com/en/nfc/st25dv64kc.html)
 
 ADDITIONAL_COMP : [STM32WB07KC](https://www.st.com/en/microcontrollers-microprocessors/stm32wb07kc.html)
 
+### <b>First-time setup: BlueNRG-LP OTP programming (one-shot per box)</b>
+
+The on-board BlueNRG-LP BLE chip needs its OTP (One-Time-Programmable) memory burned with a BLE stack patch (`dtm.bin`, 200 KB) before this firmware's `bluetooth_init()` can talk to it. Factory boxes usually already have the OTP programmed, but on hardware-modified boxes (e.g. 3.3V-rail mod for the GPS daughterboard) the chip can be in an unprogrammed state — `bluetooth_init()` then silently fails, BLE doesn't advertise, and on the 3.3V-modded box the chip's undefined behaviour previously even crashed SDMMC writes (issue #12).
+
+**This firmware does not OTP-program the BlueNRG-LP itself** (TODO — the WLC SPI flasher source from ST's `STSW-BNRGLP-DK` package needs to be integrated). One-shot recovery procedure per box:
+
+1. Put `dtm.bin` (BlueNRG-LP stack image, from ST) on the SD-card root.
+2. DFU-flash the **ST original firmware** (`SensorTile.boxPRO.bin`, also from ST) onto the STM32U585.
+3. Power-cycle. The ST firmware reads `dtm.bin` from SD, writes it via SPI into the BlueNRG-LP RAM, boots the chip from RAM, and burns the OTP fuses. Permanent — survives all subsequent reflash/reset cycles.
+4. (Optional) Verify by connecting with the *ST BLE Sensor* phone app — connection success means the chip is properly programmed.
+5. Delete `dtm.bin` from SD, DFU-flash this firmware. BLE FileSync now works alongside SDMMC logging.
+
+The OTP is one-shot. Subsequent firmware updates (DFU or via SD-card path) don't need steps 1–3 repeated — flash the new `firmware.bin` and the chip stays good forever.
+
+`dtm.bin` and `SensorTile.boxPRO.bin` are not part of this repository; pull both from st.com (`STSW-BNRGLP-DK` for `dtm.bin`, the SensorTile.box PRO factory firmware page for `SensorTile.boxPRO.bin`). See top-level `README.md` "First-time BlueNRG-LP OTP setup" for context and CLAUDE.md "BlueNRG-LP OTP / WLC flashing" for the technical detail.
+
 ### <b>Known Issues</b>
 
 - The firmware doesn't suite with STM32CubeMX
 - Beware of a warning on STM32CubeIDE v1.18.1 during compilation: "SDDataLogFileX.elf has a LOAD segment with RWX permissions"
+- BlueNRG-LP OTP programming has to be done once manually per box via ST original firmware — see "First-time setup" section above. Integrating ST's WLC SPI flasher to make this self-healing is a TODO.
 
 ### <b>Dependencies</b>
 
