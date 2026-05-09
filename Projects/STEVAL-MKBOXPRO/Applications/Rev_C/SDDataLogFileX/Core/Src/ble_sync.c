@@ -149,9 +149,13 @@ static void ble_sync_thread_entry(ULONG arg)
   /* IMMEDIATE flush diagnostic — write + flush before EVERY risky step so
      a reset that happens mid-init still leaves a marker on disk. Without
      this, the batched-flush ErrorLog_Write loses everything between the
-     last fx_media_flush and the reboot. Issue #12 debugging. */
+     last fx_media_flush and the reboot. Issue #12 debugging.
+     ALSO mirror to USB CDC printf so the live debug viewer sees the same
+     trace — when BLE init kills USB, the *last* line printed pinpoints
+     which step did it. */
   ErrorLog_Write("ble: thread entered (will flush)");
   ErrorLog_Flush();
+  printf("ble: thread entered\r\n");
 
   g_ble_probe_status = 0xF0U;  /* thread entered */
 
@@ -159,10 +163,12 @@ static void ble_sync_thread_entry(ULONG arg)
   g_ble_probe_status = 0xF1U;  /* about to call ble_chip_alive_probe */
   ErrorLog_Write("ble: about to ble_chip_alive_probe");
   ErrorLog_Flush();
+  printf("ble: about to ble_chip_alive_probe\r\n");
   uint8_t alive = ble_chip_alive_probe();
   ErrorLog_Write(alive ? "ble: probe returned alive=1"
                         : "ble: probe returned alive=0");
   ErrorLog_Flush();
+  printf("ble: probe returned alive=%u\r\n", (unsigned) alive);
   if (!alive)
   {
     g_ble_probe_status = 0U;
@@ -188,10 +194,12 @@ static void ble_sync_thread_entry(ULONG arg)
      logging is already running. Issue #12 / Peter's reservebox. */
   ErrorLog_Write("ble: probe OK - 2s settle (yielding), then bluetooth_init");
   ErrorLog_Flush();
+  printf("ble: probe OK - 2s settle\r\n");
   tx_thread_sleep(200);
 
   ErrorLog_Write("ble: about to bluetooth_init()");
   ErrorLog_Flush();
+  printf("ble: about to bluetooth_init\r\n");
 
   /* Brings up the SPI-1/HCI link, registers GAP, sets the random address,
      and starts advertising as STBoxSync. */

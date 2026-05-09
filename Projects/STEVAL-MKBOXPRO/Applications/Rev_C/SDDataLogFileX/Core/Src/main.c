@@ -117,7 +117,31 @@ static void BootStageBlink(uint8_t count);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+  /* DFU bootloader entry on demand. Triggered by usb_cdc.c writing
+   * 0xDEADBEEF to TAMP->BKP0R + NVIC_SystemReset. We arrive here in a
+   * clean post-reset state — VTOR/MSP/peripherals all defaults — which
+   * is what the STM32U5 system bootloader expects. Direct-jump from
+   * running firmware leaks too much state (OTG_FS dirty, threadx ticks
+   * pending) and the bootloader silently fails to bring up USB.
+   *
+   * Sequence: enable PWR clock + backup-domain access + RTCAPB clock,
+   * then probe TAMP->BKP0R. If the magic is set, clear it and chain into
+   * the system bootloader via the standard MSP+VTOR+jump pattern. */
+  {
+    RCC->AHB3ENR |= RCC_AHB3ENR_PWREN;          /* PWR clock */
+    (void) RCC->AHB3ENR;
+    PWR->DBPR  |= PWR_DBPR_DBP;                 /* enable backup-domain writes */
+    RCC->APB3ENR |= RCC_APB3ENR_RTCAPBEN;       /* RTCAPB clock for TAMP regs */
+    (void) RCC->APB3ENR;
+    if (TAMP->BKP0R == 0xDEADBEEFU) {
+      TAMP->BKP0R = 0U;
+      __DSB();
+      SCB->VTOR = 0x0BF90000U;
+      __set_MSP(*(volatile uint32_t *) 0x0BF90000U);
+      ((void (*)(void))(*(volatile uint32_t *) (0x0BF90000U + 4U)))();
+      for (;;) { }  /* unreachable */
+    }
+  }
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/

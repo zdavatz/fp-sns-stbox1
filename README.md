@@ -273,6 +273,22 @@ If no `firmware.bin` is found, normal SD logging starts as usual. The update use
 
 See [**Documentation/Flash_Firmware_Mac.pdf**](Documentation/Flash_Firmware_Mac.pdf) for the full Mac flashing guide — covers the SD card method plus STM32CubeProgrammer GUI and CLI (`STM32_Programmer_CLI`, `dfu-util`) alternatives.
 
+### Software DFU loop (no button dance) — Linux dev workflow
+
+When `STBOX1_ENABLE_USB_CDC=1`, writing `DFU\n` to `/dev/ttyACM0` reboots the box into the STM32 system bootloader. The full iteration loop with no BOOT0+slider gymnastics:
+
+```sh
+make USB_CDC_ENABLED=1
+echo DFU > /dev/ttyACM0
+sleep 1
+sudo dfu-util -d 0483:df11 -a 0 -s 0x08000000:mass-erase:force:leave -D build/firmware.bin
+# heartbeat resumes on /dev/ttyACM0 — ready to iterate again
+```
+
+One-time setup: `sudo usermod -aG dialout $USER` then log out + back in, so `/dev/ttyACM0` is writable without `sudo` (still need `sudo` for `dfu-util` itself unless you run from an interactive logind session). Also delete or rename any stale `firmware.bin` on the SD card — the auto-update path described above will otherwise immediately overwrite each DFU flash with the SD copy.
+
+Mac developers: Sequoia 15+ blocks `/dev/tty.usbmodem*` so the software loop only works on Linux. DFU flashing itself works fine on Mac; you just lose the live `echo DFU` trick. See CLAUDE.md "USB CDC ACM debug console" for full background.
+
 ## Visualization
 
 Rust crate at `Utilities/rust/stbox-viz/` — single binary, no Python/venv required. Build once with `cd Utilities/rust/stbox-viz && cargo build --release` then run from the repo root:

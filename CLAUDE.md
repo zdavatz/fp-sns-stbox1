@@ -350,6 +350,42 @@ For Mac users without a Linux box, two leftover host-side helpers are checked in
 - `Utilities/usb_console.py` — pyusb script run as `sudo uv run usb_console.py`. Hits "Other error" on macOS Sequoia regardless. Works on Linux.
 - `Utilities/rust/usb-console/` — the Rust port (`rusb`-based). Same behavior — works on Linux, blocked on Sequoia. Build with `cargo build --release -p usb-console`. Run as `sudo ./target/release/usb-console`.
 
+### Software-triggered DFU bootloader (no button dance)
+
+When USB CDC is on, writing `DFU\n` to `/dev/ttyACM0` reboots the box into the STM32 system bootloader so the next `dfu-util` flash needs no BOOT0+slider gymnastics. The full Linux iteration loop:
+
+```sh
+make USB_CDC_ENABLED=1
+echo DFU > /dev/ttyACM0                       # firmware acks "DFU: entering bootloader"
+sleep 1
+sudo dfu-util -d 0483:df11 -a 0 -s 0x08000000:mass-erase:force:leave -D build/firmware.bin
+# heartbeat resumes on /dev/ttyACM0 — ready to iterate again
+```
+
+Implementation: **soft-reset + magic-value pattern**, NOT a direct jump from running firmware. Direct-jump (HAL_DeInit → set MSP → branch to `0x0BF90000`) leaks too much state on STM32U5 — OTG_FS dirty registers + threadx pending ticks make the system bootloader silently fail to bring up USB DFU (verified empirically: ack prints, chip dies, no `0483:df11` ever appears). Instead:
+
+1. `usb_cdc.c::jump_to_bootloader()` writes `0xDEADBEEF` to `TAMP->BKP0R` (survives system reset), then calls `NVIC_SystemReset()`.
+2. `main.c` checks `TAMP->BKP0R` *before* `HAL_Init()` — needs only PWR clock + DBP bit + RTCAPB clock to read TAMP. If magic is set, it clears it and chains directly into the bootloader (`SCB->VTOR = 0x0BF90000; __set_MSP(*0x0BF90000); jump *(0x0BF90004)`). Bootloader sees a clean post-reset chip.
+
+Address `0x0BF90000` is the STM32U5 system memory entry per AN2606 §52.
+
+The DFU listener parses lines of up to 15 bytes terminated by `\r` or `\n`. Currently the only command is `DFU`; adding more would just extend `usb_handle_command()`.
+
+### Linux dialout group (one-time setup)
+
+`/dev/ttyACM0` is owned by group `dialout`. On Debian/Ubuntu the user is not in that group by default — without it, every `cat`/`echo`/`stty` needs `sudo`. One-time fix:
+
+```sh
+sudo usermod -aG dialout $USER
+# log out + log back in for the group change to apply (newgrp dialout works in a fresh sub-shell only)
+```
+
+After that the iteration loop is sudo-free *except* for `dfu-util` itself, since libusb's `uaccess` udev tag (`/lib/udev/rules.d/*-libusb.rules` on most distros — `ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", TAG+="uaccess"`) only applies to interactive logind sessions. `dfu-util` from a non-tty bash (`!`-prefix in Claude Code, etc.) hits `LIBUSB_ERROR_ACCESS` and needs an interactive shell.
+
+### SD-card auto-update interaction
+
+The same firmware build that runs the DFU loop also auto-applies `firmware.bin` from the SD root on boot via `CheckAndApplyFirmwareUpdate()` (see "Firmware Update" section). This means: if a stale `firmware.bin` is on the SD card from earlier testing, every successful DFU flash gets *immediately overwritten* by the SD-update path — flash → boot → SD-update programs the inactive bank with the OLD file → bank-swap → boot OLD firmware → DFU listener gone → loop broken. **Delete or rename `firmware.bin` on the SD card once before starting the DFU iteration session.** The SD-update field-deployment path stays intact for production.
+
 ### Build invocations
 
 ```sh
@@ -360,6 +396,16 @@ make USB_CDC_ENABLED=1          # both on (issue #12 live-debug build)
 ```
 
 Default-off build is byte-identical to a pre-USB build because DCE drops the entire integration when the flag is off.
+
+### BLE-on kills USB enumeration (active issue #12 lead)
+
+With `STBOX1_ENABLE_BLE_SYNC=1` the host never enumerates the box — `dmesg` shows repeated `device descriptor read/64, error -110`. Failure is *before* USB enum completes (host-side ~100 ms window), which means the BLE thread is racing the host enum and stomping on something USB-critical *very* early. Not a slow-thread / starvation issue: USB IRQs are hardware, threads can't block them.
+
+**Suspected root cause:** `Core/Src/ble_spi.c::ble_spi_msp_init()` calls `HAL_RCCEx_PeriphCLKConfig(&pclk)` to select SYSCLK as the SPI1 clock source. On STM32U5 that HAL function reads adjacent CCIPRx fields via `__HAL_RCC_GET_*_SOURCE()` and writes them back — which, depending on the HAL version, can clobber the `ICLK` selector that USB FS depends on. After the call HSI48 may no longer be the selected USB clock and OTG_FS goes dark.
+
+**Pending fix** (in tree, not yet validated on hardware): drop the `HAL_RCCEx_PeriphCLKConfig` call from `ble_spi_msp_init`. SPI1 defaults to PCLK2 (160 MHz / 128 prescaler = 1.25 MHz) which is fine for the BlueNRG-LP HCI link.
+
+Diagnostic prints have been added to `ble_sync.c` (`printf("ble: thread entered\r\n")` etc.) and `ble_spi.c` (`printf("spi: pre/post-PeriphCLKConfig\r\n")`) — when debugging, the *last* line printed before USB dies pinpoints the offending step. The same trace is mirrored to the SD error log via `ErrorLog_Write`/`ErrorLog_Flush` so the breadcrumb is recoverable even when USB is dead.
 
 ## BlueNRG-LP OTP / WLC
 

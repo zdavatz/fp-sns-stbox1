@@ -7,6 +7,7 @@
   */
 
 #include "ble_spi.h"
+#include <stdio.h>
 
 static SPI_HandleTypeDef hspi_ble;
 static uint8_t initialized;
@@ -16,9 +17,14 @@ static void ble_spi_msp_init(void)
   GPIO_InitTypeDef gpio = {0};
   RCC_PeriphCLKInitTypeDef pclk = {0};
 
-  pclk.PeriphClockSelection = RCC_PERIPHCLK_SPI1;
-  pclk.Spi1ClockSelection   = RCC_SPI1CLKSOURCE_SYSCLK;
-  HAL_RCCEx_PeriphCLKConfig(&pclk);
+  /* DO NOT call HAL_RCCEx_PeriphCLKConfig here — on STM32U5, the call
+   * (even with PeriphClockSelection=SPI1 only) reads other CCIPRx fields
+   * via __HAL_RCC_GET_*_SOURCE() and writes them back, which can clobber
+   * the ICLK selector that USB FS (HSI48) depends on. After this call the
+   * OTG_FS clock dropped to default (HSI 16 MHz) and the host-side enum
+   * stalled with -110 timeouts. SPI1 defaults to PCLK2 which is fine for
+   * the BlueNRG-LP HCI link at 1.25 MHz (160 MHz / 128 prescaler). */
+  (void) pclk;
 
   __HAL_RCC_SPI1_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();

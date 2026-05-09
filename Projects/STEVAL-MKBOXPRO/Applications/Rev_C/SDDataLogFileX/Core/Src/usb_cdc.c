@@ -26,6 +26,7 @@
 #include "stm32u5xx_hal.h"
 #include "stm32u5xx_hal_rcc_ex.h"
 #include "main.h"
+#include "usb_cdc.h"
 #include "SensorTileBoxPro.h"  /* BSP_LED_On / Off / LED_RED */
 
 /* ---------------------------------------------------------------------------
@@ -167,6 +168,73 @@ extern volatile uint8_t g_ble_probe_status;
 static const uint8_t g_ble_probe_status = 0xFFu;  /* BLE disabled */
 #endif
 
+/* Request DFU bootloader on next reset. Triggered by writing "DFU\n" to
+ * the CDC port. Eliminates the BOOT0-button + slider-toggle dance for the
+ * iterate-flash-debug loop:
+ *   echo DFU > /dev/ttyACM0
+ *   sleep 1 && dfu-util -d 0483:df11 -a 0 \
+ *     -s 0x08000000:mass-erase:force:leave -D build/firmware.bin
+ *
+ * Mechanism: we don't direct-jump from running firmware (dirty OTG_FS /
+ * threadx state makes the STM32U5 system bootloader silently fail to
+ * enumerate USB DFU). Instead we set a magic value in TAMP->BKP0R, which
+ * survives system reset, then NVIC_SystemReset(). main.c checks the magic
+ * very early — before HAL_Init — and chains into the bootloader from a
+ * clean post-reset state. Bootloader entry at 0x0BF90000 per AN2606. */
+static void jump_to_bootloader(void) {
+  /* Enable PWR clock + backup-domain write access + RTCAPB clock so we
+   * can write TAMP->BKP0R. (PWR clock is already on, but enabling twice
+   * is harmless.) */
+  RCC->AHB3ENR |= RCC_AHB3ENR_PWREN;
+  (void) RCC->AHB3ENR;
+  PWR->DBPR  |= PWR_DBPR_DBP;
+  RCC->APB3ENR |= RCC_APB3ENR_RTCAPBEN;
+  (void) RCC->APB3ENR;
+
+  TAMP->BKP0R = 0xDEADBEEFU;
+  __DSB();
+
+  NVIC_SystemReset();
+  for (;;) { }  /* unreachable */
+}
+
+/* Line-buffered command parser on CDC RX. Drains tud_cdc_read into a
+ * small buffer; on \n or \r dispatches one line. Lines longer than
+ * USB_CMD_MAX-1 chars are dropped silently. */
+#define USB_CMD_MAX  16
+static char    usb_cmd_buf[USB_CMD_MAX];
+static uint8_t usb_cmd_len = 0;
+
+static void usb_handle_command(const char *line) {
+  if (strcmp(line, "DFU") == 0) {
+    /* ACK and flush before tearing USB down — host script can confirm
+     * the box accepted the command before /dev/ttyACM0 disappears. */
+    UsbCdc_WriteString("DFU: entering bootloader\r\n");
+    tud_cdc_write_flush();
+    tx_thread_sleep(10);  /* let the FIFO drain (~100 ms) */
+    jump_to_bootloader();
+  }
+}
+
+static void usb_poll_rx(void) {
+  while (tud_cdc_available()) {
+    char c;
+    uint32_t got = tud_cdc_read(&c, 1);
+    if (got == 0) break;
+    if (c == '\r' || c == '\n') {
+      if (usb_cmd_len > 0) {
+        usb_cmd_buf[usb_cmd_len] = '\0';
+        usb_handle_command(usb_cmd_buf);
+        usb_cmd_len = 0;
+      }
+    } else if (usb_cmd_len < USB_CMD_MAX - 1) {
+      usb_cmd_buf[usb_cmd_len++] = c;
+    } else {
+      usb_cmd_len = 0;  /* overflow — drop line */
+    }
+  }
+}
+
 static void usb_thread_entry(ULONG arg) {
   (void) arg;
   /* Red LED tracks tud_mounted() state for instant visual feedback:
@@ -178,6 +246,7 @@ static void usb_thread_entry(ULONG arg) {
   uint32_t heartbeat_tick = 0;
   for (;;) {
     tud_task();
+    usb_poll_rx();
     tud_cdc_write_flush();
     bool mounted_now = tud_mounted();
     if (mounted_now != last_mounted) {
