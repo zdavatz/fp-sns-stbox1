@@ -19,6 +19,17 @@ CPU = -mcpu=cortex-m33 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard
 # UART saturates even with only GGA+RMC enabled.
 GPS_RATE_HZ ?= 10
 
+# USB CDC ACM debug console. When 1, brings in the vendored TinyUSB stack
+# from Middlewares/Third_Party/tinyusb/ and compiles the usb_cdc.c /
+# usb_descriptors.c integration so __io_putchar (and therefore printf and
+# STBOX1_PRINTF) lands on a virtual COM port over USB-C. Cost when on:
+# ~30 KB flash + ~6 KB BSS. Default 0 because field-tester firmware doesn't
+# need USB and the extra surface area isn't worth it; turn on for live BLE
+# debugging (issue #12) where the SD error log alone is too slow a feedback
+# loop.
+#   make USB_CDC_ENABLED=1
+USB_CDC_ENABLED ?= 0
+
 # Build counter — bumped on every `make` invocation. Lets the field tester
 # tell two builds apart at a glance ("fw#42" vs "fw#43") even when the
 # compile timestamp is the same minute. Counter file is gitignored.
@@ -33,6 +44,10 @@ DEFS = \
   -DTX_SINGLE_MODE_NON_SECURE=1 \
   -DGPS_RATE_HZ=$(GPS_RATE_HZ) \
   -DFW_BUILD_NUM=$(FW_BUILD_NUM)
+
+ifeq ($(USB_CDC_ENABLED),1)
+DEFS += -DSTBOX1_ENABLE_USB_CDC=1
+endif
 
 ASM_DEFS = -DTX_SINGLE_MODE_NON_SECURE=1
 
@@ -62,6 +77,12 @@ INCLUDES = \
   -I$(ROOT)/Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic \
   -I$(ROOT)/Middlewares/Third_Party/parson
 
+ifeq ($(USB_CDC_ENABLED),1)
+INCLUDES += \
+  -I$(ROOT)/Middlewares/Third_Party/tinyusb/src \
+  -I$(ROOT)/Middlewares/Third_Party/tinyusb/src/portable/synopsys/dwc2
+endif
+
 CFLAGS = $(CPU) $(DEFS) $(INCLUDES) -O2 -Wall -Wno-format -fdata-sections -ffunction-sections -g3
 
 LDSCRIPT = STM32U585AIIXQ_FLASH.ld
@@ -81,6 +102,8 @@ C_SOURCES = \
   $(APP)/Core/Src/ble_filesync.c \
   $(APP)/Core/Src/hci_tl_interface.c \
   $(APP)/Core/Src/wlc.c \
+  $(APP)/Core/Src/usb_cdc.c \
+  $(APP)/Core/Src/usb_descriptors.c \
   $(APP)/Core/Src/gps_nmea.c \
   $(APP)/Core/Src/buzzer.c \
   $(ROOT)/Middlewares/Third_Party/parson/parson.c \
@@ -575,6 +598,16 @@ C_SOURCES = \
   $(ROOT)/Middlewares/ST/threadx/common/src/txe_timer_deactivate.c \
   $(ROOT)/Middlewares/ST/threadx/common/src/txe_timer_delete.c \
   $(ROOT)/Middlewares/ST/threadx/common/src/txe_timer_info_get.c
+
+ifeq ($(USB_CDC_ENABLED),1)
+C_SOURCES += \
+  $(ROOT)/Middlewares/Third_Party/tinyusb/src/tusb.c \
+  $(ROOT)/Middlewares/Third_Party/tinyusb/src/common/tusb_fifo.c \
+  $(ROOT)/Middlewares/Third_Party/tinyusb/src/device/usbd.c \
+  $(ROOT)/Middlewares/Third_Party/tinyusb/src/class/cdc/cdc_device.c \
+  $(ROOT)/Middlewares/Third_Party/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c \
+  $(ROOT)/Middlewares/Third_Party/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
+endif
 
 # Assembly sources (.s lowercase = GNU as, .S uppercase = GNU as with cpp)
 ASM_SOURCES = \

@@ -45,6 +45,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usb_cdc.h"
 #include "app_threadx.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -177,6 +178,13 @@ int main(void)
      over. Useful in the field where the LED isn't always visible. */
   Buzzer_Init();
   Buzzer_BootDone();
+
+  /* USB CDC ACM virtual COM port. No-op when STBOX1_ENABLE_USB_CDC=0; with
+     the flag on, brings up OTG_FS so __io_putchar (and therefore printf
+     and STBOX1_PRINTF) lands on USB. Service thread is spawned later from
+     App_ThreadX_Init(). Hardware init must happen here (pre-RTOS) because
+     the OTG_FS NVIC line begins firing as soon as the host plugs in. */
+  UsbCdc_Init();
 
   /* USER CODE END 2 */
 

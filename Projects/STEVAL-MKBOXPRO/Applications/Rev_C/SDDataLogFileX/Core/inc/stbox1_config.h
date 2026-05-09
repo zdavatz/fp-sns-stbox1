@@ -92,6 +92,28 @@ extern "C" {
    or interaction with the existing HAL_MspInit/clock/pin config). */
 #define STBOX1_ENABLE_BLE_SYNC 0
 
+/* USB CDC ACM debug console. Brings up OTG_FS as a virtual COM port so a
+   host PC sees /dev/tty.usbmodem* (macOS) / /dev/ttyACM* (Linux) / COMxx
+   (Windows) and can stream live debug printf lines from the firmware. Hooks
+   __io_putchar so the existing STBOX1_PRINTF / printf paths route to USB
+   with no other source changes. Default `0`; flip to `1` to compile in the
+   TinyUSB stack (~30 KB flash + ~6 KB BSS). Primary use case: live-debug
+   the BLE FileSync bringup (issue #12) without pulling the SD card.
+
+   Overridable from the Makefile via `make USB_CDC_ENABLED=1` which also
+   pulls in the vendored TinyUSB sources from
+   Middlewares/Third_Party/tinyusb. */
+#ifndef STBOX1_ENABLE_USB_CDC
+#define STBOX1_ENABLE_USB_CDC 0
+#endif
+
+/* When STBOX1_ENABLE_USB_CDC is on, also re-enable the printf macros so
+   existing call sites stream over USB. Otherwise the macros stay no-ops to
+   match the GPS-on-UART4 layout. */
+#if STBOX1_ENABLE_USB_CDC && !defined(STBOX1_ENABLE_PRINTF)
+#define STBOX1_ENABLE_PRINTF
+#endif
+
 /* WLC (Wireless LE Controller) BlueNRG-LP OTP programmer. When enabled,
    on every boot we probe the BlueNRG-LP via SPI; if it's in iload
    bootloader mode (= unprogrammed OTP), we read `dtm.bin` from the SD

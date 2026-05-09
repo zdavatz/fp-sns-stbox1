@@ -26,6 +26,10 @@
 #include "fx_stm32_sd_driver.h"
 #include "SensorTileBoxPro_audio.h"
 #include "gps_nmea.h"
+#include "stbox1_config.h"
+#if STBOX1_ENABLE_USB_CDC
+#include "tusb.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -330,6 +334,20 @@ void GPDMA1_Channel1_IRQHandler(void)
 /**
 * @brief UART4 global interrupt (GPS module reception).
 */
+#if STBOX1_ENABLE_USB_CDC
+/**
+  * @brief This function handles USB OTG FS global interrupt.
+  *
+  * Forwards to TinyUSB's device interrupt handler. NVIC priority is set
+  * to 13 in usb_cdc.c::usb_cdc_hw_init — between SDMMC1 (14) and UART4-GPS
+  * (6) so neither path can be starved by USB activity.
+  */
+void OTG_FS_IRQHandler(void)
+{
+  tud_int_handler(0);
+}
+#endif
+
 void UART4_IRQHandler(void)
 {
   GPS_UART_IRQHandler();

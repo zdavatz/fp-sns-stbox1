@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ble_sync.h"
+#include "usb_cdc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -68,6 +69,12 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   /* BLE file-sync thread. No-op when STBOX1_ENABLE_BLE_SYNC=0; the
      actual BlueNRG-LP init lands in a follow-up commit. */
   ret = BleSync_ThreadX_Init(byte_pool);
+  if (ret != TX_SUCCESS) return ret;
+
+  /* USB CDC service thread. No-op when STBOX1_ENABLE_USB_CDC=0. Drives
+     tud_task() so the host's enumeration + control transfers progress and
+     buffered TX bytes flush. Stack 2 KB allocated from the byte pool. */
+  ret = (UINT) UsbCdc_ThreadX_Init(byte_pool);
   /* USER CODE END App_ThreadX_Init */
 
   return ret;
