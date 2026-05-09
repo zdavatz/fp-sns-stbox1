@@ -197,6 +197,34 @@ Diagnostic next steps:
 
 The DFU-flashing pipeline on Zeno's local box (Rev_B, label `STEVAL-MKBOXPROB`, two physical buttons labelled 1 and 2 where button 2 is BOOT0) lets us iterate in seconds. DFU sequence: slider OFF → hold button 2 → slider ON (button still held) → wait 2 s → release → `dfu-util -l` confirms `[0483:df11]`. Field-tester roundtrips with WhatsApp are no longer needed for bisect work.
 
+**Issue #12 day-2 (2026-05-09): individual symbol bisects don't reproduce, exact trigger remains elusive.** Tested by force-linking single BLE-manager symbols via `if (never_true) func();` patterns:
+
+| Test | Build size | Result |
+|---|---|---|
+| HAL_SPI_Init alone | 122 KB | ✅ logger works |
+| parson (json_parse_string(NULL)) | 126 KB | ✅ logger works |
+| hci_init (HCI transport) | 124 KB | ✅ logger works |
+| aci_gap_init (GAP machinery) | 123 KB | ✅ logger works |
+| HCI_READ_PACKET_NUM_MAX 10→5 (-1.36 KB BSS) | 149 KB full chain | ❌ still hangs at 2 sec |
+
+So none of these symbols *alone* triggers the bug, but the full `init_ble_manager` chain does. **This rules out individual function-pointer-table side effects** and points at a cumulative threshold effect (some specific subset of the 30 KB triggers it, which we haven't isolated yet).
+
+**Pinning the SDMMC critical buffers** (`media_memory`, `sdio_disk`, `transfer_semaphore`, `tx_byte_pool_buffer`, `fx_byte_pool_buffer`) at fixed addresses via custom `.sd_buffers` linker section + manual zero-init in main() **also doesn't fix it** (v83-v86). So the bug is independent of where these buffers sit in RAM.
+
+**Reference repo investigations:**
+- `STMicroelectronics/fp-atr-ble1` (asset tracking BLE on same hardware): bare-metal, no FileX, so it never demonstrates BLE+SD coexistence — wrong reference.
+- `STMicroelectronics/stsw-mkbox-bleco` (BLE controller-only firmware images): contains a Zephyr-based UART bootloader uploader for the BlueNRG-LP chip itself. `img/steval-mkboxpro/DTM_SPI_WITH_UPDATER_CONTROLLER.bin` is a newer 179 KB chip firmware vs our 200 KB `SensorTile.Box_PRO_R20_DTM_SPI.bin`. Not directly relevant — our bug is on the STM32U585 host side, not on the BlueNRG-LP chip.
+
+**Next-day investigation directions (likely needs ST Link + JTAG debug):**
+1. Live SWD breakpoint at second `fx_media_flush` call when bug triggers — see exact PC and what register state is when fx_thread "hangs"
+2. Trace SDMMC1 IRQ vs whether it fires at all (RTOS timer, SDMMC peripheral state, HAL state)
+3. Compare actual `.text` byte-for-byte for `fx_media_flush` and its callees between working and broken builds — even though the agent verified they're "byte-identical when normalised", literal pool addresses differ and that may matter for cache replacement
+4. Try `-O0` or `-Os` build to rule out optimizer-decisions
+5. Try with LTO (`-flto`) to see if whole-program optimization changes outcome
+6. Check if STM32U5 MPU defaults change with code size
+
+For now, **`STBOX1_ENABLE_BLE_SYNC = 0` ships TODAY** — proven 100% functional logger, 117 KB. Field tester (Peter) and Zeno both have working logger binaries.
+
 ## SD Card Data Format (SDDataLogFileX)
 
 The data logging application creates up to four files per session on the SD card:
