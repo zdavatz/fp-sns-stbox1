@@ -21,6 +21,8 @@
 #include "hci_tl.h"
 #include "hci_tl_interface.h"
 #include "ble_spi.h"
+#include "tx_api.h"  /* tx_thread_sleep for issue #12 bisect park */
+#include <stdio.h>   /* printf for issue #12 bisect prints */
 
 #define HEADER_SIZE       5U
 #define MAX_BUFFER_SIZE   255U

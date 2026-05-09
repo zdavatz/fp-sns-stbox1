@@ -81,15 +81,31 @@ static uint8_t ble_chip_alive_probe(void)
 {
   uint8_t hci_reset_cmd[] = {0x01, 0x03, 0x0C, 0x00};
 
+  printf("probe: pre-hci_tl_spi_init\r\n");
   if (hci_tl_spi_init(NULL) != 0)
   {
+    printf("probe: hci_tl_spi_init FAILED\r\n");
     return 0U;
   }
+  printf("probe: post-hci_tl_spi_init OK\r\n");
 
   hci_tl_spi_reset();
+  printf("probe: post-spi_reset\r\n");
 
   /* Stage (a): TX. Returns 0 only if chip raised IRQ in <15 ms. */
-  if (hci_tl_spi_send(hci_reset_cmd, sizeof(hci_reset_cmd)) != 0)
+  int hci_send_rc = hci_tl_spi_send(hci_reset_cmd, sizeof(hci_reset_cmd));
+  printf("probe: post-hci_tl_spi_send rc=%d\r\n", hci_send_rc);
+
+  /* BISECT-7 — park *after* hci_tl_spi_send. If USB enumerates here,
+   * killer is the IRQ poll loop below. If USB dies, hci_tl_spi_send
+   * (single SPI transfer of 4 bytes) is the killer — extremely
+   * surprising for a single SPI op. */
+  for (;;) {
+    printf("probe: bisect-7 parked (post-hci_tl_spi_send rc=%d)\r\n", hci_send_rc);
+    tx_thread_sleep(500);
+  }
+
+  if (hci_send_rc != 0)
   {
     return 0U;
   }

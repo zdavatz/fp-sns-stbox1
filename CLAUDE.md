@@ -397,15 +397,19 @@ make USB_CDC_ENABLED=1          # both on (issue #12 live-debug build)
 
 Default-off build is byte-identical to a pre-USB build because DCE drops the entire integration when the flag is off.
 
-### BLE-on kills USB enumeration (active issue #12 lead)
+### BLE-on kills USB enumeration (active issue #12 lead — bisected)
 
-With `STBOX1_ENABLE_BLE_SYNC=1` the host never enumerates the box — `dmesg` shows repeated `device descriptor read/64, error -110`. Failure is *before* USB enum completes (host-side ~100 ms window), which means the BLE thread is racing the host enum and stomping on something USB-critical *very* early. Not a slow-thread / starvation issue: USB IRQs are hardware, threads can't block them.
+With `STBOX1_ENABLE_BLE_SYNC=1` the host never enumerates the box. Initial `dmesg` showed `device descriptor read/64, error -110` retries — looked like the BLE thread was racing host enum and killing it early. **Important correction:** the right diagnostic is to wait *much* longer. With BLE thread running, USB enum is delayed (typically 15-20 s on the dev box) but still completes if the thread eventually parks. Earlier "USB dead at 10 s" verdicts were premature.
 
-**Suspected root cause:** `Core/Src/ble_spi.c::ble_spi_msp_init()` calls `HAL_RCCEx_PeriphCLKConfig(&pclk)` to select SYSCLK as the SPI1 clock source. On STM32U5 that HAL function reads adjacent CCIPRx fields via `__HAL_RCC_GET_*_SOURCE()` and writes them back — which, depending on the HAL version, can clobber the `ICLK` selector that USB FS depends on. After the call HSI48 may no longer be the selected USB clock and OTG_FS goes dark.
+**Bisected killer (2026-05-09):** `Core/Src/hci_tl_interface.c::hci_tl_spi_send`. Walking a `for(;;) tx_thread_sleep(...)` park forward through `ble_chip_alive_probe` shows USB enumerates (delayed) at every park *before* `hci_tl_spi_send` and stays dead for 60+ seconds at every park *after* it. Ruled out: thread spawn / byte-pool allocation / 3 GPIO inits in `hci_tl_spi_init` / `BleSpi_Init` / `hci_tl_spi_reset`. Suspects (not yet validated):
 
-**Pending fix** (in tree, not yet validated on hardware): drop the `HAL_RCCEx_PeriphCLKConfig` call from `ble_spi_msp_init`. SPI1 defaults to PCLK2 (160 MHz / 128 prescaler = 1.25 MHz) which is fine for the BlueNRG-LP HCI link.
+1. **Board-level EMI** — SPI1 lines (PA5/6/7) physically near USB DM/DP (PA11/12) on Rev_C; SPI bursts may inject noise during enum. Not fixable in firmware.
+2. **BlueNRG-LP brown-out** — chip wakes from RST and draws inrush current; if VddUSB rail dips, USB transceiver glitches. Could be fixed by adding a settle delay before `hci_tl_spi_send` and/or skipping probe if `is_data_available()` is false at entry.
+3. **EXTI11 disable/enable side-effect** — `hci_tl_spi_send` does `HAL_NVIC_DisableIRQ(EXTI11_IRQn)` for the duration. Doesn't directly affect USB, but the do-while loop busy-waits up to ~1 s (`TIMEOUT_DURATION` 15 ms × N + `TIMEOUT_IRQ_HIGH` 1 s) when BlueNRG-LP is unresponsive — long enough to disrupt host-side enum retries.
 
-Diagnostic prints have been added to `ble_sync.c` (`printf("ble: thread entered\r\n")` etc.) and `ble_spi.c` (`printf("spi: pre/post-PeriphCLKConfig\r\n")`) — when debugging, the *last* line printed before USB dies pinpoints the offending step. The same trace is mirrored to the SD error log via `ErrorLog_Write`/`ErrorLog_Flush` so the breadcrumb is recoverable even when USB is dead.
+The earlier "HAL_RCCEx_PeriphCLKConfig clobbers ICLK" hypothesis was wrong; with that call already removed from `ble_spi_msp_init`, USB still dies at `hci_tl_spi_send`. The fix in `ble_spi.c` is harmless either way (no clock selector clash) but is not the BLE-on USB-kill fix.
+
+Diagnostic prints in `ble_sync.c` and `hci_tl_interface.c` (e.g. `printf("probe: post-hci_tl_spi_init OK\r\n")`) are left in tree to make future bisects faster — they're stripped by DCE when BLE is off. The same trace mirrors to the SD error log via `ErrorLog_Write`/`ErrorLog_Flush` so a non-USB-visible boot still leaves a breadcrumb.
 
 ## BlueNRG-LP OTP / WLC
 
