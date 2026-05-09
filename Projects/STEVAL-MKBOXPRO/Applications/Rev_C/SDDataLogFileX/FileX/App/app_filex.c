@@ -20,6 +20,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "app_filex.h"
+#include "usb_cdc.h"   /* UsbCdc_Write — ErrorLog mirror to USB CDC */
 #include <string.h>  /* strlen used in ErrorLog_Open's BLE-status line */
 
 /* Private includes ----------------------------------------------------------*/
@@ -1582,6 +1583,20 @@ static UINT ErrorLogBroken = 0U;
 
 void ErrorLog_Write(const char *msg)
 {
+  /* USB CDC mirror: every SD-bound error line also streams over the
+   * virtual COM port so a developer plugged in via USB-C sees the same
+   * trace live without having to pop the SD card. Goes through
+   * UsbCdc_Write which is non-blocking — drops bytes silently if the
+   * host hasn't opened the port. Done BEFORE the SD write so we still
+   * get visibility when ErrorLogBroken or !ErrorLogFileOpen kills the
+   * SD path. The "log: " prefix lets the host distinguish error-log
+   * lines from heartbeat / probe printfs in the cat stream. */
+  {
+    CHAR usb_line[300];
+    INT  usb_len = sprintf(usb_line, "log: %s\r\n", msg);
+    (void) UsbCdc_Write(usb_line, (size_t) usb_len);
+  }
+
   if (!ErrorLogFileOpen) return;
   if (ErrorLogBroken) return;
 
