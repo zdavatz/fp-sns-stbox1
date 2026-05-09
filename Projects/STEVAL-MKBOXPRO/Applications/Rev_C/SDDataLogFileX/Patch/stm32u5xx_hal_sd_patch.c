@@ -251,6 +251,25 @@
 /* Includes ------------------------------------------------------------------*/
 #include "stm32u5xx_hal.h"
 
+/* v52: timeout overrides — replace upstream HAL defaults that are
+   effectively "no timeout" with reasonable bounds so a stuck SD card on
+   the 3.3V-modded reservebox bounds fx_thread's busy-wait time. Issue
+   #12. Upstream `stm32u5xx_ll_sdmmc.h` defines:
+     SDMMC_SWDATATIMEOUT  = 0xFFFFFFFF  (= ~49 days, effectively forever)
+     SDMMC_CMDTIMEOUT     = 5000        (= 5 s)
+   These guard internal busy-loops in HAL_SD_GetCardState / SD_SendStatus
+   / HAL_SD_Abort / SDMMC_GetCmdResp1 etc. — none of which yield to
+   ThreadX. With the upstream values, a non-responding card on Peter's
+   box can monopolise the CPU for many seconds, starving fx_thread (and
+   masquerading as a "hang"). v52 lowers both to 1000 ms. Trade-off:
+   marginal cards on the *first* operation might now time out where they
+   previously eventually completed; on the working boxes this is
+   irrelevant because real responses come back in microseconds. */
+#undef  SDMMC_SWDATATIMEOUT
+#define SDMMC_SWDATATIMEOUT  ((uint32_t)1000U)
+#undef  SDMMC_CMDTIMEOUT
+#define SDMMC_CMDTIMEOUT     ((uint32_t)1000U)
+
 /** @addtogroup STM32U5xx_HAL_Driver
   * @{
   */

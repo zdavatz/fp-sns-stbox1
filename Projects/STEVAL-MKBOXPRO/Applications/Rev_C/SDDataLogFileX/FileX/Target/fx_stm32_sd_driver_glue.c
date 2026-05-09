@@ -18,6 +18,7 @@
   ******************************************************************************
   */
 #include "fx_stm32_sd_driver.h"
+#include "tx_api.h"  /* v52: tx_thread_sleep for the yielding get_status */
 
 /* USER CODE BEGIN  0 */
 TX_SEMAPHORE transfer_semaphore;
@@ -69,13 +70,23 @@ INT fx_stm32_sd_get_status(UINT instance)
 {
   INT ret = 0;
 /* USER CODE BEGIN  GET_STATUS */
-if (BSP_SD_GetCardState(instance) == BSP_ERROR_NONE)
+  if (BSP_SD_GetCardState(instance) == BSP_ERROR_NONE)
   {
     ret = 0;
   }
   else
   {
     ret = 1;
+    /* v52: yield 10 ms when the card reports busy. The caller
+       (`check_sd_status` in fx_stm32_sd_driver.c) loops for up to 10 s
+       waiting for ret==0, but its outer loop has no `tx_thread_sleep`
+       — so without this yield, fx_thread monopolises the CPU for the
+       full 10 s timeout of a stuck card on Peter's reservebox. The
+       sleep here lets gps_thread / ble_thread / other ready threads
+       run during the wait, and lowers SD-busy-poll rate from
+       ~MHz-spin to a sane 100 Hz. Cost: marginally slower recovery on
+       a card that's about to be ready in microseconds. */
+    tx_thread_sleep(1U);
   }
 /* USER CODE END  GET_STATUS */
   return ret;
@@ -129,6 +140,7 @@ INT fx_stm32_sd_write_blocks(UINT instance, UINT *buffer, UINT start_block, UINT
 /* USER CODE BEGIN  1 */
 void BSP_SD_WriteCpltCallback(uint32_t instance)
 {
+  (void)instance;
   tx_semaphore_put(&transfer_semaphore);
 }
 
@@ -139,6 +151,35 @@ void BSP_SD_WriteCpltCallback(uint32_t instance)
 */
 void BSP_SD_ReadCpltCallback(uint32_t instance)
 {
+  (void)instance;
+  tx_semaphore_put(&transfer_semaphore);
+}
+
+/* v62: SDMMC error/abort recovery — replace upstream HAL/BSP weak stubs
+   that did NOT release transfer_semaphore on error. Without these
+   overrides, an SDMMC IRQ that fires DCRCFAIL / DTIMEOUT / TXUNDERR /
+   RXOVERR / IDMABTC error results in the HAL_SD_IRQHandler calling
+   HAL_SD_ErrorCallback() (or the BSP's SD_AbortCallback → empty
+   BSP_SD_AbortCallback), which does NOTHING. fx_thread then waits the
+   full 10-second tx_semaphore_get timeout before returning FX_IO_ERROR.
+   On a marginally-supplied SD card (Peter's 3.3V-modded reservebox)
+   where errors can stack across the multiple writes inside a single
+   fx_media_flush, this compounds to 30-60 seconds of perceived hang.
+   With these callbacks the semaphore wakes immediately on error, and
+   fx_thread can return cleanly within ms. Issue #12. */
+
+/* Overrides upstream stm32u5xx_hal_sd.c's __weak HAL_SD_ErrorCallback. */
+void HAL_SD_ErrorCallback(SD_HandleTypeDef *hsd)
+{
+  (void)hsd;
+  tx_semaphore_put(&transfer_semaphore);
+}
+
+/* Overrides BSP's __weak BSP_SD_AbortCallback. The HAL → BSP chain is:
+   HAL_SD_AbortCallback → BSP_SD_AbortCallback (= our override below). */
+void BSP_SD_AbortCallback(uint32_t instance)
+{
+  (void)instance;
   tx_semaphore_put(&transfer_semaphore);
 }
 /* USER CODE END  1 */

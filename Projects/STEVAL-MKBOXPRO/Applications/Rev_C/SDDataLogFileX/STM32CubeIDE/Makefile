@@ -80,6 +80,7 @@ C_SOURCES = \
   $(APP)/Core/Src/ble_function.c \
   $(APP)/Core/Src/ble_filesync.c \
   $(APP)/Core/Src/hci_tl_interface.c \
+  $(APP)/Core/Src/wlc.c \
   $(APP)/Core/Src/gps_nmea.c \
   $(APP)/Core/Src/buzzer.c \
   $(ROOT)/Middlewares/Third_Party/parson/parson.c \

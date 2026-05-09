@@ -173,7 +173,24 @@
   */
 
 #define  VDD_VALUE                    3300UL /*!< Value of VDD in mv */
-#define  TICK_INT_PRIORITY            (15UL)    /*!< tick interrupt priority (lowest by default)  */
+/* v56: tick IRQ priority lowered numerically from 15 → 0 (= highest).
+   Default ST value was 15 (lowest), which means TIM6's HAL_GetTick
+   increment IRQ can be preempted by ANY other IRQ source — SDMMC1
+   (priority 14), BLE EXTI11 (14), UART4-GPS (6), etc. If any of those
+   fires continuously (a stuck SDMMC transfer re-firing its IRQ for
+   instance), TIM6 IRQ never runs, HAL_GetTick freezes, and every
+   HAL_GetTick-based busy-wait in the HAL SD driver
+   (HAL_SD_ConfigSpeedBusOperation, HAL_SD_Abort, SD_SendSDStatus)
+   collapses to "wait forever". Priority 0 means TIM6 preempts
+   everything else; the IRQ handler is a single uwTick increment so
+   the preemption cost is one cycle per ms. ThreadX's SysTick is
+   independent of TIM6 and unaffected. Issue #12 latent bug
+   discovered during RE while debugging Peter's reservebox. */
+/* v78: revert to 15 (default). v56 changed this to 0 to prevent TIM6
+   being preempted, but user reports logger worked perfectly BEFORE
+   BLE was added — when this priority was the default 15. Going back
+   to 15 to bisect whether this change broke logging. */
+#define  TICK_INT_PRIORITY            (15UL)
 #define  USE_RTOS                     0U
 #define  PREFETCH_ENABLE              1U                    /*!< Enable prefetch */
 

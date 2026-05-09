@@ -283,14 +283,12 @@ __weak HAL_StatusTypeDef MX_SDMMC1_SD_Init(SD_HandleTypeDef *hsd)
   hsd->Init.ClockPowerSave      = SDMMC_CLOCK_POWER_SAVE_DISABLE;
   hsd->Init.BusWide             = SDMMC_BUS_WIDE_4B;
   hsd->Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE; /* disable because there is the transceiver (?) */
-  /* SDMMC clock: NSPEED (~12.5 MHz @ 100 MHz kernel) instead of HSPEED
-     (~25 MHz). Halved to give the 3.3V-modded reservebox power supply
-     more setup/hold margin — at HSPEED that hardware deterministically
-     hangs fx_thread inside fx_file_create on Sens000.csv (issue #12).
-     Throughput at NSPEED is still well above the 100 Hz sensor logger's
-     budget (~5 KB/s sustained vs ~6 MB/s ceiling at NSPEED). */
-  hsd->Init.ClockDiv            = SDMMC_NSpeed_CLK_DIV;
-  /*  hsd->Init.ClockDiv            = SDMMC_HSpeed_CLK_DIV; */
+  /* v79: revert to HSPEED. NSPEED was set during BLE-introduction
+     debugging for the 3.3V-modded reservebox. Zeno's box isn't
+     modded; user reports logger worked perfectly BEFORE BLE was
+     added — when this was HSPEED. Going back to HSPEED to test if
+     this clock-divider change broke logging on the unmodded box. */
+  hsd->Init.ClockDiv            = SDMMC_HSpeed_CLK_DIV;
 
 #if (USE_SD_TRANSCEIVER != 0U)
   hsd->Init.TranceiverPresent = SDMMC_TRANSCEIVER_PRESENT;

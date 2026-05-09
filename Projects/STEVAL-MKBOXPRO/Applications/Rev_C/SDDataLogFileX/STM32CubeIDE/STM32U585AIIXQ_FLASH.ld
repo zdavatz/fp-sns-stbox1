@@ -130,6 +130,18 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >RAM AT> FLASH
 
+  /* v86: pinned SDMMC buffers in NOLOAD section before .bss, with
+     explicit symbols so we can manually zero-init them in main(). */
+  .sd_buffers (NOLOAD) :
+  {
+    . = ALIGN(32);
+    _sd_buffers_start = .;
+    KEEP(*(.sd_buffers))
+    KEEP(*(.sd_buffers*))
+    . = ALIGN(32);
+    _sd_buffers_end = .;
+  } >RAM
+
   /* Uninitialized data section into "RAM" Ram type memory */
   .bss :
   {

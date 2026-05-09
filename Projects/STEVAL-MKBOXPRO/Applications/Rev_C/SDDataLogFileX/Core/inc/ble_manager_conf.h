@@ -62,6 +62,29 @@ extern "C" {
 
 #define BLE_MANAGER_DELAY HAL_Delay
 
+/* BLE_INITIAL_DELAY override — used by `init_ble_manager_ble_stack()` at
+   three explicit settle-points (after hci_reset, after aci_gap_init, after
+   aci_hal_set_tx_power_level — 2 s each, 6 s total). Without this override
+   the middleware falls back to `BLE_MANAGER_DELAY = HAL_Delay`, which is a
+   SysTick busy-loop that does NOT yield to the ThreadX scheduler — that
+   means 6 s of CPU monopoly by whichever thread happens to be running BLE
+   bring-up. With BLE thread at priority 14 (below fx_thread = 12), this
+   monopoly happens during fx_thread's blocked-on-queue idle and is
+   harmless. But if BLE priority is ever raised above fx_thread (as in
+   v41/v48/v49 at priority 11), the 6 s busy-wait starves fx_thread
+   completely and the SD logger can't open the card. The override below
+   uses `tx_thread_sleep` so the BLE thread yields the CPU during these
+   settles, surviving any future priority change. ms is converted to
+   ThreadX ticks (10 ms each); minimum 1 tick. */
+#include "tx_api.h"
+static inline void BleManager_InitialDelay(uint32_t ms)
+{
+  ULONG ticks = (ms + 9U) / 10U;
+  if (ticks == 0U) ticks = 1U;
+  tx_thread_sleep(ticks);
+}
+#define BLE_INITIAL_DELAY BleManager_InitialDelay
+
 #define BLE_MALLOC_FUNCTION  malloc
 #define BLE_FREE_FUNCTION    free
 #define BLE_MEM_CPY          memcpy

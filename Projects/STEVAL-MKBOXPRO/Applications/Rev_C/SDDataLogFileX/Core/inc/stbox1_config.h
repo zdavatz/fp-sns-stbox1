@@ -83,7 +83,26 @@ extern "C" {
    to 1 once ble_sync.c carries the real GATT service + thread.
    When 0, the BLE thread is never spawned and BleSync_ThreadX_Init()
    compiles to a no-op so the existing logger build is unaffected. */
-#define STBOX1_ENABLE_BLE_SYNC 1
+/* v77: BLE temporarily DISABLED to confirm bisect: user reports logger
+   worked perfectly BEFORE BLE was wired in. With BLE off the BLE thread
+   is never spawned, no SPI traffic on BlueNRG-LP, no EXTI11 IRQs from
+   the chip — pure logger-only build matching the pre-BLE behaviour.
+   If v77 logs Sens/Gps/Bat cleanly, the bug is somewhere in our BLE
+   integration (chip-alive probe, init sequence, IRQ-storm handling,
+   or interaction with the existing HAL_MspInit/clock/pin config). */
+#define STBOX1_ENABLE_BLE_SYNC 0
+
+/* WLC (Wireless LE Controller) BlueNRG-LP OTP programmer. When enabled,
+   on every boot we probe the BlueNRG-LP via SPI; if it's in iload
+   bootloader mode (= unprogrammed OTP), we read `dtm.bin` from the SD
+   card and burn the chip's OTP fuses. Replaces the manual "DFU original
+   ST firmware once per box" procedure documented in README.md.
+   Default 0 — the implementation in wlc.c is reverse-engineered from
+   ST's `SensorTile.boxPRO.bin` and has NOT been validated on real
+   hardware yet. The manual setup procedure remains the recommended
+   path for field testers until at least one successful WLC programming
+   has been observed end-to-end. */
+#define STBOX1_ENABLE_WLC 0
 
 #define STTS22H_ODR 1.0f /* ODR = 1.0Hz */
 #define ISM330DHCX_ACC_ODR 104.0f /* ODR = 104Hz */

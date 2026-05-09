@@ -186,6 +186,7 @@ static uint32_t WavProcess_HeaderUpdate(uint32_t len);
 static void ErrorLog_BuildFilename(CHAR *buf);
 static void ErrorLog_Open(void);
 static void WriteFwInfoFile(void);
+static void WriteCheckpointFile(int chk_num, int need_open);
 static INT  CheckAndApplyFirmwareUpdate(void);
 static void InitClockBaseFromCompileDate(void);
 static void SetClockBaseFromGPS(UINT year, UINT month, UINT day,
@@ -345,11 +346,21 @@ static void fx_thread_entry(ULONG thread_input)
 
   /* Check SD card for firmware update before starting normal logging */
   CheckAndApplyFirmwareUpdate();
+  /* v71: WriteCheckpointFile(4, 1) REMOVED. v68/v69/v70 hung at this
+     point — fx_media_open after CAFU's fx_media_close does NOT
+     complete on Zeno's box, even with a 2 second sleep in between.
+     This is not a "two flushes too close" timing issue but something
+     structural about the open/close cycle on this hardware. To unblock:
+     skip the post-CAFU CHK markers entirely and verify the box reaches
+     BSP_LED_On(LED_GREEN). If green comes on, we know fx_thread reaches
+     COMMAND_START_LOG handler — the bug is purely in the open/close
+     pattern, not in fx_thread scheduling or read_thread posting. */
 
   while (1)
   {
     /* Determine whether a message MessageQueue  is available */
     status = tx_queue_receive(&MessageQueue, &RMsg, TX_WAIT_FOREVER);
+    /* v71: WriteCheckpointFile(6, 1) REMOVED — same reason as CHK04. */
     MessageRemoved++;
     if (status == TX_SUCCESS)
     {
@@ -357,8 +368,14 @@ static void fx_thread_entry(ULONG thread_input)
       {
         case COMMAND_START_LOG:
         {
+          DIAG_CHECKPOINT(DC_FX_START_LOG);
+          /* v71: WriteCheckpointFile(5, 1) REMOVED — same reason as CHK04.
+             We want to see if BSP_LED_On(LED_GREEN) actually fires. */
           BSP_LED_Off(LED_RED);
           BSP_LED_On(LED_GREEN);  /* Green ON = logging active */
+          DIAG_CHECKPOINT(DC_FX_LED_ON);
+          /* v71: WriteCheckpointFile(7, 1) REMOVED — green LED is the
+             observable signal whether fx_thread reached this far. */
 
           /* Init the Queue Statistics */
           MessagePushed = 0;
@@ -379,25 +396,97 @@ static void fx_thread_entry(ULONG thread_input)
             sprintf(file_name, "Sens%03d.csv", SDCardCounter);
             SDCardCounter++;
 
-            /* Open the SD disk driver.  */
-            status =  fx_media_open(&sdio_disk,
-                                    "STM32_SDIO_DISK",
-                                    fx_stm32_sd_driver,
-                                    0,
-                                    (VOID *) media_memory,
-                                    sizeof(media_memory));
-
-            /* Check the media open status.  */
-            if (status != FX_SUCCESS)
-            {
-              STBOX1_PRINTF("Error opening SD Fx Media\r\n");
-              Error_Handler(__FILE__, __LINE__);
-            }
+            /* v73: SKIP the fx_media_open here. CAFU already opened the
+               media and (since v72) does NOT close it because
+               fx_media_close hangs in its internal cleanup phase on this
+               hardware. The media stays open from boot through the
+               session. v72 confirmed: when CAFU skips close, fx_thread
+               reaches this case, BSP_LED_On runs (green briefly on?),
+               then fx_media_open fails (media already open) and
+               Error_Handler fires (red toggle). v73 skips the open so
+               fx_thread can proceed to fx_file_create the Sens file
+               using the still-open media. Issue #12. */
+            status = FX_SUCCESS;
+            /* (Original fx_media_open call removed.) */
 
             STBOX1_PRINTF("SD FX Media Open\r\n");
 
             /* Open error log file (append) */
+            DIAG_CHECKPOINT(DC_FX_BEFORE_OPEN);
             ErrorLog_Open();
+            DIAG_CHECKPOINT(DC_FX_AFTER_OPEN);
+            /* v75: 2-second sleep after ErrorLog_Open's fx_media_flush
+               to give the SD card time to finish its post-flush
+               housekeeping. Without this delay, the next operation
+               (fx_file_create) hangs internally on its own SDMMC
+               transactions, preventing any cached data (manifest, etc.)
+               from being committed. */
+            tx_thread_sleep(200);
+            DIAG_CHECKPOINT(DC_FX_AFTER_SLEEP_2S);
+
+            /* v54: DIAG-ONLY mode for Peter's reservebox. v50/v51/v53 each
+               showed the same 4-line truncation; the actual hang location
+               is unknown. Before doing anything risky, emit a numbered
+               sequence of marker+flush pairs so post-session we can see
+               EXACTLY which step on the way to fx_file_create succeeded.
+               Then enter a heartbeat-only loop that never tries to create
+               Sens/Gps/Bat. Each marker is independently flushed so the
+               on-disk tail tells us the last successful operation. */
+/* v74: turn OFF the v54 diag-only path. v73 confirmed fx_thread reaches
+   COMMAND_START_LOG and BSP_LED_On succeeds, but the diag-only block
+   between ErrorLog_Open and the normal Sens-create path was eating
+   60+ seconds in heartbeat sleeps + has its own flush hangs (the first
+   ErrorLog_Flush after ErrorLog_Open is the same back-to-back flush
+   bug). Skipping the block lets fx_thread fall through directly to the
+   normal Sens/Gps/Bat creation, which has the v13+ batched-flush
+   pattern + tx_thread_sleep(20) before fx_file_create. */
+#define STBOX1_DIAG_ONLY 0
+#if STBOX1_DIAG_ONLY
+            {
+              /* v59: NO ErrorLog_Flush calls. v58 hung Peter's box right
+                 here — the second fx_media_flush back-to-back after
+                 ErrorLog_Open's own flush takes minutes (not infinite,
+                 but longer than Peter's patience) due to bounded-but-
+                 cumulative SDMMC retries. Instead, every step appends
+                 a checkpoint to g_diag_ring in .noinit RAM. After
+                 power-cycle, ErrorLog_Open dumps the ring to disk —
+                 we see exactly how far this attempt got. */
+              DIAG_CHECKPOINT(DC_FX_DIAG_A_WRITE);
+              ErrorLog_Write("diag: A");
+              DIAG_CHECKPOINT(DC_FX_DIAG_A_FLUSH);
+              UINT fst1 = ErrorLog_Flush();
+              DIAG_CHECKPOINT(DC_FX_DIAG_A_DONE | (fst1 & 0xFFU));
+
+              DIAG_CHECKPOINT(DC_FX_DIAG_B_WRITE);
+              CHAR m[64];
+              sprintf(m, "diag: A flush returned 0x%X", (unsigned)fst1);
+              ErrorLog_Write(m);
+              DIAG_CHECKPOINT(DC_FX_DIAG_B_FLUSH);
+              ErrorLog_Flush();
+              DIAG_CHECKPOINT(DC_FX_DIAG_B_DONE);
+
+              tx_thread_sleep(100);  /* 1 sec yielding gap */
+
+              DIAG_CHECKPOINT(DC_FX_DIAG_C_WRITE);
+              ErrorLog_Write("diag: C — slept 1 s");
+              DIAG_CHECKPOINT(DC_FX_DIAG_C_DONE);
+
+              /* Heartbeat loop without per-iteration flush. Each
+                 iteration appends checkpoint to .noinit ring. */
+              for (UINT iter = 0; iter < 60U; iter++)
+              {
+                DIAG_CHECKPOINT(DC_FX_HEARTBEAT | (iter & 0xFFU));
+                tx_thread_sleep(100);  /* 1 s yielding */
+              }
+              ErrorLog_Flush();  /* one final flush after the entire run */
+
+              ErrorLog_Write("diag: heartbeat loop done — would now create Sens");
+              ErrorLog_Flush();
+              /* Fall through to normal Sens/Gps/Bat creation if we got
+                 this far. Unlikely on Peter's box — the heartbeat loop
+                 will show us the failure point first. */
+            }
+#endif
 
             /* v13 strategy: pre-write a forward-looking manifest of all the
                upcoming risky operations as a single batch, then flush ONCE.
@@ -411,36 +500,33 @@ static void fx_thread_entry(ULONG thread_input)
               sprintf(m, "fx: COMMAND_START_LOG enter, first create target='%s'", file_name);
               ErrorLog_Write(m);
             }
-            ErrorLog_Write("fx: about to call pre-create fx_media_flush");
             ErrorLog_Write("fx: about to call first fx_file_create Sens");
             ErrorLog_Write("fx: about to call fx_file_open Sens");
             ErrorLog_Write("fx: about to call fx_file_seek Sens");
             ErrorLog_Write("fx: about to call fx_file_write Sens header");
-            ErrorLog_Write("fx: about to call fx_media_flush after Sens header");
-            {
-              UINT fst = ErrorLog_Flush();
-              if (fst != FX_SUCCESS)
-              {
-                /* Best-effort: flush itself failed. Mark it for the next batch
-                   (will land on disk after a later flush survives). */
-                CHAR m[80];
-                sprintf(m, "fx: WARNING manifest flush returned status=0x%X",
-                        (unsigned)fst);
-                ErrorLog_Write(m);
-              }
-            }
 
-            /* Flush any pending FAT writes before creating new files. */
-            {
-              UINT fst = fx_media_flush(&sdio_disk);
-              CHAR m[64];
-              sprintf(m, "fx: pre-create fx_media_flush returned status=0x%X",
-                      (unsigned)fst);
-              ErrorLog_Write(m);
-            }
+            /* v51: NO explicit flush here. v50 field-test on Peter's
+               reservebox showed the manifest ErrorLog_Flush() right after
+               ErrorLog_Open's own flush hangs — the SD card is still
+               committing the previous flush internally and a back-to-back
+               fx_media_flush gets stuck waiting for card-busy to clear.
+               Symptom in v50: only the 4 lines from ErrorLog_Open made it
+               to disk; the 7 forward-looking manifest lines never landed.
+               Fix: leave the manifest writes in the FileX cache. They'll
+               get committed implicitly by the next fx_file_create's FAT
+               update, which goes through a different (working) path than
+               a bare back-to-back fx_media_flush. Cost: if everything
+               hangs INSIDE fx_file_create, the manifest is lost — but in
+               that case we'd also lose more from a back-to-back flush
+               anyway. We add a 200 ms tx_thread_sleep instead so the SD
+               card has time to settle from ErrorLog_Open's flush before
+               we pile more I/O on it. */
+            tx_thread_sleep(20);  /* 200 ms — let SD card finish previous commit */
 
+            DIAG_CHECKPOINT(DC_FX_BEFORE_CREATE);
             /* Create a file in the root directory.  */
             status =  fx_file_create(&sdio_disk, file_name);
+            DIAG_CHECKPOINT(DC_FX_AFTER_CREATE | (status & 0xFFU));
 
             {
               CHAR m[64];
@@ -508,8 +594,10 @@ static void fx_thread_entry(ULONG thread_input)
 
             ErrorLog_Write("fx: before fx_file_open Sens");
 
+            DIAG_CHECKPOINT(DC_FX_BEFORE_OPENF);
             /* Open the test file.  */
             status =  fx_file_open(&sdio_disk, &SensorsFxFile, file_name, FX_OPEN_FOR_WRITE);
+            DIAG_CHECKPOINT(DC_FX_AFTER_OPENF | (status & 0xFFU));
 
             {
               CHAR m[64];
@@ -532,8 +620,10 @@ static void fx_thread_entry(ULONG thread_input)
 
             ErrorLog_Write("fx: before fx_file_seek Sens");
 
+            DIAG_CHECKPOINT(DC_FX_BEFORE_SEEK);
             /* Seek to the beginning of the test file.  */
             status =  fx_file_seek(&SensorsFxFile, 0);
+            DIAG_CHECKPOINT(DC_FX_AFTER_SEEK | (status & 0xFFU));
 
             {
               CHAR m[64];
@@ -552,8 +642,10 @@ static void fx_thread_entry(ULONG thread_input)
 
             ErrorLog_Write("fx: before fx_file_write Sens header");
 
+            DIAG_CHECKPOINT(DC_FX_BEFORE_HDRWR);
             /* Write a string to the test file.  */
             status =  fx_file_write(&SensorsFxFile, header, sizeof(header) - 1);
+            DIAG_CHECKPOINT(DC_FX_AFTER_HDRWR | (status & 0xFFU));
 
             {
               CHAR m[64];
@@ -571,9 +663,12 @@ static void fx_thread_entry(ULONG thread_input)
 
             ErrorLog_Write("fx: before fx_media_flush after Sens header");
 
-            /* Flush so the sens header survives an ungraceful power-off
-             * even before the periodic flush kicks in at sample 100. */
+            DIAG_CHECKPOINT(DC_FX_BEFORE_HFLUSH);
+            /* v77: bring back fx_media_flush. With BLE disabled (see
+               STBOX1_ENABLE_BLE_SYNC=0) we test if the previous hang
+               was BLE thread / SPI / EXTI11 IRQ interference. */
             fx_media_flush(&sdio_disk);
+            DIAG_CHECKPOINT(DC_FX_AFTER_HFLUSH);
             ErrorLog_Write("start: sens header written");
 
             if (tx_timer_activate(&ReadTimer) != TX_SUCCESS)
@@ -1386,6 +1481,74 @@ static void ErrorLog_Open(void)
   fx_file_write(&ErrorLogFxFile, (CHAR *)ble_msg, strlen(ble_msg));
 #endif
 
+  /* v59: dump the diagnostic ring buffer from the previous boot. If
+     fx_thread got stuck somewhere in COMMAND_START_LOG, the ring
+     captured exactly where. We write the entries as a single batched
+     sequence into the FileX cache; the trailing fx_media_flush at
+     the bottom of ErrorLog_Open commits them all in one transaction.
+     If magic doesn't match, .noinit was uninitialised (cold boot) —
+     skip silently. */
+  {
+    extern diag_ring_t g_diag_ring;
+    if (g_diag_ring.magic == DIAG_RING_MAGIC)
+    {
+      uint32_t count = g_diag_ring.wrap ? DIAG_RING_SIZE : g_diag_ring.head;
+      uint32_t start = g_diag_ring.wrap ? g_diag_ring.head : 0U;
+      CHAR rmsg[80];
+      INT rl = sprintf(rmsg, "DIAG_RING_DUMP: %lu entries, last from previous boot:\r\n",
+                       (unsigned long)count);
+      fx_file_write(&ErrorLogFxFile, rmsg, rl);
+      for (uint32_t i = 0; i < count; i++) {
+        uint32_t idx = (start + i) % DIAG_RING_SIZE;
+        rl = sprintf(rmsg, "  [%2lu] tick=%lu code=0x%06lX\r\n",
+                     (unsigned long)i,
+                     (unsigned long)g_diag_ring.entries[idx].tick,
+                     (unsigned long)g_diag_ring.entries[idx].code);
+        fx_file_write(&ErrorLogFxFile, rmsg, rl);
+      }
+      /* Reset the ring for THIS boot's checkpoints. */
+      g_diag_ring.magic = DIAG_RING_MAGIC;
+      g_diag_ring.head  = 0;
+      g_diag_ring.wrap  = 0;
+    }
+  }
+
+  /* v57: post-mortem fault info recovery. g_fault_info lives in .noinit
+     so it survives warm reset (NVIC reset, watchdog, brown-out). If a
+     fault occurred on the previous boot — magic == 0xFA0177AB — emit
+     the captured PC/LR/CFSR as a permanent on-disk record, then clear
+     the magic so this only fires once per fault. Strings match the
+     LED-morse pattern numbers from stm32u5xx_it.c so post-session
+     correlation is trivial. */
+  {
+    extern fault_info_t g_fault_info;
+    if (g_fault_info.magic == 0xFA0177ABU)
+    {
+      static const char *FAULT_NAME[] = {
+        "?", "HardFault", "MemManage", "BusFault", "UsageFault", "NMI"
+      };
+      const char *name = (g_fault_info.fault_id <= 5U)
+                       ? FAULT_NAME[g_fault_info.fault_id] : "?";
+      CHAR fmsg[256];
+      INT flen = sprintf(fmsg,
+        "FAULT_RECOVERED: %s (id=%lu morse=%lu pulses)\r\n"
+        "  PC=0x%08lX LR=0x%08lX PSR=0x%08lX\r\n"
+        "  CFSR=0x%08lX HFSR=0x%08lX MMFAR=0x%08lX BFAR=0x%08lX\r\n",
+        name,
+        (unsigned long)g_fault_info.fault_id,
+        (unsigned long)(g_fault_info.fault_id + 4U),  /* morse offset */
+        (unsigned long)g_fault_info.pc,
+        (unsigned long)g_fault_info.lr,
+        (unsigned long)g_fault_info.psr,
+        (unsigned long)g_fault_info.cfsr,
+        (unsigned long)g_fault_info.hfsr,
+        (unsigned long)g_fault_info.mmfar,
+        (unsigned long)g_fault_info.bfar);
+      fx_file_write(&ErrorLogFxFile, fmsg, flen);
+      g_fault_info.magic = 0;  /* clear so we don't re-log next boot */
+    }
+  }
+
   fx_media_flush(&sdio_disk);
 
   STBOX1_PRINTF("Error log: %s\r\n", log_name);
@@ -1407,14 +1570,37 @@ static void ErrorLog_Open(void)
    markers since the last flush are lost — but in practice we get more
    markers on disk, not fewer, because we hit the hanging flush less
    often. */
+/* v52: track ErrorLog write failures so we don't spend 10 s × N writes
+   busy-waiting for a stuck SD card. After 2 consecutive failures, set
+   the broken flag and silently no-op subsequent writes. The flag stays
+   set for the rest of the boot — there's no "card recovered" detection.
+   Trade-off: if the card is genuinely transient-busy and clears, we
+   still skip writes for the rest of the session — but that beats
+   monopolising fx_thread's CPU on a card that's not coming back. */
+static UINT ErrorLogConsecutiveFails = 0U;
+static UINT ErrorLogBroken = 0U;
+
 void ErrorLog_Write(const char *msg)
 {
-  if (!ErrorLogFileOpen)
-    return;
+  if (!ErrorLogFileOpen) return;
+  if (ErrorLogBroken) return;
 
   CHAR line[300];
   INT len = sprintf(line, "[%lu ms] %s\r\n", tx_time_get(), msg);
-  fx_file_write(&ErrorLogFxFile, line, len);
+  UINT status = fx_file_write(&ErrorLogFxFile, line, len);
+
+  if (status != FX_SUCCESS)
+  {
+    ErrorLogConsecutiveFails++;
+    if (ErrorLogConsecutiveFails >= 2U)
+    {
+      ErrorLogBroken = 1U;  /* stop trying — card is not recovering */
+    }
+  }
+  else
+  {
+    ErrorLogConsecutiveFails = 0U;
+  }
 }
 
 /* Explicit flush — call at strategic checkpoints. Returns the FileX
@@ -1454,6 +1640,52 @@ void ErrorLog_Close(void)
   *         Caller must already have opened sdio_disk.
   * @retval None
   */
+/* v66: SD-resident checkpoint markers. Each call writes a tiny
+   CHK<n>.TXT file at SD root. The last file present after a hang
+   pinpoints which checkpoint was the last one reached. Set
+   need_open=1 outside the CAFU region (where sdio_disk is closed) so
+   the helper opens+closes media around the write; set need_open=0
+   when the caller is already holding the media open. CHK files are
+   wiped at every boot via the directory cleanup in WriteFwInfoFile. */
+static void WriteCheckpointFile(int chk_num, int need_open)
+{
+  if (need_open) {
+    /* v70: sleep before re-opening media. v69 with 50 ticks (500 ms)
+       wasn't enough — CHK04 still didn't land on Zeno's box. Bumped to
+       200 ticks (2 sec) to test if it's just a timing problem. Cost is
+       4× 2 = 8 sec extra boot time across all CHK4..7 — tolerable for
+       diagnostic. If 2 sec still doesn't work, the theory is wrong and
+       we need to investigate fx_media_open/close pairing differently
+       (e.g., never close media, use BSP_SD_GetCardState polling, or
+       skip the open/close entirely by keeping media open throughout). */
+    tx_thread_sleep(200);
+    UINT s = fx_media_open(&sdio_disk, "STM32_SDIO_DISK", fx_stm32_sd_driver,
+                           0, (VOID *)media_memory, sizeof(media_memory));
+    if (s != FX_SUCCESS) return;
+  }
+
+  FX_FILE chk;
+  CHAR name[16];
+  CHAR data[40];
+
+  sprintf(name, "CHK%02d.TXT", chk_num);
+  fx_file_create(&sdio_disk, name);
+  if (fx_file_open(&sdio_disk, &chk, name, FX_OPEN_FOR_WRITE) == FX_SUCCESS) {
+    int n = sprintf(data, "ck%d t=%lu\r\n",
+                    chk_num, (unsigned long)tx_time_get());
+    fx_file_write(&chk, data, n);
+    fx_file_close(&chk);
+    /* v68 strategy A: NO explicit fx_media_flush. When need_open=0
+       (CHK inside CAFU), the file lives in cache and is committed by
+       CAFU's fx_media_close. When need_open=1 (CHK in fx_thread),
+       the fx_media_close below provides one internal flush. */
+  }
+
+  if (need_open) {
+    fx_media_close(&sdio_disk);
+  }
+}
+
 static void WriteFwInfoFile(void)
 {
   FX_FILE info_file;
@@ -1478,18 +1710,20 @@ static void WriteFwInfoFile(void)
      delete them all. Two-pass so the directory iterator isn't
      invalidated mid-iteration. The legacy fixed-name FW_INFO.TXT and
      any FW_INFO_v*.TXT from previously-flashed firmware both match the
-     7-char prefix. Up to 8 stale entries cleaned per boot — generous
-     headroom; the only way to exceed it is to flash 9+ different builds
-     onto a card without ever booting between each, which doesn't happen. */
+     7-char prefix. v66 also deletes CHK*.TXT diagnostic markers from
+     the previous boot — fresh per-boot checkpoint set. Up to 16 stale
+     entries cleaned per boot. */
   {
-    CHAR  stale[8][24];
+    CHAR  stale[16][24];
     UINT  count = 0;
     CHAR  name[24];
 
     if (fx_directory_first_entry_find(&sdio_disk, name) == FX_SUCCESS)
     {
       do {
-        if (count < 8 && strncmp(name, "FW_INFO", 7) == 0) {
+        if (count < 16 &&
+            (strncmp(name, "FW_INFO", 7) == 0 ||
+             strncmp(name, "CHK", 3) == 0)) {
           strncpy(stale[count], name, 23);
           stale[count][23] = '\0';
           count++;
@@ -1510,7 +1744,13 @@ static void WriteFwInfoFile(void)
 
   fx_file_write(&info_file, info, len);
   fx_file_close(&info_file);
-  fx_media_flush(&sdio_disk);
+  /* v68 strategy A: NO explicit fx_media_flush here. Back-to-back
+     flushes hang the driver on this hardware (issue #12 / Peter's box
+     reproduced locally on Zeno's box too). The trailing fx_media_close
+     in CheckAndApplyFirmwareUpdate provides a single internal flush
+     that commits FW_INFO + all CHK files in one shot. */
+  /* v66 CHK01: WriteFwInfoFile completed (media still open). */
+  WriteCheckpointFile(1, 0);
 }
 
 /**
@@ -1555,13 +1795,24 @@ static INT CheckAndApplyFirmwareUpdate(void)
      visible immediately after boot — before any START_LOG, even if
      the user never starts a session. */
   WriteFwInfoFile();
+  /* v66 CHK02: WriteFwInfoFile returned, before fx_file_open(firmware.bin). */
+  WriteCheckpointFile(2, 0);
 
   /* Try to open firmware.bin */
   status = fx_file_open(&sdio_disk, &fw_file, "firmware.bin", FX_OPEN_FOR_READ);
   if (status != FX_SUCCESS)
   {
-    /* No firmware.bin found — close media and continue */
-    fx_media_close(&sdio_disk);
+    /* v66 CHK03: firmware.bin not found, about to fx_media_close. */
+    WriteCheckpointFile(3, 0);
+    /* v72: SKIP fx_media_close. v68-71 confirmed that fx_media_close
+       commits data to disk (CHK01-03 visible) but then hangs in its
+       internal cleanup phase — fx_thread never reaches BSP_LED_On.
+       Leaving media open lets fx_thread continue, and the
+       COMMAND_START_LOG case can either reuse this open media or do
+       its own open. CHK files in cache will probably NOT be visible
+       on next read since they're not committed — that's the cost of
+       the diagnostic. Issue #12. */
+    /* fx_media_close(&sdio_disk); */
     return 0;
   }
 
@@ -1694,10 +1945,18 @@ static INT CheckAndApplyFirmwareUpdate(void)
     }
 
     HAL_FLASH_Lock();
-    if (HAL_ICACHE_Enable() != HAL_OK)
-    {
-      STBOX1_PRINTF("WARNING: ICache re-enable failed\r\n");
-    }
+    /* v64: do NOT re-enable ICACHE here. The Reference Manual mandates
+       ICACHE off during ALL flash programming including option-byte
+       programming below. The previous re-enable would cause the
+       HAL_FLASHEx_OBProgram call below to silently fail (returns
+       HAL_OK but the option byte is not actually written), so
+       HAL_FLASH_OB_Launch then reloads the OLD swap-bank value, the
+       chip boots from the still-active bank with the still-old
+       firmware, and DFU subsequently writes to whichever bank the
+       chip ROM bootloader picks — which can be the wrong one.
+       Symptom: identical hang behaviour after a series of "successful"
+       firmware updates. ICACHE stays off until after OB_Launch (which
+       triggers system reset, so re-enable would never run anyway). */
 
     STBOX1_PRINTF("Programmed %lu bytes\r\n", total_written);
   }
@@ -1711,6 +1970,11 @@ static INT CheckAndApplyFirmwareUpdate(void)
   STBOX1_PRINTF("Swapping banks and resetting...\r\n");
   BSP_LED_Off(LED_RED);
 
+  /* v64: leave ICACHE disabled through the green-success blinks too
+     (HAL_Delay just spins on uwTick, doesn't need ICACHE). The blinks
+     are the "we successfully programmed flash" signal — duration is
+     visible to the field tester but no flash operations happen here. */
+
   /* "Firmware flashed successfully" signal: 3 slow green blinks (~1.8 s
      total) before the reset triggers. Clear "we succeeded" feedback for
      the field tester — distinct from both the rapid "detected" signal
@@ -1723,27 +1987,73 @@ static INT CheckAndApplyFirmwareUpdate(void)
   }
   BSP_LED_On(LED_GREEN);
 
-  /* Swap flash banks via option bytes — triggers system reset */
+  /* Swap flash banks via option bytes — triggers system reset.
+     v64: keeps ICACHE disabled (still off from the earlier
+     HAL_ICACHE_Disable above). Adds read-back verify after
+     HAL_FLASHEx_OBProgram so a silent failure is detectable.
+     If verify fails, retry up to 3 times. Logs progress to the
+     diagnostic ring (.noinit) so the symptom is recoverable
+     post-mortem even if the bank swap itself silently fails. */
   {
     FLASH_OBProgramInitTypeDef OBInit;
+    DIAG_CHECKPOINT(0x030001U);  /* SD-update bank-swap entry */
     HAL_FLASH_Unlock();
     HAL_FLASH_OB_Unlock();
     HAL_FLASHEx_OBGetConfig(&OBInit);
 
+    /* Compute target SWAP_BANK value: opposite of current */
+    uint32_t want_swap = ((OBInit.USERConfig & FLASH_OPTR_SWAP_BANK) == FLASH_OPTR_SWAP_BANK)
+                         ? 0U
+                         : FLASH_OPTR_SWAP_BANK;
+
     OBInit.OptionType = OPTIONBYTE_USER;
     OBInit.USERType = OB_USER_SWAP_BANK;
+    /* v64: use bitwise update instead of overwriting USERConfig
+       wholesale — preserves any other USER bits even though
+       HAL_FLASHEx_OBProgram only programs the SWAP_BANK bit per
+       USERType (the other bits in USERConfig are ignored, but
+       safer to keep them consistent). */
+    OBInit.USERConfig = (OBInit.USERConfig & ~FLASH_OPTR_SWAP_BANK) | want_swap;
 
-    if ((OBInit.USERConfig & FLASH_OPTR_SWAP_BANK) == FLASH_OPTR_SWAP_BANK)
-      OBInit.USERConfig &= ~FLASH_OPTR_SWAP_BANK;
-    else
-      OBInit.USERConfig = FLASH_OPTR_SWAP_BANK;
-
-    if (HAL_FLASHEx_OBProgram(&OBInit) != HAL_OK)
+    /* Retry up to 3 times in case of silent program failure. */
+    HAL_StatusTypeDef ob_status = HAL_ERROR;
+    for (int attempt = 0; attempt < 3; attempt++)
     {
-      STBOX1_PRINTF("ERROR: Option bytes program failed\r\n");
-      /* Fall through to reset anyway */
+      DIAG_CHECKPOINT(0x030010U | (uint32_t)attempt);
+      ob_status = HAL_FLASHEx_OBProgram(&OBInit);
+      if (ob_status != HAL_OK)
+      {
+        STBOX1_PRINTF("ERROR: OBProgram returned non-OK (attempt %d)\r\n", attempt);
+        continue;
+      }
+      /* Read-back verify */
+      FLASH_OBProgramInitTypeDef OBCheck;
+      HAL_FLASHEx_OBGetConfig(&OBCheck);
+      if ((OBCheck.USERConfig & FLASH_OPTR_SWAP_BANK) == want_swap)
+      {
+        DIAG_CHECKPOINT(0x030020U | (uint32_t)attempt);  /* verified */
+        ob_status = HAL_OK;
+        break;
+      }
+      DIAG_CHECKPOINT(0x0300F0U | (uint32_t)attempt);  /* silent fail */
+      STBOX1_PRINTF("WARN: OB readback mismatch (attempt %d)\r\n", attempt);
+      HAL_Delay(50);
+      ob_status = HAL_ERROR;
     }
 
+    if (ob_status != HAL_OK)
+    {
+      DIAG_CHECKPOINT(0x0300FFU);  /* gave up after 3 tries */
+      STBOX1_PRINTF("FATAL: OB program/verify failed after 3 attempts — "
+                    "next boot will continue from current bank, "
+                    "firmware update LOST\r\n");
+      /* Fall through to reset anyway. The chip will boot from the
+         original bank; the new firmware sits in the inactive bank
+         and is invisible. The user will see the boot marker still
+         report the OLD version. Recovery: DFU mass-erase + reflash. */
+    }
+
+    DIAG_CHECKPOINT(0x030030U);  /* about to OB_Launch */
     /* This triggers a system reset */
     HAL_FLASH_OB_Launch();
 

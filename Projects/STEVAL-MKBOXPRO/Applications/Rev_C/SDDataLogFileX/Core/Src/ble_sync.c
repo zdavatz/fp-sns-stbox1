@@ -25,8 +25,23 @@
 extern void hci_user_evt_proc(void);
 
 #define BLE_SYNC_STACK_SIZE   (4 * 1024)
-/* Below the FileX writer (12) and GPS thread (~11) so SD bandwidth and
-   GPS line assembly always win. */
+/* BELOW fx_thread (priority 12) so the SD-card logger ALWAYS comes up
+   first, regardless of what BLE-bring-up does. Past attempts at higher
+   priorities (v41/v48/v49 used priority 11) all failed in the field on
+   Peter's reservebox: the BLE thread monopolised the CPU during pre-
+   sleep busy-waits inside ble_chip_alive_probe (HAL_Delay(150) +
+   500ms IRQ-poll = ~655 ms), then if bluetooth_init() got stuck, the
+   logger thread never ran, and the SD card stayed empty — same symptom
+   regardless of whether the post-Reset wait was busy-loop (HAL_Delay,
+   v48) or yielding (tx_thread_sleep, v49). v50 inverts the priority:
+   fx_thread runs first, opens the SD card, starts logging the boot
+   marker + status flags, and only then does the kernel let the BLE
+   thread (priority 14) run its bring-up. If BLE init hangs, logging
+   continues uninterrupted and we get a usable error log. Trade-off:
+   BLE init now races against fx_thread for SDMMC bus access, but the
+   3.3V-modded box's earlier SDMMC-corruption-from-BLE-noise hypothesis
+   is now considered unlikely (the chip is OTP-OK and SDMMC NSPEED is
+   already lowered to ~12.5 MHz for headroom). Issue #12. */
 #define BLE_SYNC_THREAD_PRIO  14
 
 static TX_THREAD ble_sync_thread;
@@ -151,9 +166,24 @@ static void ble_sync_thread_entry(ULONG arg)
   }
   g_ble_probe_status = 0xF2U;  /* probe returned alive=1, about to call bluetooth_init */
 
+  /* Post-HCI-Reset settle delay — mirrors ST's production firmware
+     (FUN_0802d5d8(2000) in FUN_08031468). v48 used HAL_Delay(2000) here
+     which is a SysTick busy-loop and DOES NOT yield to the ThreadX
+     scheduler. Result: with our priority-11 BLE thread running first,
+     the busy-wait monopolised the CPU for 2 s, fx_thread (priority 12)
+     never came up during the wait, and if bluetooth_init() then hung
+     waiting for a chip response, fx_thread stayed starved forever — v48
+     regressed in the field with the same "boot-beep then dark, SD empty"
+     symptom as v41. v49 swaps to `tx_thread_sleep(200)` (= 2 s at 10 ms
+     tick): the BLE thread yields the CPU during the settle, fx_thread
+     gets to come up, open the SD card and start logging, and only then
+     does the BLE thread try its bluetooth_init(). If BLE then hangs,
+     logging is already running. Issue #12 / Peter's reservebox. */
+  ErrorLog_Write("ble: probe OK - 2s settle (yielding), then bluetooth_init");
+  tx_thread_sleep(200);
+
   /* Brings up the SPI-1/HCI link, registers GAP, sets the random address,
      and starts advertising as STBoxSync. */
-  ErrorLog_Write("ble: probe OK - calling bluetooth_init");
   uint8_t init_rc = bluetooth_init();
   g_ble_probe_status = 0xF3U;  /* bluetooth_init returned (any rc) */
 
