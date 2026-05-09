@@ -19,10 +19,14 @@
 #if STBOX1_ENABLE_USB_CDC
 
 #include <string.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include "tx_api.h"
 #include "tusb.h"
 #include "stm32u5xx_hal.h"
+#include "stm32u5xx_hal_rcc_ex.h"
 #include "main.h"
+#include "SensorTileBoxPro.h"  /* BSP_LED_On / Off / LED_RED */
 
 /* ---------------------------------------------------------------------------
  * USB peripheral hardware bring-up
@@ -30,7 +34,13 @@
 static void usb_cdc_hw_init(void) {
   /* Enable VDDUSB power island. STM32U5 puts the USB transceiver behind a
    * separate supply rail — without this, OTG_FS register writes succeed but
-   * the line stays floating and no host enumerates. */
+   * the line stays floating and no host enumerates. CRUCIAL: HAL_PWREx_*
+   * functions write to PWR->SVMCR, which requires the PWR peripheral clock
+   * to be enabled. Without __HAL_RCC_PWR_CLK_ENABLE() the write silently
+   * has no effect and VDDUSB stays gated — which is exactly the symptom
+   * we hit (host sees zero bus events even though tud_rhport_init returns
+   * OK). NFC_FTM's HAL_PCD_MspInit guards against this; we must too. */
+  __HAL_RCC_PWR_CLK_ENABLE();
   HAL_PWREx_EnableVddUSB();
 
   /* Route HSI48 to the USB / SDMMC / RNG intermediate clock (ICLK).
@@ -42,6 +52,22 @@ static void usb_cdc_hw_init(void) {
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ICLK;
   PeriphClkInit.IclkClockSelection   = RCC_ICLK_CLKSOURCE_HSI48;
   HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit);
+
+  /* Enable Clock Recovery System (CRS) auto-trim of HSI48 from USB SOF.
+   * HSI48 alone is ±1-2 % out of reset which is too loose for USB FS spec
+   * (±0.25 % during enumeration). CRS locks HSI48 to the host's 1 kHz USB
+   * SOF token so the line rate stays inside spec the moment a host plugs
+   * in. Without CRS the host may not see SE0/J/K transitions cleanly and
+   * enumeration silently fails. */
+  __HAL_RCC_CRS_CLK_ENABLE();
+  RCC_CRSInitTypeDef CRSInit = {0};
+  CRSInit.Prescaler             = RCC_CRS_SYNC_DIV1;
+  CRSInit.Source                = RCC_CRS_SYNC_SOURCE_USB;
+  CRSInit.Polarity              = RCC_CRS_SYNC_POLARITY_RISING;
+  CRSInit.ReloadValue           = RCC_CRS_RELOADVALUE_DEFAULT;   /* 0xBB7F = 48000-1 */
+  CRSInit.ErrorLimitValue       = RCC_CRS_ERRORLIMIT_DEFAULT;
+  CRSInit.HSI48CalibrationValue = RCC_CRS_HSI48CALIBRATION_DEFAULT;
+  HAL_RCCEx_CRSConfig(&CRSInit);
 
   /* Enable peripheral clock for OTG_FS. STM32U5: SYSCFG_OTGHSPHYCR is for
    * the HS PHY which we don't use; the FS path lives behind RCC_AHB2ENR1. */
@@ -62,19 +88,31 @@ static void usb_cdc_hw_init(void) {
    * burst doesn't drop NMEA bytes. tud_int_handler bound in stm32u5xx_it.c. */
   HAL_NVIC_SetPriority(OTG_FS_IRQn, 13, 0);
   HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
+
+  /* CRUCIAL: select the FS embedded PHY via GUSBCFG.PHYSEL (bit 6).
+   * STM32U585's OTG_FS needs this bit set BEFORE the core reset so the
+   * controller knows which PHY interface to bring up; without it the data
+   * lines stay floating and no host enumerates — even though our other
+   * init steps (clock, VddUSB, GPIO) all succeed. ST's HAL_PCD_Init does
+   * this in USB_CoreInit (stm32u5xx_ll_usb.c), but TinyUSB's
+   * dwc2_phy_init doesn't, so we do it manually. Set this AFTER the
+   * OTG_FS RCC clock is enabled (we did that above) so the register is
+   * actually writable. */
+  USB_OTG_FS->GUSBCFG |= USB_OTG_GUSBCFG_PHYSEL;
 }
 
 /* ---------------------------------------------------------------------------
  * TinyUSB device init — exported entry called from main()
  * --------------------------------------------------------------------------*/
-void UsbCdc_Init(void) {
+bool UsbCdc_Init(void) {
   usb_cdc_hw_init();
-  /* Non-deprecated form of tud_init(0). */
+  /* Non-deprecated form of tud_init(0). Returns false if the dwc2 core
+   * fails its synopsys-id check (= clock/power not enabled). */
   const tusb_rhport_init_t rh_init = {
     .role  = TUSB_ROLE_DEVICE,
     .speed = TUSB_SPEED_FULL,
   };
-  tud_rhport_init(0, &rh_init);
+  return tud_rhport_init(0, &rh_init);
 }
 
 /* ---------------------------------------------------------------------------
@@ -84,12 +122,103 @@ void UsbCdc_Init(void) {
 static TX_THREAD usb_thread;
 static UCHAR    *usb_thread_stack = NULL;
 
+/* Capture key OTG_FS register snapshots into a global buffer that
+ * fx_thread can later mirror to the SD error log. We deliberately do NOT
+ * call ErrorLog_Write from this thread because (a) FileX's media access
+ * isn't safe to share between threads without explicit serialisation, and
+ * (b) doing so on the BLE+USB build hits the issue #12 second-flush hang
+ * that we're trying to debug in the first place.
+ *
+ * Layout: a 4-line ring of NUL-terminated strings; written by USB thread,
+ * drained by fx_thread once per second from app_filex.c. To keep this PR
+ * minimal we expose just the variables; the fx_thread mirror loop will
+ * land in a follow-up if useful. For now the buffer is mainly inspectable
+ * via SWD memory read or a JTAG dump. */
+volatile char g_usb_diag_lines[4][200];
+volatile uint8_t g_usb_diag_seq = 0;
+
+static void usb_capture_registers(void) {
+  volatile uint32_t *otg = (volatile uint32_t *) USB_OTG_FS;
+  uint32_t gotgctl = otg[0];
+  uint32_t gccfg   = otg[(0x038)/4];
+  uint32_t dctl    = otg[(0x804)/4];
+  uint32_t dcfg    = otg[(0x800)/4];
+  uint32_t gintsts = otg[5];
+  uint32_t dsts    = otg[(0x808)/4];
+
+  uint8_t slot = g_usb_diag_seq & 0x3U;
+  snprintf((char *) g_usb_diag_lines[slot], sizeof(g_usb_diag_lines[0]),
+           "usb#%u gotgctl=%08lX gccfg=%08lX dctl=%08lX dcfg=%08lX gintsts=%08lX dsts=%08lX mounted=%u",
+           (unsigned) g_usb_diag_seq,
+           (unsigned long) gotgctl, (unsigned long) gccfg,
+           (unsigned long) dctl, (unsigned long) dcfg,
+           (unsigned long) gintsts, (unsigned long) dsts,
+           (unsigned) tud_mounted());
+  g_usb_diag_seq++;
+}
+
+extern volatile uint8_t g_ble_probe_status;
+
 static void usb_thread_entry(ULONG arg) {
   (void) arg;
+  /* Red LED tracks tud_mounted() state for instant visual feedback:
+   *   red ON  = host has enumerated and CDC is mounted
+   *   red OFF = host hasn't seen us yet */
+  bool last_mounted = false;
+  uint32_t tick = 0;
+  bool captured_500ms = false, captured_5s = false, captured_30s = false;
+  uint32_t heartbeat_tick = 0;
   for (;;) {
-    tud_task();      /* Process control transfers, EP completions, etc. */
-    tud_cdc_write_flush();  /* Push any buffered TX bytes to the host. */
-    tx_thread_sleep(1);     /* 10 ms tick — plenty for printf / control. */
+    tud_task();
+    tud_cdc_write_flush();
+    bool mounted_now = tud_mounted();
+    if (mounted_now != last_mounted) {
+      if (mounted_now) BSP_LED_On(LED_RED);
+      else             BSP_LED_Off(LED_RED);
+      last_mounted = mounted_now;
+    }
+    tick++;
+    if (!captured_500ms && tick >= 50)   { captured_500ms = true; usb_capture_registers(); }
+    if (!captured_5s    && tick >= 500)  { captured_5s    = true; usb_capture_registers(); }
+    if (!captured_30s   && tick >= 3000) { captured_30s   = true; usb_capture_registers(); }
+
+    /* Live IRQ-counter indicator on the red LED — replaces the one-shot
+     * 8 s diagnostic which proved hard to time visually:
+     *   red OFF   = zero OTG_FS IRQs fired (peripheral isn't on the host bus)
+     *   red ON    = at least one IRQ has fired AND host has enumerated
+     *   red blink = IRQs firing but enumeration not completing
+     * The red-on-mounted transition above already handles the "enumerated"
+     * case. Here we add a slow blink (250 ms on / 750 ms off) when IRQs
+     * are arriving but tud_mounted is still false — that means the chip
+     * IS seeing the host but enumeration handshake is failing. */
+    extern volatile uint32_t g_otg_fs_irq_count;
+    static uint32_t blink_phase = 0;
+    if (g_otg_fs_irq_count > 0 && !mounted_now) {
+      blink_phase++;
+      if (blink_phase ==  1) BSP_LED_On(LED_RED);
+      if (blink_phase == 25) BSP_LED_Off(LED_RED);
+      if (blink_phase >= 100) blink_phase = 0;
+    }
+
+    /* Heartbeat printf every 1 second once the host has mounted us. Gives
+     * the field tester (and the host-side usb_console.py reader) something
+     * concrete to see, plus snapshots the live diagnostic state:
+     *   - tx_time_get()        ThreadX tick (1 tick = 10 ms)
+     *   - g_otg_fs_irq_count   number of OTG_FS interrupts since boot
+     *   - g_ble_probe_status   BLE bringup phase (see ble_sync.c codes)
+     *   - tud_connected/mounted current USB state
+     */
+    heartbeat_tick++;
+    if (mounted_now && heartbeat_tick >= 100) {
+      heartbeat_tick = 0;
+      printf("hb t=%lu otg_irq=%lu ble=0x%02X conn=%u mounted=%u\r\n",
+             (unsigned long) tx_time_get(),
+             (unsigned long) g_otg_fs_irq_count,
+             (unsigned) g_ble_probe_status,
+             (unsigned) tud_connected(),
+             (unsigned) tud_mounted());
+    }
+    tx_thread_sleep(1);
   }
 }
 

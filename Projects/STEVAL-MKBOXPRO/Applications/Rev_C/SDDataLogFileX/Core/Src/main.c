@@ -183,8 +183,18 @@ int main(void)
      the flag on, brings up OTG_FS so __io_putchar (and therefore printf
      and STBOX1_PRINTF) lands on USB. Service thread is spawned later from
      App_ThreadX_Init(). Hardware init must happen here (pre-RTOS) because
-     the OTG_FS NVIC line begins firing as soon as the host plugs in. */
-  UsbCdc_Init();
+     the OTG_FS NVIC line begins firing as soon as the host plugs in.
+     Distinctive blink right after init so the field tester can tell from
+     the LED whether USB hardware bring-up succeeded:
+       1 long green flash (~600 ms) = tud_rhport_init OK
+       7 quick red bursts            = tud_rhport_init FAILED (the dwc2
+                                       Synopsys-ID check failed, usually
+                                       clock or power) */
+  if (UsbCdc_Init()) {
+    BSP_LED_On(LED_GREEN);  HAL_Delay(600); BSP_LED_Off(LED_GREEN);
+  } else {
+    DiagBlinkRed(7);
+  }
 
   /* USER CODE END 2 */
 

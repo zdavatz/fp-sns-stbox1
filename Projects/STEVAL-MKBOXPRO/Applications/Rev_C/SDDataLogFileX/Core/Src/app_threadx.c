@@ -66,15 +66,16 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   /* USER CODE END App_ThreadX_MEM_POOL */
 
   /* USER CODE BEGIN App_ThreadX_Init */
-  /* BLE file-sync thread. No-op when STBOX1_ENABLE_BLE_SYNC=0; the
-     actual BlueNRG-LP init lands in a follow-up commit. */
-  ret = BleSync_ThreadX_Init(byte_pool);
-  if (ret != TX_SUCCESS) return ret;
+  /* USB CDC service thread spawned FIRST so a BLE-init failure can't take
+     down the debug console (the whole point of USB CDC is to debug BLE).
+     Stack 2 KB from byte pool. No-op when STBOX1_ENABLE_USB_CDC=0. */
+  UINT usb_ret = (UINT) UsbCdc_ThreadX_Init(byte_pool);
 
-  /* USB CDC service thread. No-op when STBOX1_ENABLE_USB_CDC=0. Drives
-     tud_task() so the host's enumeration + control transfers progress and
-     buffered TX bytes flush. Stack 2 KB allocated from the byte pool. */
-  ret = (UINT) UsbCdc_ThreadX_Init(byte_pool);
+  /* BLE file-sync thread. No-op when STBOX1_ENABLE_BLE_SYNC=0. */
+  UINT ble_ret = BleSync_ThreadX_Init(byte_pool);
+
+  /* Surface USB failure first (since it's the diagnostic), then BLE. */
+  ret = (usb_ret != TX_SUCCESS) ? usb_ret : ble_ret;
   /* USER CODE END App_ThreadX_Init */
 
   return ret;

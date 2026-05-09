@@ -335,6 +335,12 @@ void GPDMA1_Channel1_IRQHandler(void)
 * @brief UART4 global interrupt (GPS module reception).
 */
 #if STBOX1_ENABLE_USB_CDC
+/* Diagnostic counter — incremented on every OTG_FS interrupt entry. The USB
+ * thread reads this 8 s into boot to decide whether the peripheral is even
+ * receiving bus events: if zero, the host bus is silent and the peripheral
+ * isn't seeing reset/connect/SOF. */
+volatile uint32_t g_otg_fs_irq_count = 0;
+
 /**
   * @brief This function handles USB OTG FS global interrupt.
   *
@@ -344,6 +350,7 @@ void GPDMA1_Channel1_IRQHandler(void)
   */
 void OTG_FS_IRQHandler(void)
 {
+  g_otg_fs_irq_count++;
   tud_int_handler(0);
 }
 #endif

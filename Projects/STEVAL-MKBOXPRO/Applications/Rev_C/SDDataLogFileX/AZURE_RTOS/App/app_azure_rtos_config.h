@@ -43,7 +43,12 @@ extern "C" {
  * effective requirement just over 8 KB on this build. 16 KB is plenty of
  * margin and the cost is 8 KB of static BSS; no other consumer pulls
  * from this pool, so keeping headroom doesn't waste runtime memory. */
-#define TX_APP_MEM_POOL_SIZE                     (1024*16)
+/* Bumped to 24 KB after adding the 2 KB USB CDC thread on top of the 4 KB
+ * BLE thread. 16 KB had no headroom left, and tx_byte_allocate silently
+ * returning NO_MEMORY mid-chain in App_ThreadX_Init would skip whichever
+ * thread came second — invisible from the LED state. 24 KB is generous
+ * and costs only 8 KB more BSS. */
+#define TX_APP_MEM_POOL_SIZE                     (1024*24)
 
 /* 14 KB covers fx_thread (4 KB) + read_thread (4 KB) + gps_thread (2 KB) +
  * MessageQueue (~400 B) + tx_byte_pool overhead. 10 KB was too tight after

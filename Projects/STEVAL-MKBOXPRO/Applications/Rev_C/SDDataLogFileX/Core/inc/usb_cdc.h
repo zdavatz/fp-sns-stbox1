@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "stbox1_config.h"
 
 #ifdef __cplusplus
@@ -36,7 +37,10 @@ extern "C" {
  * Safe to call when no USB cable is plugged in — the stack stays idle until
  * VBUS is detected and a host begins enumeration.
  */
-void UsbCdc_Init(void);
+/* Returns true if tud_rhport_init succeeded, false otherwise. The caller
+ * (main.c) should signal failure with a distinctive LED pattern so a host
+ * lacking the USB device knows whether to suspect cable/host or firmware. */
+bool UsbCdc_Init(void);
 
 /* Spawn the ThreadX service thread (priority 13, between fx_thread at 12 and
  * ble_sync_thread at 14). The thread loops `tud_task(); tx_thread_sleep(1);`
@@ -63,7 +67,7 @@ size_t UsbCdc_Write(const void *buf, size_t len);
 #else  /* STBOX1_ENABLE_USB_CDC */
 
 /* Stubs so call sites can compile without their own #if guards. */
-static inline void UsbCdc_Init(void) {}
+static inline bool UsbCdc_Init(void) { return false; }
 static inline unsigned int UsbCdc_ThreadX_Init(void *p) { (void)p; return 0u; }
 static inline size_t UsbCdc_WriteString(const char *s) { (void)s; return 0u; }
 static inline size_t UsbCdc_Write(const void *b, size_t n) { (void)b; (void)n; return 0u; }

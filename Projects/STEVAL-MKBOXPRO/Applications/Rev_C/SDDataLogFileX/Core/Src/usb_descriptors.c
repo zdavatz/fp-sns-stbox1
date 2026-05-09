@@ -28,11 +28,20 @@ tusb_desc_device_t const desc_device = {
   .bDescriptorType    = TUSB_DESC_DEVICE,
   .bcdUSB             = USB_BCD,
 
-  /* CDC class needs IAD (Interface Association Descriptor) for the host to
-   * group the two CDC interfaces correctly — set device class = misc. */
-  .bDeviceClass       = TUSB_CLASS_MISC,
-  .bDeviceSubClass    = MISC_SUBCLASS_COMMON,
-  .bDeviceProtocol    = MISC_PROTOCOL_IAD,
+  /* Pure CDC ACM device (no other classes). On macOS Sequoia 15+ the
+   * built-in CDC ACM driver doesn't fully attach (partial probe, ioreg
+   * shows AppleUSBCDCCompositeDevice as `!matched`), so /dev/tty.usbmodem
+   * never appears. We work around this with Utilities/usb_console.py
+   * which uses libusb directly + sudo to claim the bulk-IN endpoint.
+   *
+   * Why CDC instead of vendor-specific: Sequoia *silently blocks*
+   * vendor-class accessories (no "Allow accessory" prompt) — they don't
+   * even show up in system_profiler. CDC at least shows up and triggers
+   * the prompt; the kernel driver's partial attach is annoying but
+   * pyusb-with-sudo handles it. Net: CDC works, vendor doesn't. */
+  .bDeviceClass       = TUSB_CLASS_CDC,
+  .bDeviceSubClass    = 0x00,
+  .bDeviceProtocol    = 0x00,
   .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
 
   .idVendor           = USB_VID,
@@ -59,7 +68,28 @@ enum {
   ITF_NUM_TOTAL
 };
 
-#define CONFIG_TOTAL_LEN  (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN)
+/* Hand-rolled CDC ACM config descriptor WITHOUT the IAD prefix that
+ * TUD_CDC_DESCRIPTOR includes. IAD (Interface Association Descriptor) is
+ * only valid when bDeviceClass = 0xEF (MISC); we set bDeviceClass = 0x02
+ * (CDC) so IAD is a spec violation that some hosts (notably macOS Sequoia)
+ * silently reject — the device enumerates at the device-descriptor level
+ * but never advances to SET_CONFIGURATION because the host treats the
+ * config descriptor as malformed.
+ *
+ * Structure (66 - 8 = 58 bytes after dropping IAD):
+ *   - 9  Communications Interface (class 2 / sub 2 / proto 1)
+ *   - 5  CDC Header functional
+ *   - 5  CDC Call Management functional
+ *   - 4  CDC ACM functional
+ *   - 5  CDC Union functional
+ *   - 7  Notification endpoint (EP 0x81 IN, interrupt, 8 B)
+ *   - 9  Data Interface (class 0x0A)
+ *   - 7  Bulk OUT endpoint (EP 0x02, 64 B)
+ *   - 7  Bulk IN  endpoint (EP 0x82, 64 B)
+ * Total: 58 bytes
+ */
+#define CDC_DESC_LEN_NO_IAD 58
+#define CONFIG_TOTAL_LEN    (TUD_CONFIG_DESC_LEN + CDC_DESC_LEN_NO_IAD)
 
 #define EPNUM_CDC_NOTIF   0x81
 #define EPNUM_CDC_OUT     0x02
@@ -67,14 +97,44 @@ enum {
 
 uint8_t const desc_fs_configuration[] = {
   /* Config: itf count, string idx, total len, attr (0x80 = bus-powered, no
-   * remote wakeup), max power 100 mA (USB FS spec ceiling without a
-   * power-source descriptor; the SensorTile.box has its own battery + the
-   * USB connection adds < 50 mA for OTG_FS so 100 is comfortable). */
+   * remote wakeup), max power 100 mA. */
   TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x80, 100),
 
-  /* CDC: itf, string idx, EP notify addr, EP notify size, EP OUT, EP IN,
-   * EP size. 64 B EP size = full speed bulk max. */
-  TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 4, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, 64),
+  /* Communications Class Interface: class 2 (CDC), subclass 2 (ACM),
+   * protocol 1 (AT commands), iInterface = 4 (string "STBoxPro CDC").
+   *
+   * NOTE: With device-class = 0xFF (vendor) we keep the CDC interfaces
+   * intact for hosts (Linux, Windows) that *can* attach a CDC driver.
+   * macOS sees vendor at the device level and ignores them. */
+  9, TUSB_DESC_INTERFACE, ITF_NUM_CDC, 0, 1,
+  TUSB_CLASS_CDC, CDC_COMM_SUBCLASS_ABSTRACT_CONTROL_MODEL, CDC_COMM_PROTOCOL_ATCOMMAND, 4,
+
+  /* CDC Header functional descriptor — bcdCDC = 0x0120 (CDC 1.20). */
+  5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_HEADER, 0x20, 0x01,
+
+  /* CDC Call Management functional — bmCapabilities = 0 (no call mgmt),
+   * bDataInterface = ITF_NUM_CDC + 1 (the data interface number). */
+  5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_CALL_MANAGEMENT, 0x00, (uint8_t)(ITF_NUM_CDC + 1),
+
+  /* CDC ACM functional — bmCapabilities = 0x06: support GetLineCoding,
+   * SetLineCoding, SetControlLineState + Send_Break. */
+  4, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_ABSTRACT_CONTROL_MANAGEMENT, 0x06,
+
+  /* CDC Union functional — control + data interfaces. */
+  5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_UNION, ITF_NUM_CDC, (uint8_t)(ITF_NUM_CDC + 1),
+
+  /* Notification endpoint: address EP 0x81 (IN), interrupt transfer,
+   * 8 B max packet, 16 ms polling interval. */
+  7, TUSB_DESC_ENDPOINT, EPNUM_CDC_NOTIF, TUSB_XFER_INTERRUPT, 0x08, 0x00, 16,
+
+  /* Data Class Interface: class 0x0A (CDC Data), 0 sub, 0 proto. */
+  9, TUSB_DESC_INTERFACE, (uint8_t)(ITF_NUM_CDC + 1), 0, 2, TUSB_CLASS_CDC_DATA, 0, 0, 0,
+
+  /* Bulk OUT endpoint: address EP 0x02, bulk transfer, 64 B. */
+  7, TUSB_DESC_ENDPOINT, EPNUM_CDC_OUT, TUSB_XFER_BULK, 0x40, 0x00, 0,
+
+  /* Bulk IN endpoint: address EP 0x82, bulk transfer, 64 B. */
+  7, TUSB_DESC_ENDPOINT, EPNUM_CDC_IN,  TUSB_XFER_BULK, 0x40, 0x00, 0,
 };
 
 uint8_t const * tud_descriptor_configuration_cb(uint8_t index) {
