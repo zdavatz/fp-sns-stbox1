@@ -215,6 +215,50 @@ After step 3, the chip's OTP is permanent. Re-flashing our firmware (DFU or via 
 
 `dtm.bin` and `SensorTile.boxPRO.bin` come from ST's pre-built distributions of the BlueNRG-LP stack and the SensorTile.boxPRO function pack respectively. Neither is in this repo; pull from st.com when needed.
 
+### USB CDC ACM debug console (live `printf` over USB-C)
+
+When `STBOX1_ENABLE_USB_CDC=1` is built in (`make USB_CDC_ENABLED=1`), the SDDataLogFileX firmware brings up the STM32U585 OTG_FS peripheral as a USB CDC ACM virtual COM port and routes every `printf` / `STBOX1_PRINTF` call to a bulk-IN endpoint. A 1-second **heartbeat** is also emitted carrying `g_ble_probe_status` (BLE bringup phase) and `g_otg_fs_irq_count` so you can watch BLE init progress live without ever pulling the SD card.
+
+The vendored TinyUSB stack lives at `Middlewares/Third_Party/tinyusb/`. Glue at `Core/Src/usb_cdc.c` + `usb_descriptors.c`. Cost when on: +15 KB flash, +5 KB BSS. Default-off build is byte-identical to a pre-USB-CDC build.
+
+#### Linux (recommended)
+
+`cdc_acm` attaches cleanly. Plug the box into a Linux machine and:
+
+```sh
+dmesg | tail               # confirm cdc_acm attached
+ls /dev/ttyACM*            # /dev/ttyACM0 should appear
+sudo cat /dev/ttyACM0      # streams the heartbeat live
+# or:
+sudo screen /dev/ttyACM0 115200
+```
+
+Drop `sudo` after adding a udev rule:
+```
+SUBSYSTEM=="tty", ATTRS{idVendor}=="cafe", ATTRS{idProduct}=="4001", MODE="0666", GROUP="dialout"
+```
+
+#### macOS
+
+**Doesn't work on Sequoia 15+.** macOS Sequoia's kernel CDC ACM driver (`AppleUSBCDCCompositeDevice`) partial-attaches our device in `IOMatchDefer = Yes` state and never registers — `/dev/tty.usbmodem*` is never created. Even libusb-based tools (`Utilities/usb_console.py`, `Utilities/rust/usb-console/`) can't claim the bulk endpoint, even as root. We tried CDC + IAD, pure CDC, and vendor-specific class — none triggers a working CDC ACM attach. Apparently a regression in the DriverKit-era USB stack that affects TinyUSB-based devices broadly.
+
+Workaround on macOS: develop + DFU-flash on the Mac, then move the USB-C cable to a Linux box for live debug viewing. Or pull the SD card (the same `g_ble_probe_status` info lands in the error log). The Python and Rust helpers are checked in for if/when Apple fixes the kernel CDC driver.
+
+#### LED conventions during USB bringup
+
+- **1 long green flash (~600 ms)** between the 3 short boot blinks and solid green = `tud_rhport_init` returned OK.
+- **7 quick red bursts** = `tud_rhport_init` failed (clock or power problem).
+- **Red LED ON solid** while green is solid = host has enumerated (`tud_mounted = true`).
+- **Red LED slow blink** while green is solid = OTG_FS interrupts firing but enumeration stalled (host sees us, can't complete handshake — typical macOS Sequoia state).
+
+#### Heartbeat format
+
+```
+hb t=12345 otg_irq=87 ble=0xF2 conn=1 mounted=1
+```
+
+Where `t=` is ThreadX tick count (1 tick = 10 ms), `otg_irq=` total OTG_FS interrupts since boot, `ble=` is `g_ble_probe_status` (`0xF0` thread entered, `0xF1` in chip-alive probe, `0xF2` in `bluetooth_init`, `0xF3` after init returned, `0xF4` arming EXTI11, `0x01` advertising, `0x00` probe failed, `0x02` init failed, `0xFF` thread never started).
+
 ### Firmware Update via SD Card
 
 The firmware can be updated without BLE, JTAG, or ST-Link — just the SD card:

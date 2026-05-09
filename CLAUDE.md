@@ -101,6 +101,7 @@ Each application:
 - `STBOX1_LOG_BATTERY` (SDDataLogFileX) — gates the STC3115 fuel-gauge path and `BatNNN.csv`. Default `1`. I²C failure is non-fatal — writes a marker to the error log and skips battery logging for the rest of the boot.
 - `STBOX1_ENABLE_BLE_SYNC` (SDDataLogFileX) — gates BLE FileSync (advertising + GATT + ThreadX BLE thread). **Default `0`** because adding the BLE manager dependency chain breaks `fx_media_flush` on the SD logger via a link-time memory layout interaction (root cause unidentified). When `1`: `BleSync_ThreadX_Init()` is a no-op returning `TX_SUCCESS`. Cost when on: +28 KB flash, +4.5 KB BSS.
 - `STBOX1_ENABLE_WLC` (SDDataLogFileX) — BlueNRG-LP OTP programmer (reverse-engineered from ST firmware). Default `0`, **untested on real hardware**, no call site wired in. The flag-off compile is byte-identical to a build without the file.
+- `STBOX1_ENABLE_USB_CDC` (SDDataLogFileX) — USB CDC ACM virtual COM port over USB-C. Default `0`. When `1`, brings up OTG_FS via TinyUSB and routes `printf` / `STBOX1_PRINTF` over USB. Build with `make USB_CDC_ENABLED=1` (Makefile flag overrides the header default and pulls in the vendored TinyUSB stack). Cost when on: +15 KB flash, +5 KB BSS. **macOS Sequoia 15+ does NOT expose `/dev/tty.usbmodem*` for our descriptor** (kernel CDC driver `AppleUSBCDCCompositeDevice` partial-attaches in `IOMatchDefer = Yes` state and never registers; libusb can't claim the bulk endpoint either, even as root). Use a Linux box for live debug — `cdc_acm` attaches cleanly and `cat /dev/ttyACM0` streams the heartbeat. See "USB CDC ACM debug console" section below.
 
 ## SDDataLogFileX — Critical Configuration
 
@@ -298,6 +299,67 @@ Status bytes for READ/DELETE: `0x00` OK, `0xB0` BUSY (logging in progress), `0xE
 For ad-hoc poking, any generic GATT client works — write `01` to FileCmd, watch FileData stream. Most ergonomic: MovementLogger GUI's BLE FileSync panel.
 
 User-facing explainer at `Documentation/BLE_FileSync.{html,pdf}`. Render: `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --disable-gpu --no-pdf-header-footer --print-to-pdf=BLE_FileSync.pdf "file://$PWD/BLE_FileSync.html"`. Send via `~/software/pegelstand/whatsapp/send-doc.mjs`.
+
+## USB CDC ACM debug console
+
+When `STBOX1_ENABLE_USB_CDC=1` (set via Makefile flag `USB_CDC_ENABLED=1`), SDDataLogFileX brings up the STM32U585 OTG_FS peripheral as a USB CDC ACM virtual COM port and routes `printf` / `STBOX1_PRINTF` through bulk-IN endpoint 0x82. Vendored TinyUSB stack at `Middlewares/Third_Party/tinyusb/`. Glue at `Core/Src/usb_cdc.c`, `Core/Src/usb_descriptors.c`, `Core/inc/{tusb_config.h,usb_cdc.h}`. Service thread spawned from `App_ThreadX_Init`, priority 13.
+
+### Critical hardware setup quirks discovered the hard way
+
+All in `usb_cdc.c::usb_cdc_hw_init()`:
+
+- **`__HAL_RCC_PWR_CLK_ENABLE()` BEFORE `HAL_PWREx_EnableVddUSB()`** — `HAL_PWREx_EnableVddUSB` writes `PWR->SVMCR.USV`, but the write silently does nothing if the PWR peripheral clock is gated. Reference: NFC_FTM's `HAL_PCD_MspInit` does the same dance.
+- **CRS auto-trim of HSI48 from USB SOF** — `__HAL_RCC_CRS_CLK_ENABLE()` + `HAL_RCCEx_CRSConfig` with `RCC_CRS_SYNC_SOURCE_USB`. HSI48 alone is ±1-2 % out of reset, borderline for FS line-rate spec.
+- **`USB_OTG_FS->GUSBCFG |= USB_OTG_GUSBCFG_PHYSEL` after the OTG_FS RCC clock is enabled, before `tud_rhport_init`** — STM32U585 needs PHYSEL set to select the FS embedded PHY. ST's `HAL_PCD_Init` does this in `USB_CoreInit` (`stm32u5xx_ll_usb.c`); TinyUSB's `dwc2_phy_init` for STM32U5 does NOT. Without PHYSEL the data lines stay floating, `tud_rhport_init` returns true, but **zero OTG_FS interrupts ever fire**. This was the symptom that took the longest to diagnose; once PHYSEL was set the chip enumerated immediately.
+- **`RCC_PERIPHCLK_ICLK` + `IclkClockSelection = RCC_ICLK_CLKSOURCE_HSI48`**, not `RCC_PERIPHCLK_USB` (doesn't exist on U5) or `RCC_PERIPHCLK_CLK48` (legacy alias). On STM32U5 the USB / SDMMC / RNG share one ICLK selector.
+
+### LED conventions during USB bringup
+
+- **1 long green flash (~600 ms)** between the 3 short boot blinks and solid green = `tud_rhport_init` returned OK.
+- **7 quick red bursts** = `tud_rhport_init` failed (Synopsys-ID register read failed, almost always missing clock/power above).
+- **Red LED ON solid** while green is solid = `tud_mounted()` is true (host enumerated). Goes off on disconnect.
+- **Red LED slow blink** (250 ms on / 750 ms off) while green is solid = OTG_FS interrupts firing but `tud_mounted()` is still false → host sees us but enumeration stalled.
+
+### Diagnostic globals
+
+- `g_otg_fs_irq_count` (volatile uint32_t in `Core/Src/stm32u5xx_it.c`) — incremented on every OTG_FS_IRQHandler entry. Lets you tell whether the chip is even on the host bus.
+- `g_usb_diag_lines[4][200]` + `g_usb_diag_seq` — in-memory ring of OTG_FS register snapshots (gotgctl, gccfg, dctl, dcfg, gintsts, dsts, mounted) for SWD/JTAG inspection. Cannot write from USB thread to the FileX-owned error log because that races fx_thread.
+
+### Heartbeat
+
+When `tud_mounted()` goes true, the USB thread emits a 1 Hz `printf` of:
+```
+hb t=12345 otg_irq=87 ble=0xF2 conn=1 mounted=1
+```
+Where `t=` is the ThreadX tick count, `otg_irq=` total OTG_FS interrupts, `ble=` is `g_ble_probe_status` (BLE bringup phase — see `ble_sync.c`), `conn`/`mounted` are `tud_connected()` / `tud_mounted()`. With this stream you can watch BLE init progress live without ever touching the SD card.
+
+### macOS Sequoia 15+ blocker
+
+Sequoia's kernel CDC ACM driver (`AppleUSBCDCCompositeDevice`) **partial-attaches** in `IOMatchDefer = Yes` state and never registers — `/dev/tty.usbmodem*` is never created, AND libusb (rusb / pyusb) can't claim the bulk endpoint either, even as root. Tried CDC class with IAD, pure CDC class, vendor-specific class — all hit the same wall (vendor-class is silently blocked by the accessory authorization framework with no prompt). Apparently a regression in the DriverKit-era USB stack; affects TinyUSB-based devices broadly per the TinyUSB issue tracker.
+
+**Workaround: use Linux for the live debug viewer.**
+
+```sh
+# On Linux, after plugging the box in:
+dmesg | tail              # confirm cdc_acm attached
+sudo cat /dev/ttyACM0     # streams the heartbeat live
+# (drop sudo with a udev rule that gives the dialout group access to 0xCAFE/0x4001)
+```
+
+For Mac users without a Linux box, two leftover host-side helpers are checked in:
+- `Utilities/usb_console.py` — pyusb script run as `sudo uv run usb_console.py`. Hits "Other error" on macOS Sequoia regardless. Works on Linux.
+- `Utilities/rust/usb-console/` — the Rust port (`rusb`-based). Same behavior — works on Linux, blocked on Sequoia. Build with `cargo build --release -p usb-console`. Run as `sudo ./target/release/usb-console`.
+
+### Build invocations
+
+```sh
+make                            # default: USB off, BLE off (byte-identical to pre-USB-CDC build)
+make USB_CDC_ENABLED=1          # USB on, BLE off
+# Edit stbox1_config.h: STBOX1_ENABLE_BLE_SYNC 1
+make USB_CDC_ENABLED=1          # both on (issue #12 live-debug build)
+```
+
+Default-off build is byte-identical to a pre-USB build because DCE drops the entire integration when the flag is off.
 
 ## BlueNRG-LP OTP / WLC
 

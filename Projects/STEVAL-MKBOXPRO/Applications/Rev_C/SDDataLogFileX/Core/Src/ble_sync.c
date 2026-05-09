@@ -146,16 +146,23 @@ static void ble_sync_thread_entry(ULONG arg)
 {
   (void)arg;
 
-  /* v38 diagnostic: set intermediate values of g_ble_probe_status so the
-     fx_thread periodic logger can show us exactly where the BLE init
-     gets stuck. The terminal codes 0/1/2 (set after each init step
-     succeeds/fails) are kept; the 0xFx codes are intermediate progress
-     markers. Issue #12. */
+  /* IMMEDIATE flush diagnostic — write + flush before EVERY risky step so
+     a reset that happens mid-init still leaves a marker on disk. Without
+     this, the batched-flush ErrorLog_Write loses everything between the
+     last fx_media_flush and the reboot. Issue #12 debugging. */
+  ErrorLog_Write("ble: thread entered (will flush)");
+  ErrorLog_Flush();
+
   g_ble_probe_status = 0xF0U;  /* thread entered */
 
   /* Probe BEFORE entering bluetooth_init. */
   g_ble_probe_status = 0xF1U;  /* about to call ble_chip_alive_probe */
+  ErrorLog_Write("ble: about to ble_chip_alive_probe");
+  ErrorLog_Flush();
   uint8_t alive = ble_chip_alive_probe();
+  ErrorLog_Write(alive ? "ble: probe returned alive=1"
+                        : "ble: probe returned alive=0");
+  ErrorLog_Flush();
   if (!alive)
   {
     g_ble_probe_status = 0U;
@@ -180,12 +187,22 @@ static void ble_sync_thread_entry(ULONG arg)
      does the BLE thread try its bluetooth_init(). If BLE then hangs,
      logging is already running. Issue #12 / Peter's reservebox. */
   ErrorLog_Write("ble: probe OK - 2s settle (yielding), then bluetooth_init");
+  ErrorLog_Flush();
   tx_thread_sleep(200);
+
+  ErrorLog_Write("ble: about to bluetooth_init()");
+  ErrorLog_Flush();
 
   /* Brings up the SPI-1/HCI link, registers GAP, sets the random address,
      and starts advertising as STBoxSync. */
   uint8_t init_rc = bluetooth_init();
   g_ble_probe_status = 0xF3U;  /* bluetooth_init returned (any rc) */
+  {
+    char m[80];
+    sprintf(m, "ble: bluetooth_init returned rc=%u", (unsigned)init_rc);
+    ErrorLog_Write(m);
+    ErrorLog_Flush();
+  }
 
   if (init_rc != 0U)
   {
@@ -200,11 +217,14 @@ static void ble_sync_thread_entry(ULONG arg)
   }
   g_ble_probe_status = 0xF4U;  /* about to arm EXTI11 */
   ErrorLog_Write("ble: bluetooth_init OK - arming EXTI11");
+  ErrorLog_Flush();
 
   /* Hook EXTI11 → hci_tl_lowlevel_isr — what flips `hci_event` from
      the NVIC when the BlueNRG-LP raises its IRQ line. */
   init_ble_int_for_blue_nrglp();
   g_ble_probe_status = 1U;  /* SUCCESS: advertising + IRQ armed */
+  ErrorLog_Write("ble: EXTI11 armed - advertising");
+  ErrorLog_Flush();
 
   for (;;)
   {

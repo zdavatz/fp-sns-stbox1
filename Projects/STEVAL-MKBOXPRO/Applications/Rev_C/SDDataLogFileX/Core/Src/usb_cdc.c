@@ -157,7 +157,15 @@ static void usb_capture_registers(void) {
   g_usb_diag_seq++;
 }
 
+/* BLE thread exposes this; provide a fallback so usb_cdc.c also builds
+ * when BLE is gated off (STBOX1_ENABLE_BLE_SYNC=0 → ble_sync.c's
+ * definition is excluded). The fallback is a static const that the
+ * heartbeat below can read just like the real one. */
+#if STBOX1_ENABLE_BLE_SYNC
 extern volatile uint8_t g_ble_probe_status;
+#else
+static const uint8_t g_ble_probe_status = 0xFFu;  /* BLE disabled */
+#endif
 
 static void usb_thread_entry(ULONG arg) {
   (void) arg;
