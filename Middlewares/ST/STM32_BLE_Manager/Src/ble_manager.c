@@ -3490,7 +3490,13 @@ static ble_status_t init_ble_manager_ble_stack(void)
 
   /* get the BlueNRG HW and FW versions */
   get_blue_nrg_version(&hw_version, &fw_version);
-  ErrorLog_Write("ble_mgr: get_blue_nrg_version done");
+  {
+    char m[80];
+    sprintf(m, "ble_mgr: BlueNRG hw=%u fw=%u (= 0x%02x / 0x%02x)",
+            (unsigned)hw_version, (unsigned)fw_version,
+            (unsigned)hw_version, (unsigned)fw_version);
+    ErrorLog_Write(m);
+  }
 
   /* we will let the BLE chip to use its Random MAC address */
 #define CONFIG_DATA_RANDOM_ADDRESS          (0x80) /**< Stored static random address. Read-only. */
@@ -3601,6 +3607,11 @@ static ble_status_t init_ble_manager_ble_stack(void)
 #else /* ((BLUE_CORE != BLUENRG_LP) && (BLUE_CORE != STM32WB07_06)) */
   ret = aci_gatt_srv_init();
 #endif /* ((BLUE_CORE != BLUENRG_LP) && (BLUE_CORE != STM32WB07_06)) */
+  {
+    char m[64];
+    sprintf(m, "ble_mgr: GATT init rc=%u (0x%02x)", (unsigned)ret, (unsigned)ret);
+    ErrorLog_Write(m);
+  }
   if (ret != BLE_STATUS_SUCCESS)
   {
     BLE_MANAGER_PRINTF("\r\nGATT_Init failed\r\n");

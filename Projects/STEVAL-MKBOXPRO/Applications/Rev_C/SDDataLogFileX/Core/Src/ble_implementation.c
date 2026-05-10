@@ -58,25 +58,20 @@ void init_ble_int_for_blue_nrglp(void)
 {
   HAL_EXTI_GetHandle(&H_EXTI, EXTI_LINE);
   HAL_EXTI_RegisterCallback(&H_EXTI, HAL_EXTI_COMMON_CB_ID, hci_tl_lowlevel_isr);
-  /* Priority 14 — same as SDMMC1 so neither preempts the other. */
   HAL_NVIC_SetPriority(HCI_TL_SPI_EXTI_IRQ_N, 14, 0);
-
   /* Issue #12 / 2026-05-10: do NOT call HAL_NVIC_EnableIRQ here.
-   * Bisected: enabling EXTI11 NVIC while the chip's IRQ pin is HIGH
-   * (boot-pending events) hangs SDMMC's transfer-complete IRQ
-   * servicing → fx_media_flush blocks → fx_thread stuck → logger
-   * dies. This function gets called from middleware
-   * init_ble_manager_ble_stack() at start, where chip IRQ is still
-   * HIGH from boot events. ble_sync.c's BLE thread arms EXTI11 ONCE
-   * at the very end of bluetooth_init's successful path via
-   * arm_ble_exti11() (see ble_sync.c). */
+   * Enabling EXTI11 NVIC during BLE init deterministically wedges
+   * SDMMC1 transfer-complete IRQ servicing — verified across all
+   * priorities (0, 14, 15). Bisected as the issue #12 root cause. */
 }
 
 void arm_ble_exti11(void)
 {
-  /* Final EXTI11 arm — called from ble_sync_thread_entry after
-   * bluetooth_init returns successfully. By this point the chip has
-   * processed all init commands and its IRQ pin should be settled. */
+  /* Final EXTI11 arm — called from ble_sync_thread_entry only after
+   * bluetooth_init returns successfully. By then init is done so the
+   * SDMMC-conflict window is past. (NB: with current vendor-stack
+   * incompatibility — issue #14 — bluetooth_init never returns
+   * SUCCESS, so this currently never fires.) */
   HAL_NVIC_EnableIRQ(HCI_TL_SPI_EXTI_IRQ_N);
 }
 

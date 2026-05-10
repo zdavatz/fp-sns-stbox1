@@ -276,14 +276,8 @@ int32_t hci_tl_spi_send(uint8_t *buffer, uint16_t size)
   /* Short sleep — chip's IRQ drops within microseconds normally. Was
    * a 1 s busy-wait on TIMEOUT_IRQ_HIGH which starved USB-CDC service
    * thread for the full timeout when the chip didn't actually need a
-   * wait. Replaced with 20 ms tx_thread_sleep yield (Peter's v35).
-   * Same root cause as the spi_reset HAL_Delay→tx_thread_sleep fixes. */
+   * wait. Replaced with 20 ms tx_thread_sleep yield (Peter's v35). */
   tx_thread_sleep(2);
-
-  /* Re-enable EXTI11 so async events from the chip (post-command status,
-     advertising state changes, connection events) trigger the ISR.
-     Issue #12 / 2026-05-10: keep EXTI11 NVIC masked during init. BLE
-     thread arms it once after bluetooth_init returns successfully. */
   return result;
 }
 
