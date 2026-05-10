@@ -161,9 +161,26 @@ Wire-up:
 - `FileX/App/app_filex.c::read_thread_entry` — auto-`COMMAND_START_LOG` gated on `g_app_mode == APP_MODE_LOG`; expiry path in `COMMAND_SAVE_SENSORS`.
 - `Utilities/rust/stbox-viz-gui/src/{ble.rs,main.rs}` — `BleCmd::StartLog{duration_seconds}`, "Start session" button + DragValue.
 
-Open: BLE init still hangs at `hci_reset` response despite the SDMMC concern being structurally resolved (no concurrent fx_thread). v218 (current uncommitted state) keeps EXTI11 NVIC masked through `init_ble_int_for_blue_nrglp` and `spi_reset`; first `spi_send` enables NVIC + sleeps 20 ms + defensively drains via `hci_notify_asynch_evt`. Latest live trace stops at `spi_send: payload xfer rc=0` for HCI Reset — chip's response not landing in rx_queue. Tracked in issue #15.
+User-button gate (issue #15): in BLE mode the user button is **ignored** — sessions are GUI-driven only (iPhone writes `OP_START_LOG`). In LOG mode the button still aborts a session early. Without this gate the field tester could accidentally start a non-time-bounded session via the button. See `app_filex.c::read_thread_entry` button handler (`if (g_app_mode != APP_MODE_LOG) continue;`).
 
-Diagnostic globals: `g_ble_init_skip_fx` flag avoids ErrorLog → fx_media_flush deadlock when fx_thread is suspended (USB CDC mirror still emits log lines). Mode-switch state survives via `TAMP->BKP1R` (LOG magic) + `TAMP->BKP2R` (duration in seconds) + `TAMP->BKP0R` (DFU magic — unrelated, see "Software DFU loop" below).
+Open: BLE init still hangs **inside `hci_init`** despite multiple drain strategies. Current state (v222, uncommitted firmware from this session — last build before user moved to Mac):
+
+- v218: dropped raw-SPI drain in spi_reset (which was hanging). NVIC stays MASKED through `init_ble_int_for_blue_nrglp` and `spi_reset`. First `spi_send` enables NVIC after payload xfer.
+- v220: added probe `printf`s around `hci_init` call in ble_manager.c and around `return 0` in spi_reset. Trace shows `printf("ble_mgr: about to hci_init")` works, all ErrorLog_Write calls inside spi_reset work, but the post-spi_reset `printf("spi_reset: about to return 0")` does **not** appear. Hang is in the ~2 statements between the last ErrorLog_Write and the next printf.
+- v221: removed `tx_thread_suspend(fx_app_thread)` + `g_ble_init_skip_fx` flag (workarounds for issue #12, made redundant by mode-switch). Same hang point — so newlib reentrant lock against suspended fx_thread is **not** the cause.
+- v222: replaced suspect printf with direct `UsbCdc_Write` of a static string (no newlib at all), plus a trailing `ErrorLog_Write("spi_reset: post-direct-write")` to triangulate. **Not yet flashed.**
+
+Triangulation matrix for next session (after flashing v222):
+
+| Trace line(s) appear | Diagnosis |
+|---|---|
+| `spi_reset: about to return 0 (direct write)` then `log: spi_reset: post-direct-write` | Both work → hang is in hci_init's return path / ble_manager.c after hci_init |
+| Direct write appears, no `post-direct-write` | sprintf inside ErrorLog_Write is the culprit (newlib state corruption) |
+| Neither appears | UsbCdc_Write itself or USB CDC subsystem went down |
+
+The trace consistently stops at `log: spi_reset: returning (NVIC stays masked through init)` — *something* runs between that ErrorLog_Write and the very next statement. Heartbeat status: at the last hang the heartbeat fired at t=526 (5.26 s) before BLE init started; whether subsequent heartbeats continue is unverified (user terminated `cat` before next 1 s tick — open question for next session: does the USB thread stay alive after the BLE thread wedges, or does the whole chip lock up?).
+
+Mode-switch state survives via `TAMP->BKP1R` (LOG magic) + `TAMP->BKP2R` (duration in seconds) + `TAMP->BKP0R` (DFU magic — unrelated, see "Software DFU loop" below).
 
 ### LIS2MDL magnetometer (`Drivers/BSP/Components/lis2mdl/lis2mdl.c` Init)
 Three additions for drift reduction:

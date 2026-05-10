@@ -3473,11 +3473,15 @@ static ble_status_t init_ble_manager_ble_stack(void)
 #endif /* ((BLUE_CORE == BLUENRG_LP) || (BLUE_CORE == STM32WB07_06)) */
 
   /* Initialize the BlueNRG HCI */
+  printf("ble_mgr: about to hci_init\r\n");
   hci_init(app_user_evt_rx, NULL);
+  printf("ble_mgr: hci_init returned\r\n");
   ErrorLog_Write("ble_mgr: hci_init done");
 
   /* Sw reset of the device */
+  printf("ble_mgr: about to hci_reset\r\n");
   hci_reset();
+  printf("ble_mgr: hci_reset returned\r\n");
   ErrorLog_Write("ble_mgr: hci_reset done");
 
   /* Wait some time for the BlueNRG to be fully operational */

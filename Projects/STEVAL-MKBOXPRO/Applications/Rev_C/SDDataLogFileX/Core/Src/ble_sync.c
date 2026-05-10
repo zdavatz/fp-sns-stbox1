@@ -189,23 +189,17 @@ static void ble_sync_thread_entry(ULONG arg)
    * is safe and the bug is in bluetooth_init's vendor code. If logger
    * hangs, the probe is the trigger and we walk inside it. */
 
-  /* Issue #14 (2026-05-10): suspend fx_thread + mask SDMMC1 IRQ for
-   * the ENTIRE BLE bring-up (probe + bluetooth_init), not just
-   * bluetooth_init. The probe also uses hci_tl_spi_send which now
-   * re-enables EXTI11 NVIC at end of each send (matching BLEDualProgram).
-   * That re-enable wedges SDMMC the same way it does inside
-   * bluetooth_init. Suspend earlier so the entire chip-talking window
-   * is SDMMC-quiet. */
-  extern TX_THREAD fx_app_thread;
-  extern volatile uint8_t g_ble_init_skip_fx;
-  ErrorLog_Write("ble: suspending fx_thread + masking SDMMC1 IRQ for entire BLE bring-up");
+  /* Issue #15 (2026-05-10): with the mode-switch architecture, in BLE
+   * mode the fx_thread is idle (sits on tx_semaphore_get, never opens
+   * SD media). No need to suspend it. Suspending it was actually the
+   * source of a newlib reentrant-lock deadlock: printf calls inside
+   * BLE init would acquire newlib's per-thread reentrant lock; if
+   * fx_thread held it when suspended, ble_sync_thread would hang on
+   * the next printf. Removing the suspend fixes that and is safe
+   * because mode-switch guarantees no concurrent SDMMC traffic. */
+  ErrorLog_Write("ble: BLE bring-up (mode-switch: fx_thread idle, no suspend needed)");
   ErrorLog_Flush();
-  tx_thread_suspend(&fx_app_thread);
-  HAL_NVIC_DisableIRQ(SDMMC1_IRQn);
-  /* Set deadlock-avoidance flag — ErrorLog_Write/Flush now skip the SD
-   * path while fx_thread is suspended, but still mirror to USB CDC. */
-  g_ble_init_skip_fx = 1;
-  tx_thread_sleep(20);  /* 200 ms — let any in-flight SDMMC op finish */
+  tx_thread_sleep(20);  /* 200 ms settle */
 
   /* Issue #14 (2026-05-10): SKIP the chip-alive probe entirely. Our
    * probe calls hci_tl_spi_send + hci_tl_spi_reset BEFORE middleware's
@@ -234,14 +228,8 @@ static void ble_sync_thread_entry(ULONG arg)
   uint8_t init_rc = bluetooth_init();
   uint32_t dt = tx_time_get() - t0;
 
-  /* Restore SDMMC1 IRQ + fx_thread now that BLE init is done (success
-   * or fail). Logger resumes. Clear the deadlock-avoidance flag so
-   * ErrorLog_Write/Flush re-engage the SD path. */
-  g_ble_init_skip_fx = 0;
-  HAL_NVIC_EnableIRQ(SDMMC1_IRQn);
-  tx_thread_resume(&fx_app_thread);
-  ErrorLog_Write("ble: SDMMC1 IRQ + fx_thread restored");
-  ErrorLog_Flush();
+  /* No restore needed — fx_thread was never suspended (mode-switch
+   * keeps it idle in BLE mode anyway). */
   g_ble_probe_status = 0xF3U;  /* bluetooth_init returned (any rc) */
   {
     char m[80];

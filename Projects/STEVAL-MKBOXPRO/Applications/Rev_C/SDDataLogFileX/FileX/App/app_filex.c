@@ -2189,6 +2189,16 @@ static void read_thread_entry(ULONG thread_input)
       if ((NewTime - ButtonPressedTime) > 100)
       {
         ButtonPressedTime = NewTime;
+        /* Issue #15: in BLE mode the button must NOT start a logging
+         * session — sessions are GUI-driven only (iPhone writes
+         * OP_START_LOG). Button only meaningful in LOG mode where it
+         * lets the field tester abort a session early. */
+        if (g_app_mode != APP_MODE_LOG)
+        {
+          STBOX1_PRINTF("BLE mode: button ignored (sessions are GUI-driven)\r\n");
+          ErrorLog_Write("button: ignored in BLE mode");
+          continue;
+        }
         if (LogCommandType == COMMAND_STOP_LOG)
         {
           Msg->CommandType = LogCommandType = COMMAND_START_LOG;

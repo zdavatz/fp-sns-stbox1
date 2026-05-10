@@ -142,6 +142,14 @@ int32_t hci_tl_spi_reset(void)
   __HAL_GPIO_EXTI_CLEAR_IT(HCI_TL_SPI_EXTI_PIN);
   HAL_NVIC_ClearPendingIRQ(HCI_TL_SPI_EXTI_IRQ_N);
   ErrorLog_Write("spi_reset: returning (NVIC stays masked through init)");
+  /* Direct USB write — bypass newlib printf/sprintf in case those have
+   * a reentrant lock issue at this point. ErrorLog_Write does its own
+   * sprintf so if THIS line shows but the next ErrorLog_Write doesn't,
+   * sprintf is the culprit. */
+  extern size_t UsbCdc_Write(const void *buf, size_t len);
+  static const char ret_msg[] = "spi_reset: about to return 0 (direct write)\r\n";
+  (void)UsbCdc_Write(ret_msg, sizeof(ret_msg) - 1);
+  ErrorLog_Write("spi_reset: post-direct-write");
   return 0;
 }
 
