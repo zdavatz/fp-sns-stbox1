@@ -366,6 +366,15 @@ static void fx_thread_entry(ULONG thread_input)
      COMMAND_START_LOG handler — the bug is purely in the open/close
      pattern, not in fx_thread scheduling or read_thread posting. */
 
+  /* v227: open the error log unconditionally at boot. The mode-switch
+     architecture (issue #15) parks fx_thread on tx_queue_receive() in
+     BLE mode forever — without this, ErrorLog_Open never runs in BLE
+     mode and we lose the boot markers, BLE probe trace, GPS init log,
+     and any ble_sync_thread diagnostic writes. ErrorLog_Open() is
+     idempotent (guarded by ErrorLogFileOpen) so the COMMAND_START_LOG
+     path remains correct. */
+  ErrorLog_Open();
+
   while (1)
   {
     /* Determine whether a message MessageQueue  is available */
@@ -1625,27 +1634,53 @@ volatile uint8_t g_ble_init_skip_fx = 0;
 
 void ErrorLog_Write(const char *msg)
 {
-  /* USB CDC mirror: every SD-bound error line also streams over the
-   * virtual COM port so a developer plugged in via USB-C sees the same
-   * trace live without having to pop the SD card. Goes through
-   * UsbCdc_Write which is non-blocking — drops bytes silently if the
-   * host hasn't opened the port. Done BEFORE the SD write so we still
-   * get visibility when ErrorLogBroken or !ErrorLogFileOpen kills the
-   * SD path. The "log: " prefix lets the host distinguish error-log
-   * lines from heartbeat / probe printfs in the cat stream. */
+  /* v236: HAND-FORMATTED, NEWLIB-FREE. Both buffer assemblies below
+   * used to be sprintf, but sprintf takes newlib's reentrant lock
+   * which deadlocks when one thread is mid-sprintf while another
+   * also enters sprintf (ThreadX shares one _REENT across threads
+   * unless TX_ENABLE_FX_PTHREAD/newlib-thread-support is wired in,
+   * which it isn't). v231 bisect proved fx_file_write is fine and
+   * sprintf is the hang. Same hand-formatting style as v225's USB
+   * heartbeat patch — no newlib stdio at all. */
+
+  /* Helper: append decimal u32 to *p, advance *p. */
+  #define APPEND_U32(P, V) do {                              \
+    unsigned long _v = (unsigned long)(V);                   \
+    char *_d0 = (P);                                         \
+    if (_v == 0) { *(P)++ = '0'; }                            \
+    else { while (_v) { *(P)++ = (char)('0' + _v % 10); _v /= 10; } } \
+    for (char *_a = _d0, *_b = (P) - 1; _a < _b; ++_a, --_b) { char _t = *_a; *_a = *_b; *_b = _t; } \
+  } while (0)
+
+  /* USB mirror: "log: <msg>\r\n" */
   {
     CHAR usb_line[300];
-    INT  usb_len = sprintf(usb_line, "log: %s\r\n", msg);
-    (void) UsbCdc_Write(usb_line, (size_t) usb_len);
+    char *p = usb_line;
+    const char *prefix = "log: ";
+    while (*prefix) *p++ = *prefix++;
+    const char *m = msg;
+    while (*m && (size_t)(p - usb_line) < sizeof(usb_line) - 4) *p++ = *m++;
+    *p++ = '\r'; *p++ = '\n';
+    (void) UsbCdc_Write(usb_line, (size_t)(p - usb_line));
   }
 
   if (g_ble_init_skip_fx) return;  /* deadlock-avoidance during BLE init */
   if (!ErrorLogFileOpen) return;
   if (ErrorLogBroken) return;
 
+  /* SD line: "[NNN ms] <msg>\r\n" */
   CHAR line[300];
-  INT len = sprintf(line, "[%lu ms] %s\r\n", tx_time_get(), msg);
+  char *p = line;
+  *p++ = '[';
+  APPEND_U32(p, tx_time_get());
+  *p++ = ' '; *p++ = 'm'; *p++ = 's'; *p++ = ']'; *p++ = ' ';
+  const char *m = msg;
+  while (*m && (size_t)(p - line) < sizeof(line) - 3) *p++ = *m++;
+  *p++ = '\r'; *p++ = '\n';
+  ULONG len = (ULONG)(p - line);
   UINT status = fx_file_write(&ErrorLogFxFile, line, len);
+
+  #undef APPEND_U32
 
   if (status != FX_SUCCESS)
   {
@@ -2189,15 +2224,22 @@ static void read_thread_entry(ULONG thread_input)
       if ((NewTime - ButtonPressedTime) > 100)
       {
         ButtonPressedTime = NewTime;
-        /* Issue #15: in BLE mode the button must NOT start a logging
-         * session — sessions are GUI-driven only (iPhone writes
-         * OP_START_LOG). Button only meaningful in LOG mode where it
-         * lets the field tester abort a session early. */
+        /* Issue #15: in BLE mode, GUI-driven sessions (iPhone writes
+         * OP_START_LOG) are preferred. BUT when BLE init is broken
+         * (current state — hci_init wedge), the iPhone never sees
+         * STBoxFs and there is no way to start a session. The button
+         * is the only fallback. v227: short button press in BLE mode
+         * triggers a 5-minute LOG session via the same TAMP-magic
+         * path as OP_START_LOG. Reboots into LOG mode immediately. */
         if (g_app_mode != APP_MODE_LOG)
         {
-          STBOX1_PRINTF("BLE mode: button ignored (sessions are GUI-driven)\r\n");
-          ErrorLog_Write("button: ignored in BLE mode");
-          continue;
+          ErrorLog_Write("button: BLE-mode fallback — starting 5-min LOG session");
+          ErrorLog_Flush();
+          TAMP->BKP1R = 0x4C4F4720U;  /* 'LOG ' magic */
+          TAMP->BKP2R = 5U * 60U;     /* 5 minute default duration */
+          __DSB();
+          NVIC_SystemReset();
+          for (;;) { }  /* unreachable */
         }
         if (LogCommandType == COMMAND_STOP_LOG)
         {

@@ -59,12 +59,14 @@ void init_ble_int_for_blue_nrglp(void)
   HAL_EXTI_GetHandle(&H_EXTI, EXTI_LINE);
   HAL_EXTI_RegisterCallback(&H_EXTI, HAL_EXTI_COMMON_CB_ID, hci_tl_lowlevel_isr);
   HAL_NVIC_SetPriority(HCI_TL_SPI_EXTI_IRQ_N, 14, 0);
-  /* Issue #15: don't enable EXTI11 NVIC during init. The middleware's
-   * hci_send_req relies on rx_queue being populated; we feed it via
-   * polling-based drain in hci_tl_spi_send's tail (after each command,
-   * we manually call hci_notify_asynch_evt to read chip's response).
-   * arm_ble_exti11() called from ble_sync.c AFTER bluetooth_init
-   * returns will enable EXTI11 NVIC for runtime async events. */
+  /* v239: ENABLE EXTI11 NVIC during init. v238 trace pinned the wedge
+   * to hci_reset() — hci_send_req polls an empty rx_queue forever
+   * because EXTI11 was masked and the post-send drain in hci_tl_spi_send
+   * isn't feeding the queue with the chip's HCI Reset Command Complete.
+   * Issue #12 (BLE+SDMMC conflict) is moot under mode-switch (fx_thread
+   * is idle in BLE mode, SDMMC quiet). BLEDualProgram works with EXTI11
+   * armed throughout init; match that pattern. */
+  HAL_NVIC_EnableIRQ(HCI_TL_SPI_EXTI_IRQ_N);
 }
 
 void arm_ble_exti11(void)

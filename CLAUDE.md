@@ -161,26 +161,57 @@ Wire-up:
 - `FileX/App/app_filex.c::read_thread_entry` — auto-`COMMAND_START_LOG` gated on `g_app_mode == APP_MODE_LOG`; expiry path in `COMMAND_SAVE_SENSORS`.
 - `Utilities/rust/stbox-viz-gui/src/{ble.rs,main.rs}` — `BleCmd::StartLog{duration_seconds}`, "Start session" button + DragValue.
 
-User-button gate (issue #15): in BLE mode the user button is **ignored** — sessions are GUI-driven only (iPhone writes `OP_START_LOG`). In LOG mode the button still aborts a session early. Without this gate the field tester could accidentally start a non-time-bounded session via the button. See `app_filex.c::read_thread_entry` button handler (`if (g_app_mode != APP_MODE_LOG) continue;`).
+User-button gate (v227, 2026-05-10): in BLE mode a short button press **starts a 5-minute LOG session** via the same TAMP-magic + reset path the GUI's `OP_START_LOG` uses. Originally the issue #15 spec was "GUI-only", but with BLE init currently broken the iPhone never sees `STBoxFs` and there is no way to start a session — the button is the only fallback. In LOG mode the button still aborts a session early. See `app_filex.c::read_thread_entry`.
 
-Open: BLE init still hangs **inside `hci_init`** despite multiple drain strategies. Current state (v222, uncommitted firmware from this session — last build before user moved to Mac):
-
-- v218: dropped raw-SPI drain in spi_reset (which was hanging). NVIC stays MASKED through `init_ble_int_for_blue_nrglp` and `spi_reset`. First `spi_send` enables NVIC after payload xfer.
-- v220: added probe `printf`s around `hci_init` call in ble_manager.c and around `return 0` in spi_reset. Trace shows `printf("ble_mgr: about to hci_init")` works, all ErrorLog_Write calls inside spi_reset work, but the post-spi_reset `printf("spi_reset: about to return 0")` does **not** appear. Hang is in the ~2 statements between the last ErrorLog_Write and the next printf.
-- v221: removed `tx_thread_suspend(fx_app_thread)` + `g_ble_init_skip_fx` flag (workarounds for issue #12, made redundant by mode-switch). Same hang point — so newlib reentrant lock against suspended fx_thread is **not** the cause.
-- v222: replaced suspect printf with direct `UsbCdc_Write` of a static string (no newlib at all), plus a trailing `ErrorLog_Write("spi_reset: post-direct-write")` to triangulate. **Not yet flashed.**
-
-Triangulation matrix for next session (after flashing v222):
-
-| Trace line(s) appear | Diagnosis |
-|---|---|
-| `spi_reset: about to return 0 (direct write)` then `log: spi_reset: post-direct-write` | Both work → hang is in hci_init's return path / ble_manager.c after hci_init |
-| Direct write appears, no `post-direct-write` | sprintf inside ErrorLog_Write is the culprit (newlib state corruption) |
-| Neither appears | UsbCdc_Write itself or USB CDC subsystem went down |
-
-The trace consistently stops at `log: spi_reset: returning (NVIC stays masked through init)` — *something* runs between that ErrorLog_Write and the very next statement. Heartbeat status: at the last hang the heartbeat fired at t=526 (5.26 s) before BLE init started; whether subsequent heartbeats continue is unverified (user terminated `cat` before next 1 s tick — open question for next session: does the USB thread stay alive after the BLE thread wedges, or does the whole chip lock up?).
+ErrorLog at boot (v227): `ErrorLog_Open()` is called unconditionally right after `CheckAndApplyFirmwareUpdate()` — boot markers, BLE bring-up trace, and any later `ErrorLog_Write` calls now land on SD in BOTH modes. Previously gated inside `case COMMAND_START_LOG:` so BLE-mode boots produced no log file at all.
 
 Mode-switch state survives via `TAMP->BKP1R` (LOG magic) + `TAMP->BKP2R` (duration in seconds) + `TAMP->BKP0R` (DFU magic — unrelated, see "Software DFU loop" below).
+
+#### BLE bring-up — current state (2026-05-10, end of session, v247)
+
+**The wedge has been narrowed to 2-3 instructions inside `hci_tl_spi_send`** — between the ErrorLog_Write `"spi_send: locals declared, about to disable_irq"` and the next ErrorLog_Write `"spi_send: irq disabled, CS low next"`. Either the single `HAL_NVIC_DisableIRQ(EXTI11)` call or an EXTI11 ISR firing between the two and getting stuck inside `hci_tl_lowlevel_isr`. SDMMC race hypothesis test (v247: dropped diagnostic flushes) was inconclusive — visibility was lost.
+
+**Confirmed working / not-the-cause** (don't re-test these tomorrow):
+- BLE chip + SPI/IRQ wiring: BLEDualProgram firmware advertises `FFoTABP` cleanly on the same hardware in 5 s. Verify with the prebuilt binary in `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLEDualProgram/Binary/BLEDualProgram.bin`.
+- macOS Sequoia BLE scan: `bleak` Python finds the device when it advertises (retracts the older note that Sequoia "drops bulk-IN bytes" — that was a separate USB CDC issue, not BLE).
+- Newlib reentrancy: `ErrorLog_Write` is now hand-formatted (zero newlib stdio in its body — see `app_filex.c:1635+`); all `printf`/`sprintf` calls in `ble_sync.c` and `ble_manager.c::init_ble_manager_ble_stack` were replaced with newlib-free `ErrorLog_Write`. Was suspected, was patched, wedge moved further but didn't unstick.
+- BLE thread stack: bumped 4 KB → 8 KB (v245) — wedge unchanged, so not stack overflow.
+- HAL_GetTick freezing in BLE thread: middleware's `hci_send_req` busy-loop at `Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic/hci_tl.c:322` was patched to use `tx_time_get()*10` instead via `#undef HAL_GetTick` shim at top of that file. Hang persisted, so timer source isn't the issue.
+- Boot-event drain (Peter's v35 fix from cc386415): correctly consumes the chip's 7-byte boot-ready event after spi_reset (we see "drained N boot events" + the `recv[1]` markers). Drain works as designed.
+- spi_reset NVIC handling: tried v240 (disable→reset→clear→re-enable) and v241 (BLEDualProgram-strict no-NVIC-touch). v241 wedged earlier; v240 made progress to `hci_reset`.
+
+**Reached this point in the trace before the wedge:**
+```
+[xxx ms] spi_reset: drained N boot events (v243)
+[xxx ms] ble_mgr: hci_init done
+[xxx ms] ble_mgr: about to hci_reset
+[xxx ms] hci_send_req: entered
+[xxx ms] hci_send_req: about to list_init_head
+[xxx ms] hci_send_req: about to free_event_list
+[xxx ms] hci_send_req: about to send_cmd
+[xxx ms] send_cmd: entered
+[xxx ms] send_cmd: about to MEMCPY hc into payload
+[xxx ms] send_cmd: about to MEMCPY param into payload
+[xxx ms] send_cmd: about to call hci_tl_spi_send
+[xxx ms] spi_send: ENTRY
+[xxx ms] spi_send: locals declared, about to disable_irq    ← LAST
+```
+
+**Next-session plan (Linux, where USB CDC heartbeat is visible):**
+1. Use `cat /dev/ttyACM0` to watch live trace + heartbeat. Mac was blind — `tud_mounted()` gate fix in `usb_cdc.c::UsbCdc_Write` makes USB stream work on Linux without DTR ceremony.
+2. JTAG/SWD step through the 3 instructions to find the actual stuck statement (without ErrorLog markers polluting the timing).
+3. Side-by-side diff of `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLEDualProgram/Src/hci_tl_interface.c` vs ours — the working reference.
+4. Consider: is EXTI11 ISR re-entering itself? `hci_tl_spi_disable_irq` only disables the NVIC enable bit, not the line. If chip's IRQ pin is HIGH at the disable, the hardware-pending edge stays latched in `EXTI->PR1`. When NVIC is re-enabled later, ISR fires immediately; could re-enter unbounded if the bounded loop somehow fails its `is_data_available` exit.
+5. Consider: bumping EXTI11 NVIC priority back to 14 (currently 15 from `hci_tl_spi_enable_irq`'s "issue #12 BISECT-G" — but mode-switch makes that conflict moot).
+
+**Stale bisect/diagnostic markers left in place** (clean up after BLE works):
+- `Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic/hci_tl.c` — `send_cmd` + `hci_send_req` markers + `HAL_GetTick` shim
+- `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Core/Src/hci_tl_interface.c` — bisect markers in `hci_tl_spi_send` + `hci_tl_spi_reset`
+- `Middlewares/ST/STM32_BLE_Manager/Src/ble_manager.c` — flushes around hci_init/hci_reset
+
+#### USB CDC `tud_mounted` gate (v224, 2026-05-10)
+
+`Core/Src/usb_cdc.c::UsbCdc_Write` now gates on `tud_mounted()` instead of `tud_cdc_connected()`. The latter requires the host to assert DTR via SET_CONTROL_LINE_STATE — Linux `cdc_acm` does this on `open()`, **macOS does not** (`cat`/`pyserial` both leave DTR low; only `screen`/`picocom` set it). Gating on enumeration alone makes the heartbeat work on Mac without DTR ceremony. Heartbeat printf is also hand-formatted (no newlib stdio) so it never deadlocks against another thread holding `_REENT`.
 
 ### LIS2MDL magnetometer (`Drivers/BSP/Components/lis2mdl/lis2mdl.c` Init)
 Three additions for drift reduction:
@@ -265,7 +296,7 @@ Makefile builds `firmware.bin` directly: `all` target emits `build/firmware.bin`
 
 ## Build Versioning
 
-Each `make` in the SDDataLogFileX `STM32CubeIDE/` directory bumps a counter in `.build_counter` (**committed** so build numbers are globally unique, not per-developer) and bakes it as `-DFW_BUILD_NUM=N` via a `$(shell …)` expression. Three uses:
+Each `make` in the SDDataLogFileX `STM32CubeIDE/` directory bumps a counter in `.build_counter` (**committed** so build numbers are globally unique, not per-developer) and bakes it as `-DFW_BUILD_NUM=N` via a `$(shell …)` expression. The bump happens at *Makefile parse time* via `:=`, so any invocation — even `make clean` or a build that errors out — burns a number. Consequence: don't ask "build firmware vN" for a specific N; the next build is always one higher than whatever's in `.build_counter`. If a session's notes refer to "vN" but the binary was lost, rebuilding the same source emits "vN+1" with byte-different metadata (the version is baked into a string + the FW_INFO filename). Three uses:
 
 1. **Filename**: `make` emits `build/firmware_v<N>.bin` alongside `build/firmware.bin` (latter still required for SD-update). Use the versioned name when sending via WhatsApp.
 2. **`FW_INFO_v<N>.TXT`** at SD root: filename carries the version, so the field tester can identify the running firmware from the SD listing alone. On every boot `WriteFwInfoFile()` walks the SD root and deletes any pre-existing `FW_INFO*` entry (legacy fixed-name `FW_INFO.TXT` and any older `FW_INFO_v*.TXT`) before writing the new one. Two-pass directory iteration (`fx_directory_first_entry_find` + collect; then delete) because deletion-during-iteration invalidates the FX iterator. Up to 8 stale entries cleaned per boot.

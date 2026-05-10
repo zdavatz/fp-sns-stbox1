@@ -22,6 +22,15 @@
 #include "hci_const.h"
 #include "hci.h"
 #include "hci_tl.h"
+#include "tx_api.h"
+
+/* v243: replace HAL_GetTick with tx_time_get throughout this file because
+   the BLE thread can't see HAL_GetTick advance reliably (tick source ISR
+   gets starved during BLE init busy-loops). tx_time_get is the ThreadX
+   tick counter, advances independently of HAL. 1 ThreadX tick = 10 ms,
+   so HAL_DEFAULT_TIMEOUT_MS / 10 gives us ticks. */
+#undef  HAL_GetTick
+#define HAL_GetTick() (tx_time_get() * 10U)
 
 #define HCI_LOG_ON                      0
 #define HCI_PCK_TYPE_OFFSET             0
@@ -98,6 +107,11 @@ static uint32_t verify_packet(const hci_data_packet_t *hci_read_packet)
   */
 static void send_cmd(uint16_t ogf, uint16_t ocf, uint8_t plen, void *param, uint8_t ext_aci)
 {
+  /* v247: markers WITHOUT flushes — SDMMC quiet during SPI work to test
+     the SDMMC/EXTI race hypothesis. */
+  extern void ErrorLog_Write(const char *msg);
+  ErrorLog_Write("send_cmd: entered");
+
   uint8_t payload[HCI_MAX_PAYLOAD_SIZE];
 
   if (!ext_aci)
@@ -108,7 +122,7 @@ static void send_cmd(uint16_t ogf, uint16_t ocf, uint8_t plen, void *param, uint
     payload[0] = HCI_COMMAND_PKT;
     STM32WB07_06_MEMCPY(payload + 1, &hc, sizeof(hc));
     STM32WB07_06_MEMCPY(payload + HCI_TYPE_SIZE + HCI_COMMAND_HDR_SIZE, param, plen);
-
+    ErrorLog_Write("send_cmd: about to call hci_tl_spi_send");
     hci_tl_spi_send(payload, HCI_TYPE_SIZE + HCI_COMMAND_HDR_SIZE + plen);
   }
   else
@@ -289,6 +303,11 @@ void hci_init(void(* user_evt_rx)(void *p_data), void *p_conf)
   */
 int32_t hci_send_req(struct hci_request *req_t, BOOL async)
 {
+  /* v247: markers WITHOUT explicit Flush — SDMMC quiet during SPI work.
+     Cache will be flushed when polling loop times out / succeeds. */
+  extern void ErrorLog_Write(const char *msg);
+  ErrorLog_Write("hci_send_req: entered");
+
   uint8_t *ptr;
   uint16_t opcode = HTOBS(CMD_OPCODE_PACK(req_t->ogf, req_t->ocf));
   hci_event_pckt *event_pckt;
@@ -298,10 +317,11 @@ int32_t hci_send_req(struct hci_request *req_t, BOOL async)
   list_node_t hci_temp_queue;
 
   list_init_head(&hci_temp_queue);
-
   free_event_list();
 
+  ErrorLog_Write("hci_send_req: about to send_cmd");
   send_cmd(req_t->ogf, req_t->ocf, req_t->command_len, req_t->cparam, req_t->ext_aci);
+  ErrorLog_Write("hci_send_req: send_cmd returned, entering polling");
 
   if (async)
   {

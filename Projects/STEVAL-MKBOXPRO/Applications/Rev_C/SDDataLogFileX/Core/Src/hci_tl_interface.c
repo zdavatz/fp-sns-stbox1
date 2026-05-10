@@ -22,6 +22,7 @@
 #include "hci_tl_interface.h"
 #include "ble_spi.h"
 #include "tx_api.h"  /* tx_thread_sleep — yields in BLE busy-waits (issue #12) */
+#include "fx_api.h"  /* FX_FILE, fx_file_write — for v231 bisect direct write */
 #include <stdio.h>   /* printf — diagnostic prints for issue #12 bisects */
 
 #define HEADER_SIZE       5U
@@ -93,63 +94,40 @@ int32_t hci_tl_spi_de_init(void)
 int32_t hci_tl_spi_reset(void)
 {
   extern void ErrorLog_Write(const char *msg);
-  ErrorLog_Write("spi_reset: entered (v8-drain-fix)");
-  /* Mask the chip's IRQ line during reset. init_ble_int_for_blue_nrglp
-     already armed EXTI11 by the time this function runs, so when the
-     chip is released from reset (RST high) it raises its IRQ line and
-     EXTI11 fires immediately — the resulting hci_tl_lowlevel_isr then
-     tries to read HCI bytes from a chip that hasn't finished booting,
-     and that read does not return cleanly. We sidestep that by masking
-     the IRQ during the entire reset pulse and unmasking after the chip
-     has settled. */
-  hci_tl_spi_disable_irq();
+  extern UINT ErrorLog_Flush(void);
+  /* v242: revert to v240's NVIC dance (v241's BLEDualProgram-strict match
+     wedged earlier — spurious IRQ from chip while NVIC was enabled
+     pre-reset hung the SPI peripheral). Disable NVIC, do reset cycle,
+     clear pending EXTI/NVIC, re-enable NVIC. Same as v240 but with
+     more visibility around hci_reset to pinpoint the next wedge. */
+  ErrorLog_Write("spi_reset: entered (v242)");
+  HAL_NVIC_DisableIRQ(HCI_TL_SPI_EXTI_IRQ_N);
   HAL_GPIO_WritePin(HCI_TL_SPI_CS_PORT, HCI_TL_SPI_CS_PIN, GPIO_PIN_SET);
   HAL_GPIO_WritePin(HCI_TL_RST_PORT,    HCI_TL_RST_PIN,    GPIO_PIN_RESET);
-  tx_thread_sleep(1);     /* >= 10 ms, was HAL_Delay(5) */
-  ErrorLog_Write("spi_reset: post-sleep-1 (rst released next)");
-  extern UINT ErrorLog_Flush(void);
-
-  /* BISECT-C/D/E PASSED — RST low / RST high / RST high + 150 ms wait
-   * are all safe. */
+  tx_thread_sleep(1);
   HAL_GPIO_WritePin(HCI_TL_RST_PORT,    HCI_TL_RST_PIN,    GPIO_PIN_SET);
-  tx_thread_sleep(15);    /* 150 ms wait for BlueNRG-LP boot */
-  ErrorLog_Write("spi_reset: post-sleep-2 (chip settled)");
-  ErrorLog_Flush();
-
-  /* Clear pending EXTI bits (latched while NVIC was masked during the
-   * 150 ms reset window), then re-enable + drain any chip boot events.
-   *
-   * Issue #15 mode-switch architecture: in BLE mode (where this runs)
-   * fx_thread is idle (logger doesn't auto-start), SDMMC is quiet, so
-   * the issue #12 BLE+SDMMC concurrency conflict simply doesn't arise.
-   * EXTI11 NVIC enable is safe.
-   *
-   * Without the drain (Peter's v35 hypothesis fix): chip raised IRQ
-   * during reset → boot-ready event with pending bytes → EXTI11 was
-   * masked, no edge fired → after re-enable, line is already HIGH so
-   * rising-edge trigger never fires → middleware's hci_send_req never
-   * sees the response → bluetooth_init hangs. Force-drain manually so
-   * the chip's IRQ pin drops LOW; future events then fire clean
-   * rising edges. */
-  /* Issue #15 final approach: NO drain in spi_reset, NO NVIC enable.
-   * EXTI11 stays masked through entire BLE init. Middleware's polling
-   * via hci_send_req's rx_queue is fed by post-send drain in
-   * hci_tl_spi_send (where pool is initialized — hci_init runs BEFORE
-   * any spi_send). hci_tl_spi_reset itself runs from inside hci_init
-   * (after pool init but before any HCI command), so we COULD drain
-   * here via hci_notify_asynch_evt — but it's not actually needed if
-   * spi_send drains its own response. Skip for simplicity. */
+  tx_thread_sleep(15);
   __HAL_GPIO_EXTI_CLEAR_IT(HCI_TL_SPI_EXTI_PIN);
   HAL_NVIC_ClearPendingIRQ(HCI_TL_SPI_EXTI_IRQ_N);
-  ErrorLog_Write("spi_reset: returning (NVIC stays masked through init)");
-  /* Direct USB write — bypass newlib printf/sprintf in case those have
-   * a reentrant lock issue at this point. ErrorLog_Write does its own
-   * sprintf so if THIS line shows but the next ErrorLog_Write doesn't,
-   * sprintf is the culprit. */
-  extern size_t UsbCdc_Write(const void *buf, size_t len);
-  static const char ret_msg[] = "spi_reset: about to return 0 (direct write)\r\n";
-  (void)UsbCdc_Write(ret_msg, sizeof(ret_msg) - 1);
-  ErrorLog_Write("spi_reset: post-direct-write");
+  HAL_NVIC_EnableIRQ(HCI_TL_SPI_EXTI_IRQ_N);
+  /* v243: Peter's v35 fix — chip raises IRQ HIGH during 150ms reset.
+     After NVIC re-enable, line is HIGH but we missed the rising edge,
+     so future events never fire. Manually drain via hci_notify_asynch_evt
+     until is_data_available returns false. This consumes the chip's
+     boot-ready event(s), drops the IRQ pin LOW, future events fire
+     clean rising edges → ISR populates rx_queue → hci_reset succeeds. */
+  extern int32_t hci_notify_asynch_evt(void *pdata);
+  uint32_t drained = 0;
+  while (is_data_available() && drained < 32U) {
+    hci_notify_asynch_evt(NULL);
+    drained++;
+  }
+  if (drained > 0U) {
+    ErrorLog_Write("spi_reset: drained N boot events (v243)");
+  } else {
+    ErrorLog_Write("spi_reset: no pending data after reset (v243)");
+  }
+  ErrorLog_Flush();
   return 0;
 }
 
@@ -226,11 +204,10 @@ int32_t hci_tl_spi_receive(uint8_t *buffer, uint16_t size)
 
 int32_t hci_tl_spi_send(uint8_t *buffer, uint16_t size)
 {
-  /* All timeouts here use tx_time_get (ThreadX ticks @ 10 ms each) instead
-     of HAL_GetTick — the BLE thread has trouble seeing HAL ticks advance,
-     so the original HAL_GetTick-based timeouts spin forever waiting for
-     a chip response that never arrives. tx_time_get is reliable. */
+  /* v247: markers WITHOUT explicit Flush — SDMMC quiet during SPI work */
   extern void ErrorLog_Write(const char *msg);
+  ErrorLog_Write("spi_send: ENTRY");
+
   int32_t result;
   uint16_t rx_bytes;
   uint8_t header_master[HEADER_SIZE] = {0x0a, 0x00, 0x00, 0x00, 0x00};

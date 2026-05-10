@@ -24,7 +24,10 @@
 
 extern void hci_user_evt_proc(void);
 
-#define BLE_SYNC_STACK_SIZE   (4 * 1024)
+#define BLE_SYNC_STACK_SIZE   (8 * 1024)  /* v245: bumped from 4K. v244 trace
+  pinned the wedge to send_cmd in vendor code (allocates uint8_t[260] on
+  stack); the deep call chain bluetooth_init → init_ble_manager_ble_stack
+  → hci_reset → hci_send_req → send_cmd was likely overflowing 4K. */
 /* BELOW fx_thread (priority 12) so the SD-card logger ALWAYS comes up
    first, regardless of what BLE-bring-up does. Past attempts at higher
    priorities (v41/v48/v49 used priority 11) all failed in the field on
@@ -165,7 +168,7 @@ static void ble_sync_thread_entry(ULONG arg)
      which step did it. */
   ErrorLog_Write("ble: thread entered (will flush)");
   ErrorLog_Flush();
-  printf("ble: thread entered\r\n");
+  /* v237: dropped redundant printf — newlib deadlock avoidance. */
 
   g_ble_probe_status = 0xF0U;  /* thread entered */
 
@@ -180,7 +183,7 @@ static void ble_sync_thread_entry(ULONG arg)
      hits the bus (Peter's same rationale on his fork). */
   ErrorLog_Write("ble: pre-init holdoff (5 s) for USB-CDC enum + fx_thread");
   ErrorLog_Flush();
-  printf("ble: pre-init holdoff (5 s) for USB-CDC enum\r\n");
+  /* v237: dropped redundant printf — newlib deadlock avoidance. */
   tx_thread_sleep(500);  /* 5 s at 10 ms tick */
 
   /* BISECT-A PASSED (logger ran 75+ s with no BLE chip activity).
@@ -216,11 +219,12 @@ static void ble_sync_thread_entry(ULONG arg)
    * proceeds normally. */
   g_ble_probe_status = 0xF2U;  /* skip 0xF1, go straight to bluetooth_init */
   ErrorLog_Write("ble: skip probe - direct bluetooth_init (matches BLEDualProgram)");
-  printf("ble: skip probe - direct bluetooth_init\r\n");
+  /* v237: dropped redundant printf — already mirrored to USB by ErrorLog_Write.
+     printf uses newlib, which deadlocks against other threads' printf. */
 
   ErrorLog_Write("ble: about to bluetooth_init()");
   ErrorLog_Flush();
-  printf("ble: about to bluetooth_init\r\n");
+  /* v237: same as above. */
 
   /* Brings up the SPI-1/HCI link, registers GAP, sets the random address,
      and starts advertising as STBoxSync. */
@@ -231,13 +235,10 @@ static void ble_sync_thread_entry(ULONG arg)
   /* No restore needed — fx_thread was never suspended (mode-switch
    * keeps it idle in BLE mode anyway). */
   g_ble_probe_status = 0xF3U;  /* bluetooth_init returned (any rc) */
-  {
-    char m[80];
-    sprintf(m, "ble: bluetooth_init returned rc=%u in %lu ms",
-            (unsigned)init_rc, (unsigned long)(dt * 10U));
-    ErrorLog_Write(m);
-    ErrorLog_Flush();
-  }
+  /* v237: sprintf removed — newlib deadlock avoidance. init_rc still in var. */
+  if (init_rc == 0U) ErrorLog_Write("ble: bluetooth_init returned rc=0 (OK)");
+  else               ErrorLog_Write("ble: bluetooth_init returned non-zero rc (FAIL)");
+  ErrorLog_Flush();
 
   if (init_rc != 0U)
   {

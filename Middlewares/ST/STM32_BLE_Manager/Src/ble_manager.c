@@ -3473,15 +3473,21 @@ static ble_status_t init_ble_manager_ble_stack(void)
 #endif /* ((BLUE_CORE == BLUENRG_LP) || (BLUE_CORE == STM32WB07_06)) */
 
   /* Initialize the BlueNRG HCI */
-  printf("ble_mgr: about to hci_init\r\n");
+  /* v237: dropped printfs — newlib deadlock avoidance. ErrorLog_Write is newlib-free.
+     v238: + flush after each step so we can see the actual hang point. */
+  extern UINT ErrorLog_Flush(void);
+  ErrorLog_Write("ble_mgr: about to hci_init");
+  ErrorLog_Flush();
   hci_init(app_user_evt_rx, NULL);
-  printf("ble_mgr: hci_init returned\r\n");
   ErrorLog_Write("ble_mgr: hci_init done");
+  ErrorLog_Flush();
 
   /* Sw reset of the device */
-  printf("ble_mgr: about to hci_reset\r\n");
+  ErrorLog_Write("ble_mgr: about to hci_reset");
+  ErrorLog_Flush();
   hci_reset();
-  printf("ble_mgr: hci_reset returned\r\n");
+  ErrorLog_Write("ble_mgr: hci_reset returned");
+  ErrorLog_Flush();
   ErrorLog_Write("ble_mgr: hci_reset done");
 
   /* Wait some time for the BlueNRG to be fully operational */
@@ -3494,23 +3500,14 @@ static ble_status_t init_ble_manager_ble_stack(void)
 
   /* get the BlueNRG HW and FW versions */
   get_blue_nrg_version(&hw_version, &fw_version);
-  {
-    char m[80];
-    sprintf(m, "ble_mgr: BlueNRG hw=%u fw=%u (= 0x%02x / 0x%02x)",
-            (unsigned)hw_version, (unsigned)fw_version,
-            (unsigned)hw_version, (unsigned)fw_version);
-    ErrorLog_Write(m);
-  }
+  /* v237: sprintf removed — newlib deadlock avoidance. Versions still in hw_version/fw_version vars. */
+  ErrorLog_Write("ble_mgr: get_blue_nrg_version done");
 
   /* we will let the BLE chip to use its Random MAC address */
 #define CONFIG_DATA_RANDOM_ADDRESS          (0x80) /**< Stored static random address. Read-only. */
   ret = aci_hal_read_config_data(CONFIG_DATA_RANDOM_ADDRESS, &data_len_out, ble_stack_value.ble_mac_address);
-  {
-    char m[80];
-    sprintf(m, "ble_mgr: read random BD_ADDR rc=%u len=%u mac[5]=0x%02x",
-            (unsigned)ret, (unsigned)data_len_out, ble_stack_value.ble_mac_address[5]);
-    ErrorLog_Write(m);
-  }
+  /* v237: sprintf removed — newlib deadlock avoidance. */
+  ErrorLog_Write("ble_mgr: aci_hal_read_config_data RANDOM_ADDRESS done");
 
   /* Issue #14 (2026-05-10): BlueNRG-LP on Zeno's box returns failure
    * for CONFIG_DATA_RANDOM_ADDRESS — chip's NVM has no stored static
@@ -3532,17 +3529,8 @@ static ble_status_t init_ble_manager_ble_stack(void)
     ble_stack_value.ble_mac_address[3] = (uint8_t) (uid0 >> 24);
     ble_stack_value.ble_mac_address[4] = (uint8_t) (uid1 >> 0);
     ble_stack_value.ble_mac_address[5] = (uint8_t) ((uid1 >> 8) | 0xC0U);
-    {
-      char m[64];
-      sprintf(m, "ble_mgr: UID MAC = %02x:%02x:%02x:%02x:%02x:%02x",
-              ble_stack_value.ble_mac_address[5],
-              ble_stack_value.ble_mac_address[4],
-              ble_stack_value.ble_mac_address[3],
-              ble_stack_value.ble_mac_address[2],
-              ble_stack_value.ble_mac_address[1],
-              ble_stack_value.ble_mac_address[0]);
-      ErrorLog_Write(m);
-    }
+    /* v237: sprintf removed — newlib deadlock avoidance. */
+    ErrorLog_Write("ble_mgr: UID-derived MAC built");
     ret = BLE_STATUS_SUCCESS;
   }
 
@@ -3582,11 +3570,8 @@ static ble_status_t init_ble_manager_ble_stack(void)
   ret = aci_hal_write_config_data(ble_stack_value.config_value_offsets,
                                   ble_stack_value.config_value_length,
                                   ble_stack_value.ble_mac_address);
-  {
-    char m[64];
-    sprintf(m, "ble_mgr: write public BD_ADDR rc=%u", (unsigned)ret);
-    ErrorLog_Write(m);
-  }
+  /* v237: sprintf removed — newlib deadlock avoidance. */
+  ErrorLog_Write("ble_mgr: aci_hal_write_config_data done");
   /* Issue #14 (2026-05-10): on BlueNRG-LP / STM32WB07_06, writing the
    * public address via aci_hal_write_config_data(0x00,…) is often
    * rejected — chips don't allow runtime public-address override. Make
@@ -3611,11 +3596,8 @@ static ble_status_t init_ble_manager_ble_stack(void)
 #else /* ((BLUE_CORE != BLUENRG_LP) && (BLUE_CORE != STM32WB07_06)) */
   ret = aci_gatt_srv_init();
 #endif /* ((BLUE_CORE != BLUENRG_LP) && (BLUE_CORE != STM32WB07_06)) */
-  {
-    char m[64];
-    sprintf(m, "ble_mgr: GATT init rc=%u (0x%02x)", (unsigned)ret, (unsigned)ret);
-    ErrorLog_Write(m);
-  }
+  /* v237: sprintf removed — newlib deadlock avoidance. */
+  ErrorLog_Write("ble_mgr: aci_gatt_srv_init done");
   if (ret != BLE_STATUS_SUCCESS)
   {
     BLE_MANAGER_PRINTF("\r\nGATT_Init failed\r\n");

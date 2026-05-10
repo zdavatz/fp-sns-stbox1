@@ -288,12 +288,42 @@ static void usb_thread_entry(ULONG arg) {
     heartbeat_tick++;
     if (mounted_now && heartbeat_tick >= 100) {
       heartbeat_tick = 0;
-      printf("hb t=%lu otg_irq=%lu ble=0x%02X conn=%u mounted=%u\r\n",
-             (unsigned long) tx_time_get(),
-             (unsigned long) g_otg_fs_irq_count,
-             (unsigned) g_ble_probe_status,
-             (unsigned) tud_connected(),
-             (unsigned) tud_mounted());
+      /* Hand-formatted, NEWLIB-FREE heartbeat. Earlier printf-based version
+       * deadlocked when the BLE thread wedged inside hci_init while holding
+       * newlib's reentrant lock — USB thread's printf then blocked on the
+       * same lock and the host saw zero bytes despite both LEDs solid. We
+       * format into a stack buffer using only inline u32->hex/dec helpers
+       * and ship via UsbCdc_WriteString which bypasses _write entirely. */
+      char hb[96];
+      char *p = hb;
+      const char *prefix = "hb t=";
+      while (*prefix) *p++ = *prefix++;
+      /* Decimal u32 — write digits in reverse then swap. */
+      unsigned long v = (unsigned long) tx_time_get();
+      char *d0 = p;
+      if (v == 0) { *p++ = '0'; }
+      else { while (v) { *p++ = (char)('0' + v % 10); v /= 10; } }
+      for (char *a = d0, *b = p - 1; a < b; ++a, --b) { char t = *a; *a = *b; *b = t; }
+      const char *mid = " otg_irq=";
+      while (*mid) *p++ = *mid++;
+      v = (unsigned long) g_otg_fs_irq_count;
+      d0 = p;
+      if (v == 0) { *p++ = '0'; }
+      else { while (v) { *p++ = (char)('0' + v % 10); v /= 10; } }
+      for (char *a = d0, *b = p - 1; a < b; ++a, --b) { char t = *a; *a = *b; *b = t; }
+      const char *mid2 = " ble=0x";
+      while (*mid2) *p++ = *mid2++;
+      unsigned bs = (unsigned) g_ble_probe_status;
+      *p++ = "0123456789ABCDEF"[(bs >> 4) & 0xF];
+      *p++ = "0123456789ABCDEF"[bs & 0xF];
+      const char *mid3 = " conn=";
+      while (*mid3) *p++ = *mid3++;
+      *p++ = (char)('0' + (tud_connected() ? 1 : 0));
+      const char *mid4 = " mounted=";
+      while (*mid4) *p++ = *mid4++;
+      *p++ = (char)('0' + (tud_mounted() ? 1 : 0));
+      *p++ = '\r'; *p++ = '\n'; *p = '\0';
+      UsbCdc_WriteString(hb);
     }
     tx_thread_sleep(1);
   }
@@ -319,10 +349,13 @@ unsigned int UsbCdc_ThreadX_Init(void *memory_ptr) {
  * Write API + __io_putchar override
  * --------------------------------------------------------------------------*/
 size_t UsbCdc_Write(const void *buf, size_t len) {
-  /* If the host hasn't opened the CDC port (no DTR), drop bytes silently.
-   * Otherwise we'd back-pressure on the producer (printf in any thread or
-   * IRQ context) and risk priority inversion against the SD writer. */
-  if (!tud_cdc_connected()) return 0u;
+  /* Gate on tud_mounted(), not tud_cdc_connected(). The latter requires the
+   * host to assert DTR via SET_CONTROL_LINE_STATE — Linux cdc_acm does this
+   * on open(), macOS does not (cat/Python both leave DTR low; only screen
+   * /picocom set it). Gating on enumeration alone makes the heartbeat work
+   * on Mac without DTR ceremony. Drop is still silent so producers in any
+   * thread/IRQ never block. */
+  if (!tud_mounted()) return 0u;
 
   /* tud_cdc_write copies into TinyUSB's internal FIFO; if FIFO is full the
    * extra bytes are dropped. Same non-blocking guarantee as above. */

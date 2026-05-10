@@ -45,7 +45,7 @@ Here is the list of references to user documents:
 
 ## SD Card Data Format (SDDataLogFileX)
 
-Logging starts automatically on power-on. Press the user button to stop, press again to restart. An error log (`Error_Log_Pump_Tsueri_dd.mm.yyyy.log`, using compile date) is written to the SD card with boot markers and fatal errors. The FAT directory (file sizes) is flushed every ~1 s during logging so that a sudden power-off still leaves valid, non-zero-byte files — at most the final second of data is lost. Each session creates up to three files on the SD card (GPS file only when a u-blox MAX-M10S module is connected):
+The box boots in **BLE mode** (advertising as `STBoxFs` once BLE init is fully working). To start a logging session, the iPhone GUI sends the `OP_START_LOG` BLE command with a duration; the box reboots into LOG mode, records for the requested duration, then reboots back to BLE mode. **As a fallback** (useful while BLE init is still being stabilised), a short press of the user button in BLE mode triggers a fixed **5-minute** logging session via the same TAMP-magic + reset path. The error log (`Error_Log_Pump_Tsueri_dd.mm.yyyy.log`, using compile date) is opened at boot in **both** modes so boot markers, BLE bring-up trace and any diagnostic writes always land on the SD card. The FAT directory is flushed every ~1 s during logging so a sudden power-off still leaves valid, non-zero-byte files — at most the final second of data is lost. Each session creates up to three files on the SD card (GPS file only when a u-blox MAX-M10S module is connected):
 
 ### Sensor CSV: `SensNNN.csv`
 
