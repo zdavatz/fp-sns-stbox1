@@ -24,6 +24,8 @@
 //!   0x02 READ   <name>       — streams raw file bytes; total == LIST size
 //!   0x03 DELETE <name>       — single-byte status
 //!   0x04 STOP_LOG            — no FileData reply
+//!   0x05 START_LOG <dur32_LE> — box reboots into LOG mode for `dur` s,
+//!                               then auto-reboots back to BLE (issue #15)
 //!
 //!   Status bytes: 0x00 OK, 0xB0 BUSY, 0xE1 NOT_FOUND, 0xE2 IO_ERROR, 0xE3 BAD_REQ.
 
@@ -69,6 +71,12 @@ pub enum BleCmd {
     Read { name: String, size: u64 },
     /// Side-channel STOP_LOG opcode — no FileData reply.
     StopLog,
+    /// START_LOG opcode (issue #15) — box writes BKP1R/BKP2R + reboots
+    /// into LOG mode. After `duration_seconds` elapses, box reboots
+    /// back to BLE mode automatically. No FileData reply (BLE drops
+    /// when box reboots). Caller should expect Disconnected event
+    /// shortly after sending.
+    StartLog { duration_seconds: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -290,6 +298,7 @@ impl WorkerState {
             BleCmd::List        => self.list().await,
             BleCmd::Read { name, size } => self.read(name, size).await,
             BleCmd::StopLog     => self.stop_log().await,
+            BleCmd::StartLog { duration_seconds } => self.start_log(duration_seconds).await,
         }
     }
 
@@ -474,6 +483,27 @@ impl WorkerState {
             return;
         }
         self.emit(BleEvent::Status("STOP_LOG sent".into()));
+    }
+
+    /// Send START_LOG (0x05) + 4-byte LE duration. Box validates duration
+    /// in [1, 86400] s, writes BKP1R/BKP2R, and reboots into LOG mode.
+    /// BLE connection drops shortly after — host should expect Disconnected.
+    async fn start_log(&mut self, duration_seconds: u32) {
+        let payload = [
+            0x05,
+            duration_seconds         as u8,
+            (duration_seconds >> 8)  as u8,
+            (duration_seconds >> 16) as u8,
+            (duration_seconds >> 24) as u8,
+        ];
+        if let Err(e) = self.write_cmd(&payload).await {
+            self.emit_err(e);
+            return;
+        }
+        self.emit(BleEvent::Status(format!(
+            "START_LOG sent ({} s) — box rebooting to LOG mode",
+            duration_seconds
+        )));
     }
 
     // ---------------- Notification dispatch --------------------------------

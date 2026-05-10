@@ -113,6 +113,10 @@ struct AppState {
     /// Where downloaded files land. Defaults to a `csv/` subfolder so
     /// they slot straight into the existing visualisation path.
     ble_out_dir: PathBuf,
+    /// Session duration (seconds) the user types into the "Start session"
+    /// field. Sent as the START_LOG payload (issue #15). Default 1800 s
+    /// = 30 minutes.
+    ble_session_duration_s: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -419,6 +423,7 @@ impl AppState {
             ble_out_dir,
             tz_offset_h: 3.0,
             fps: 15,
+            ble_session_duration_s: 1800,  // 30-min default
             ..Self::default()
         }
     }
@@ -565,6 +570,27 @@ impl AppState {
                         .clicked()
                     {
                         if let Some(b) = self.ble.as_ref() { b.send(BleCmd::StopLog); }
+                    }
+                    /* Issue #15 — START_LOG triggers a LOG-mode session of
+                     * `ble_session_duration_s` seconds. Box reboots into
+                     * LOG mode, runs the logger for that long, then auto-
+                     * reboots back to BLE mode. Connection drops during
+                     * the LOG session — reconnect after to download files. */
+                    ui.add_enabled(
+                        connected,
+                        egui::DragValue::new(&mut self.ble_session_duration_s)
+                            .speed(10)
+                            .range(1..=86400)
+                            .suffix(" s"),
+                    ).on_hover_text("Session duration in seconds (1..86400)");
+                    if ui
+                        .add_enabled(connected, egui::Button::new("Start session"))
+                        .on_hover_text("Box reboots into LOG mode, logs for the duration above, then auto-returns to BLE mode for download")
+                        .clicked()
+                    {
+                        if let Some(b) = self.ble.as_ref() {
+                            b.send(BleCmd::StartLog { duration_seconds: self.ble_session_duration_s });
+                        }
                     }
                     if ui
                         .add_enabled(connected, egui::Button::new("Disconnect"))
