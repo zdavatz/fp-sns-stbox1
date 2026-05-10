@@ -176,11 +176,20 @@ int32_t hci_tl_spi_send(uint8_t *buffer, uint16_t size)
     }
   } while (result < 0);
 
+  /* Wait for IRQ to drop, bounded by TIMEOUT_IRQ_HIGH (1 s). YIELD via
+   * tx_thread_sleep(1) so USB-CDC service thread (priority 13) gets
+   * continuous 10 ms time slices instead of being preempted away once
+   * per usb_cdc_thread sleep cycle. Without yielding, the original
+   * busy-wait stalled host enumeration's SETUP/IN/OUT packet stream
+   * for too long → host gave up → USB-CDC never enumerated under
+   * BLE-on. Bisected to this exact loop on 2026-05-09 (issue #12,
+   * BISECT-8). */
   tickstart = HAL_GetTick();
   while ((HAL_GetTick() - tickstart) < TIMEOUT_IRQ_HIGH) {
     if (HAL_GPIO_ReadPin(HCI_TL_SPI_IRQ_PORT, HCI_TL_SPI_IRQ_PIN) == GPIO_PIN_RESET) {
       break;
     }
+    tx_thread_sleep(1);
   }
 
   hci_tl_spi_enable_irq();

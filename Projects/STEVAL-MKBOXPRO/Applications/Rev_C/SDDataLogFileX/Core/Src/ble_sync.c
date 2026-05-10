@@ -95,25 +95,18 @@ static uint8_t ble_chip_alive_probe(void)
   /* Stage (a): TX. Returns 0 only if chip raised IRQ in <15 ms. */
   int hci_send_rc = hci_tl_spi_send(hci_reset_cmd, sizeof(hci_reset_cmd));
   printf("probe: post-hci_tl_spi_send rc=%d\r\n", hci_send_rc);
-
-  /* BISECT-7 — park *after* hci_tl_spi_send. If USB enumerates here,
-   * killer is the IRQ poll loop below. If USB dies, hci_tl_spi_send
-   * (single SPI transfer of 4 bytes) is the killer — extremely
-   * surprising for a single SPI op. */
-  for (;;) {
-    printf("probe: bisect-7 parked (post-hci_tl_spi_send rc=%d)\r\n", hci_send_rc);
-    tx_thread_sleep(500);
-  }
-
   if (hci_send_rc != 0)
   {
     return 0U;
   }
 
   /* Stage (b): RX. After accepting HCI Reset, a healthy chip raises
-     IRQ within ~50 ms with a Command Complete event. We poll the IRQ
-     pin (HCI_TL_SPI_IRQ_PIN = PB11) for up to 500 ms — busy wait, no
-     yield, runs at thread context so SysTick stays live. */
+     IRQ within ~50 ms with a Command Complete event. Poll the IRQ
+     pin (HCI_TL_SPI_IRQ_PIN = PB11) for up to 500 ms, YIELDING via
+     tx_thread_sleep(1) between checks — without yields the busy-wait
+     starves USB-CDC (priority 13) for the entire 500 ms which breaks
+     host enumeration mid-flight. Bisected to the same root cause as
+     the 1 s loop in hci_tl_spi_send (issue #12, BISECT-8). */
   uint32_t start = HAL_GetTick();
   while ((HAL_GetTick() - start) < 500U)
   {
@@ -121,6 +114,7 @@ static uint8_t ble_chip_alive_probe(void)
     {
       return 1U;
     }
+    tx_thread_sleep(1);
   }
   return 0U;
 }
@@ -174,6 +168,21 @@ static void ble_sync_thread_entry(ULONG arg)
   printf("ble: thread entered\r\n");
 
   g_ble_probe_status = 0xF0U;  /* thread entered */
+
+  /* Hold off the entire BLE bring-up until host USB enumeration has
+     definitely finished. Bisect (issue #12, 2026-05-09) showed that
+     even with tx_thread_sleep yields inside hci_tl_spi_send and the
+     post-send IRQ poll, the BLE thread starting too early starves
+     USB-CDC during the host's first enum descriptor reads (~100 ms
+     window starting when D+ pull-up activates at end of UsbCdc_Init).
+     A 5 s sleep gives the host enum + driver bind + tty open all the
+     time they need before SPI/HCI activity begins. After enum is
+     established the host is patient with periodic CDC traffic, so
+     subsequent BLE init busy-waits don't tear it down. */
+  ErrorLog_Write("ble: pre-init holdoff (5 s) for USB-CDC enum");
+  ErrorLog_Flush();
+  printf("ble: pre-init holdoff (5 s) for USB-CDC enum\r\n");
+  tx_thread_sleep(500);  /* 5 s at 10 ms tick */
 
   /* Probe BEFORE entering bluetooth_init. */
   g_ble_probe_status = 0xF1U;  /* about to call ble_chip_alive_probe */
