@@ -1590,6 +1590,13 @@ static void ErrorLog_Open(void)
 static UINT ErrorLogConsecutiveFails = 0U;
 static UINT ErrorLogBroken = 0U;
 
+/* Issue #14 (2026-05-10): when BLE thread suspends fx_thread for the
+ * BLE bring-up window, fx_thread might be holding FileX media mutex.
+ * Any fx_file_* call from BLE thread would then deadlock. Set this
+ * flag from BLE thread around the suspend → ErrorLog_Write/Flush
+ * skip the SD path (USB CDC mirror still works). */
+volatile uint8_t g_ble_init_skip_fx = 0;
+
 void ErrorLog_Write(const char *msg)
 {
   /* USB CDC mirror: every SD-bound error line also streams over the
@@ -1606,6 +1613,7 @@ void ErrorLog_Write(const char *msg)
     (void) UsbCdc_Write(usb_line, (size_t) usb_len);
   }
 
+  if (g_ble_init_skip_fx) return;  /* deadlock-avoidance during BLE init */
   if (!ErrorLogFileOpen) return;
   if (ErrorLogBroken) return;
 
@@ -1631,6 +1639,7 @@ void ErrorLog_Write(const char *msg)
    status so callers can decide whether to give up. */
 UINT ErrorLog_Flush(void)
 {
+  if (g_ble_init_skip_fx) return FX_SUCCESS;  /* deadlock-avoidance */
   if (!ErrorLogFileOpen)
     return FX_SUCCESS;
   return fx_media_flush(&sdio_disk);

@@ -189,33 +189,40 @@ static void ble_sync_thread_entry(ULONG arg)
    * is safe and the bug is in bluetooth_init's vendor code. If logger
    * hangs, the probe is the trigger and we walk inside it. */
 
-  /* Probe BEFORE entering bluetooth_init. */
-  g_ble_probe_status = 0xF1U;  /* about to call ble_chip_alive_probe */
-  ErrorLog_Write("ble: about to ble_chip_alive_probe");
+  /* Issue #14 (2026-05-10): suspend fx_thread + mask SDMMC1 IRQ for
+   * the ENTIRE BLE bring-up (probe + bluetooth_init), not just
+   * bluetooth_init. The probe also uses hci_tl_spi_send which now
+   * re-enables EXTI11 NVIC at end of each send (matching BLEDualProgram).
+   * That re-enable wedges SDMMC the same way it does inside
+   * bluetooth_init. Suspend earlier so the entire chip-talking window
+   * is SDMMC-quiet. */
+  extern TX_THREAD fx_app_thread;
+  extern volatile uint8_t g_ble_init_skip_fx;
+  ErrorLog_Write("ble: suspending fx_thread + masking SDMMC1 IRQ for entire BLE bring-up");
   ErrorLog_Flush();
-  printf("ble: about to ble_chip_alive_probe\r\n");
-  uint8_t alive = ble_chip_alive_probe();
-  ErrorLog_Write(alive ? "ble: probe returned alive=1"
-                        : "ble: probe returned alive=0");
-  ErrorLog_Flush();
-  printf("ble: probe returned alive=%u\r\n", (unsigned) alive);
+  tx_thread_suspend(&fx_app_thread);
+  HAL_NVIC_DisableIRQ(SDMMC1_IRQn);
+  /* Set deadlock-avoidance flag — ErrorLog_Write/Flush now skip the SD
+   * path while fx_thread is suspended, but still mirror to USB CDC. */
+  g_ble_init_skip_fx = 1;
+  tx_thread_sleep(20);  /* 200 ms — let any in-flight SDMMC op finish */
 
-  if (!alive)
-  {
-    g_ble_probe_status = 0U;
-    for (;;) {
-      ErrorLog_Write("ble: probe FAILED - parked");
-      tx_thread_sleep(3000);
-    }
-  }
-  g_ble_probe_status = 0xF2U;  /* probe returned alive=1, about to call bluetooth_init */
-
-  /* Post-HCI-Reset settle delay (yielding) so fx_thread keeps logging
-     even if bluetooth_init then hangs. Issue #12 / Peter's reservebox. */
-  ErrorLog_Write("ble: probe OK - 2s settle (yielding), then bluetooth_init");
-  ErrorLog_Flush();
-  printf("ble: probe OK - 2s settle\r\n");
-  tx_thread_sleep(200);
+  /* Issue #14 (2026-05-10): SKIP the chip-alive probe entirely. Our
+   * probe calls hci_tl_spi_send + hci_tl_spi_reset BEFORE middleware's
+   * init_ble_manager_ble_stack initializes hci_read_pkt_pool. The
+   * re-enable_irq tail in spi_send (matching BLEDualProgram pattern)
+   * fires the ISR, which calls hci_notify_asynch_evt against the
+   * uninitialized pool → undefined behavior, hangs.
+   *
+   * BLEDualProgram (which works on this hardware) doesn't have a
+   * separate probe — it just calls init_ble_manager() directly. Match
+   * that pattern: trust init_ble_manager_ble_stack to detect a dead
+   * chip via its own hci_reset / get_blue_nrg_version flow. If the
+   * chip is dead, middleware returns failure cleanly. If alive,
+   * proceeds normally. */
+  g_ble_probe_status = 0xF2U;  /* skip 0xF1, go straight to bluetooth_init */
+  ErrorLog_Write("ble: skip probe - direct bluetooth_init (matches BLEDualProgram)");
+  printf("ble: skip probe - direct bluetooth_init\r\n");
 
   ErrorLog_Write("ble: about to bluetooth_init()");
   ErrorLog_Flush();
@@ -226,6 +233,15 @@ static void ble_sync_thread_entry(ULONG arg)
   uint32_t t0 = tx_time_get();
   uint8_t init_rc = bluetooth_init();
   uint32_t dt = tx_time_get() - t0;
+
+  /* Restore SDMMC1 IRQ + fx_thread now that BLE init is done (success
+   * or fail). Logger resumes. Clear the deadlock-avoidance flag so
+   * ErrorLog_Write/Flush re-engage the SD path. */
+  g_ble_init_skip_fx = 0;
+  HAL_NVIC_EnableIRQ(SDMMC1_IRQn);
+  tx_thread_resume(&fx_app_thread);
+  ErrorLog_Write("ble: SDMMC1 IRQ + fx_thread restored");
+  ErrorLog_Flush();
   g_ble_probe_status = 0xF3U;  /* bluetooth_init returned (any rc) */
   {
     char m[80];

@@ -189,9 +189,14 @@ int32_t hci_tl_spi_receive(uint8_t *buffer, uint16_t size)
     }
   }
 
-  /* Issue #12 / 2026-05-10: keep EXTI11 NVIC masked through init.
-   * Don't re-enable here; BLE thread arms EXTI11 once after
-   * bluetooth_init succeeds (in init_ble_int_for_blue_nrglp). */
+  /* Issue #14 / 2026-05-10: re-enable EXTI11 NVIC like
+   * BLEDualProgram's hci_tl_interface.c does. Without re-enable,
+   * after the first receive EXTI11 stays disabled and no further
+   * chip events get drained → middleware deadlock. The earlier issue
+   * #12 SDMMC concern is now addressed at a different layer: BLE
+   * thread suspends fx_thread + masks SDMMC1 IRQ for the bluetooth_init
+   * window, so re-enable here is harmless during init. */
+  hci_tl_spi_enable_irq();
   HAL_GPIO_WritePin(HCI_TL_SPI_CS_PORT, HCI_TL_SPI_CS_PIN, GPIO_PIN_SET);
   if (recv_call_count == 1U) {
     char m[40];
@@ -278,6 +283,14 @@ int32_t hci_tl_spi_send(uint8_t *buffer, uint16_t size)
    * thread for the full timeout when the chip didn't actually need a
    * wait. Replaced with 20 ms tx_thread_sleep yield (Peter's v35). */
   tx_thread_sleep(2);
+
+  /* Issue #14 / 2026-05-10: re-enable EXTI11 NVIC after each spi_send
+   * to match BLEDualProgram's pattern. Without re-enable, EXTI11
+   * stays disabled after the first send → no more chip events fire
+   * the ISR → middleware's hci_send_req busy-waits forever on empty
+   * rx_queue. Safe during init (fx_thread suspended, SDMMC1 IRQ
+   * masked); harmless post-init since BLE events are infrequent. */
+  hci_tl_spi_enable_irq();
   return result;
 }
 
@@ -289,12 +302,27 @@ void hci_tl_lowlevel_init(void)
 
 void hci_tl_lowlevel_isr(void)
 {
-  /* Issue #14 / 2026-05-10: SUPER-THIN ISR. Just set the event flag
-   * and exit. Drain happens in thread context (in BLE thread's main
-   * loop, or in middleware's hci_send_req which polls hci_event).
-   * Earlier full-drain ISR (16-event loop with SPI traffic + 1 ms
-   * busy-wait) ran for milliseconds in IRQ context, blocking SDMMC1
-   * transfer-complete IRQ → fx_media_flush hangs. Microsecond-long
-   * ISR keeps SDMMC IRQ-service latency negligible. */
+  /* Heavy drain restored (issue #14 / 2026-05-10). Middleware's
+   * hci_send_req busy-waits on hci_read_pkt_rx_queue (Basic/hci_tl.c
+   * line 320) and only progresses when the queue is populated — that
+   * population is exactly what hci_notify_asynch_evt does. A thin ISR
+   * that just set hci_event=1 broke this; nobody ever called
+   * hci_user_evt_proc to drain because the BLE thread was stuck in
+   * hci_send_req's busy-wait.
+   *
+   * SDMMC concurrency is now handled at a different layer: BLE thread
+   * suspends fx_thread + masks SDMMC1 IRQ for the bluetooth_init
+   * window (see ble_sync.c). Inside that window the ISR's busy-wait
+   * is harmless since SDMMC isn't running. After bluetooth_init
+   * returns, BLE chip events are infrequent and the ISR runs only
+   * briefly. */
+  for (uint8_t i = 0; i < 16U; i++) {
+    if (!is_data_available()) {
+      break;
+    }
+    if (hci_notify_asynch_evt(NULL)) {
+      return;
+    }
+  }
   hci_event = 1;
 }
