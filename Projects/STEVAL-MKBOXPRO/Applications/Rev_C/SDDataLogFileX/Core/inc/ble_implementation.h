@@ -78,6 +78,7 @@ extern "C" {
    arming the SPI EXTI IRQ. */
 extern uint8_t bluetooth_init(void);
 extern void init_ble_int_for_blue_nrglp(void);
+extern void arm_ble_exti11(void);  /* issue #12: final EXTI11 NVIC enable, post-init */
 extern void ble_init_custom_service(void);
 extern void ble_set_custom_advertise_data(uint8_t *manuf_data);
 extern void set_board_name(void);

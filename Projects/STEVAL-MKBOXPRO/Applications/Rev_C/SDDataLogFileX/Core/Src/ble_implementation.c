@@ -58,14 +58,25 @@ void init_ble_int_for_blue_nrglp(void)
 {
   HAL_EXTI_GetHandle(&H_EXTI, EXTI_LINE);
   HAL_EXTI_RegisterCallback(&H_EXTI, HAL_EXTI_COMMON_CB_ID, hci_tl_lowlevel_isr);
-  /* Priority 14 (was 0). Same level as SDMMC1 so an HCI event never
-     preempts an in-flight SD write, and well below UART4-GPS at 6 so
-     the GPS line keeps assembling while BLE is busy. The previous
-     value (0, highest possible) preempted everything including
-     SysTick — when the BlueNRG-LP misbehaved, the EXTI11 handler
-     looping on a stuck IRQ line locked out fx_thread mid-write and
-     froze the green LED in whatever state the last toggle left it. */
+  /* Priority 14 — same as SDMMC1 so neither preempts the other. */
   HAL_NVIC_SetPriority(HCI_TL_SPI_EXTI_IRQ_N, 14, 0);
+
+  /* Issue #12 / 2026-05-10: do NOT call HAL_NVIC_EnableIRQ here.
+   * Bisected: enabling EXTI11 NVIC while the chip's IRQ pin is HIGH
+   * (boot-pending events) hangs SDMMC's transfer-complete IRQ
+   * servicing → fx_media_flush blocks → fx_thread stuck → logger
+   * dies. This function gets called from middleware
+   * init_ble_manager_ble_stack() at start, where chip IRQ is still
+   * HIGH from boot events. ble_sync.c's BLE thread arms EXTI11 ONCE
+   * at the very end of bluetooth_init's successful path via
+   * arm_ble_exti11() (see ble_sync.c). */
+}
+
+void arm_ble_exti11(void)
+{
+  /* Final EXTI11 arm — called from ble_sync_thread_entry after
+   * bluetooth_init returns successfully. By this point the chip has
+   * processed all init commands and its IRQ pin should be settled. */
   HAL_NVIC_EnableIRQ(HCI_TL_SPI_EXTI_IRQ_N);
 }
 

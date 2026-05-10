@@ -183,6 +183,12 @@ static void ble_sync_thread_entry(ULONG arg)
   printf("ble: pre-init holdoff (5 s) for USB-CDC enum\r\n");
   tx_thread_sleep(500);  /* 5 s at 10 ms tick */
 
+  /* BISECT-A PASSED (logger ran 75+ s with no BLE chip activity).
+   * BISECT-B: run the full probe (spi_reset + spi_send + IRQ poll),
+   * then park before bluetooth_init. If logger still runs, the probe
+   * is safe and the bug is in bluetooth_init's vendor code. If logger
+   * hangs, the probe is the trigger and we walk inside it. */
+
   /* Probe BEFORE entering bluetooth_init. */
   g_ble_probe_status = 0xF1U;  /* about to call ble_chip_alive_probe */
   ErrorLog_Write("ble: about to ble_chip_alive_probe");
@@ -193,6 +199,7 @@ static void ble_sync_thread_entry(ULONG arg)
                         : "ble: probe returned alive=0");
   ErrorLog_Flush();
   printf("ble: probe returned alive=%u\r\n", (unsigned) alive);
+
   if (!alive)
   {
     g_ble_probe_status = 0U;
@@ -246,7 +253,8 @@ static void ble_sync_thread_entry(ULONG arg)
      chip (advertising state changes, connection events, etc.) get processed
      by the ISR — without this, the chip may not radiate even though the
      local advertising commands return SUCCESS. */
-  init_ble_int_for_blue_nrglp();
+  init_ble_int_for_blue_nrglp();   /* registers callback + sets priority */
+  arm_ble_exti11();                 /* issue #12: actual NVIC enable now */
   g_ble_probe_status = 1U;  /* SUCCESS: advertising + IRQ armed */
   ErrorLog_Write("ble: EXTI11 armed - advertising");
   ErrorLog_Flush();

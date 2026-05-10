@@ -32,7 +32,20 @@
 volatile uint32_t hci_event = 0;
 EXTI_HandleTypeDef hexti11;
 
-static void hci_tl_spi_enable_irq(void)  { HAL_NVIC_EnableIRQ(HCI_TL_SPI_EXTI_IRQ_N); }
+static void hci_tl_spi_enable_irq(void)
+{
+  /* Issue #12 / 2026-05-10 / BISECT-G: priority 14 (same as SDMMC1)
+   * was NOT enough. ARM Cortex-M with NVIC_PRIORITYGROUP_4 means
+   * priority value = preempt level. Same level = no preemption,
+   * IRQs serialize. EXTI11 ISR (running 16 events × ~1 ms busy-wait =
+   * ~16 ms) blocks SDMMC1 transfer-complete IRQ → fx_media_flush
+   * semaphore never signals → fx_thread hangs. Set EXTI11 to
+   * priority 15 (lowest possible in 4-bit group) so SDMMC1 (priority
+   * 14) PREEMPTS EXTI11 ISR. Now SDMMC's transfer-complete signal
+   * fires immediately even mid-EXTI11. */
+  HAL_NVIC_SetPriority(HCI_TL_SPI_EXTI_IRQ_N, 15, 0);
+  HAL_NVIC_EnableIRQ(HCI_TL_SPI_EXTI_IRQ_N);
+}
 static void hci_tl_spi_disable_irq(void) { HAL_NVIC_DisableIRQ(HCI_TL_SPI_EXTI_IRQ_N); }
 int32_t is_data_available(void)
 {
@@ -94,41 +107,30 @@ int32_t hci_tl_spi_reset(void)
   HAL_GPIO_WritePin(HCI_TL_RST_PORT,    HCI_TL_RST_PIN,    GPIO_PIN_RESET);
   tx_thread_sleep(1);     /* >= 10 ms, was HAL_Delay(5) */
   ErrorLog_Write("spi_reset: post-sleep-1 (rst released next)");
-  HAL_GPIO_WritePin(HCI_TL_RST_PORT,    HCI_TL_RST_PIN,    GPIO_PIN_SET);
-  tx_thread_sleep(15);    /* 150 ms, was HAL_Delay(150) */
-  ErrorLog_Write("spi_reset: post-sleep-2 (chip settled)");
-  /* Clear any pending EXTI11 latched while masked, then re-enable. */
-  __HAL_GPIO_EXTI_CLEAR_IT(HCI_TL_SPI_EXTI_PIN);
-  ErrorLog_Write("spi_reset: exti cleared");
-  HAL_NVIC_ClearPendingIRQ(HCI_TL_SPI_EXTI_IRQ_N);
-  ErrorLog_Write("spi_reset: nvic cleared");
-  hci_tl_spi_enable_irq();
+  extern UINT ErrorLog_Flush(void);
 
-  /* v35 hypothesis fix: while EXTI11 was masked above, the chip's
-     IRQ line went HIGH (boot-ready event with pending data — we see
-     7 bytes pending in slave[3..4]=07 00 on the very first SPI
-     transaction afterward). EXTI11 is rising-edge-triggered, so once
-     we re-enable, the already-high line never produces a fresh edge
-     and the ISR never fires. The chip's pending data therefore
-     stays in its TX FIFO forever, IRQ stays HIGH, and *no* future
-     event can produce a rising edge. hci_send_req's busy-wait then
-     loops forever waiting for the rx_queue to fill.
-     Force-drain here: as long as the chip's IRQ pin is high, pull
-     events through hci_notify_asynch_evt. Caps at 32 events to bound
-     time. Counts get logged so we can verify in the error log
-     whether the drain found anything. Cap is high because the chip
-     can send multiple boot events on first power-up. */
-  extern int32_t hci_notify_asynch_evt(void *pdata);
-  int drain = 0;
-  while (is_data_available() && drain < 32) {
-    hci_notify_asynch_evt(NULL);
-    drain++;
-  }
-  {
-    char m[48];
-    sprintf(m, "spi_reset: drained %d boot events", drain);
-    ErrorLog_Write(m);
-  }
+  /* BISECT-C/D/E PASSED — RST low / RST high / RST high + 150 ms wait
+   * are all safe. */
+  HAL_GPIO_WritePin(HCI_TL_RST_PORT,    HCI_TL_RST_PIN,    GPIO_PIN_SET);
+  tx_thread_sleep(15);    /* 150 ms wait for BlueNRG-LP boot */
+  ErrorLog_Write("spi_reset: post-sleep-2 (chip settled)");
+  ErrorLog_Flush();
+
+  /* Clear any pending EXTI11 latched while masked. KEEP EXTI11 NVIC
+   * MASKED throughout the entire BLE init sequence (probe + bluetooth_init).
+   * Issue #12 / 2026-05-10: re-enabling EXTI11 NVIC while chip's IRQ
+   * pin is HIGH (boot-pending events) wedges SDMMC's transfer-complete
+   * IRQ servicing — fx_media_flush hangs. Even priority 15 doesn't
+   * help. Solution: no enable_irq during init. The BLE thread arms
+   * EXTI11 ONCE after bluetooth_init returns successfully (in
+   * init_ble_int_for_blue_nrglp). All SPI traffic during init runs
+   * with EXTI11 masked. The middleware polls for chip responses
+   * (is_data_available) so it doesn't need ISR-driven notification
+   * during init. */
+  __HAL_GPIO_EXTI_CLEAR_IT(HCI_TL_SPI_EXTI_PIN);
+  HAL_NVIC_ClearPendingIRQ(HCI_TL_SPI_EXTI_IRQ_N);
+  ErrorLog_Write("spi_reset: exti cleared (NVIC stays masked through init)");
+  ErrorLog_Flush();
   ErrorLog_Write("spi_reset: returning");
   return 0;
 }
@@ -187,11 +189,9 @@ int32_t hci_tl_spi_receive(uint8_t *buffer, uint16_t size)
     }
   }
 
-  /* Re-enable EXTI11 to match factory firmware behavior — it stays
-     armed throughout. The earlier nested-ISR-hang concern is addressed
-     by TIM6 priority 13 + cycle-counted IRQ-drop wait above (no more
-     HAL_GetTick dependence inside the ISR). */
-  hci_tl_spi_enable_irq();
+  /* Issue #12 / 2026-05-10: keep EXTI11 NVIC masked through init.
+   * Don't re-enable here; BLE thread arms EXTI11 once after
+   * bluetooth_init succeeds (in init_ble_int_for_blue_nrglp). */
   HAL_GPIO_WritePin(HCI_TL_SPI_CS_PORT, HCI_TL_SPI_CS_PIN, GPIO_PIN_SET);
   if (recv_call_count == 1U) {
     char m[40];
@@ -263,10 +263,14 @@ int32_t hci_tl_spi_send(uint8_t *buffer, uint16_t size)
 
     HAL_GPIO_WritePin(HCI_TL_SPI_CS_PORT, HCI_TL_SPI_CS_PIN, GPIO_PIN_SET);
 
-    if ((tx_time_get() - tickstart) > 2U) {
-      result = -3;
-      break;
-    }
+    /* End-of-loop timeout removed (issue #12, 2026-05-10): after a
+     * successful payload xfer result=0 → exits the do-while normally.
+     * The original 20 ms (2-tick) end-check fired AFTER success and
+     * clobbered result back to -3 because the multiple ErrorLog_Write
+     * calls in the loop body each take several ms of SDMMC time. The
+     * inner 20 ms timeout on `is_data_available` already bounds the
+     * "chip silent" failure mode; nothing else justifies retrying with
+     * a separate top-level wallclock cap. */
   } while (result < 0);
 
   /* Short sleep — chip's IRQ drops within microseconds normally. Was
@@ -277,11 +281,9 @@ int32_t hci_tl_spi_send(uint8_t *buffer, uint16_t size)
   tx_thread_sleep(2);
 
   /* Re-enable EXTI11 so async events from the chip (post-command status,
-     advertising state changes, connection events) trigger the ISR. Match
-     factory firmware which keeps EXTI11 armed throughout. The earlier
-     concern about ISR-side hangs is addressed by TIM6 priority 13 +
-     cycle-counted IRQ-drop wait inside hci_tl_spi_receive. */
-  hci_tl_spi_enable_irq();
+     advertising state changes, connection events) trigger the ISR.
+     Issue #12 / 2026-05-10: keep EXTI11 NVIC masked during init. BLE
+     thread arms it once after bluetooth_init returns successfully. */
   return result;
 }
 
