@@ -3495,17 +3495,53 @@ static ble_status_t init_ble_manager_ble_stack(void)
   /* we will let the BLE chip to use its Random MAC address */
 #define CONFIG_DATA_RANDOM_ADDRESS          (0x80) /**< Stored static random address. Read-only. */
   ret = aci_hal_read_config_data(CONFIG_DATA_RANDOM_ADDRESS, &data_len_out, ble_stack_value.ble_mac_address);
-
-  if (ret != BLE_STATUS_SUCCESS)
   {
-    BLE_MANAGER_PRINTF("\r\nReading  Random BD_ADDR failed\r\n");
-    goto fail;
+    char m[80];
+    sprintf(m, "ble_mgr: read random BD_ADDR rc=%u len=%u mac[5]=0x%02x",
+            (unsigned)ret, (unsigned)data_len_out, ble_stack_value.ble_mac_address[5]);
+    ErrorLog_Write(m);
   }
 
-  /* Check Random MAC */
+  /* Issue #14 (2026-05-10): BlueNRG-LP on Zeno's box returns failure
+   * for CONFIG_DATA_RANDOM_ADDRESS — chip's NVM has no stored static
+   * random MAC. Fall back to generating one from the STM32U585 unique
+   * device ID (96 bits at 0x0BFA0700). Top 2 bits of byte 5 forced to
+   * 0b11 so it passes the static-random check below per BLE Core 4.0
+   * spec. Resulting MAC is deterministic per box (same UID → same MAC)
+   * so a paired host doesn't see a different device on every boot. */
+  if (ret != BLE_STATUS_SUCCESS)
+  {
+    BLE_MANAGER_PRINTF("\r\nReading Random BD_ADDR failed - using UID-derived MAC\r\n");
+    ErrorLog_Write("ble_mgr: read FAILED - falling back to UID-derived MAC");
+    const volatile uint32_t *uid = (const volatile uint32_t *) 0x0BFA0700UL;
+    uint32_t uid0 = uid[0];
+    uint32_t uid1 = uid[1];
+    ble_stack_value.ble_mac_address[0] = (uint8_t) (uid0 >> 0);
+    ble_stack_value.ble_mac_address[1] = (uint8_t) (uid0 >> 8);
+    ble_stack_value.ble_mac_address[2] = (uint8_t) (uid0 >> 16);
+    ble_stack_value.ble_mac_address[3] = (uint8_t) (uid0 >> 24);
+    ble_stack_value.ble_mac_address[4] = (uint8_t) (uid1 >> 0);
+    ble_stack_value.ble_mac_address[5] = (uint8_t) ((uid1 >> 8) | 0xC0U);
+    {
+      char m[64];
+      sprintf(m, "ble_mgr: UID MAC = %02x:%02x:%02x:%02x:%02x:%02x",
+              ble_stack_value.ble_mac_address[5],
+              ble_stack_value.ble_mac_address[4],
+              ble_stack_value.ble_mac_address[3],
+              ble_stack_value.ble_mac_address[2],
+              ble_stack_value.ble_mac_address[1],
+              ble_stack_value.ble_mac_address[0]);
+      ErrorLog_Write(m);
+    }
+    ret = BLE_STATUS_SUCCESS;
+  }
+
+  /* Check Random MAC — should always pass: chip read OK or UID fallback both
+   * produce well-formed static-random addresses (top 2 bits of byte 5 == 11). */
   if ((ble_stack_value.ble_mac_address[5] & 0xC0U) != 0xC0U)
   {
     BLE_MANAGER_PRINTF("\tStatic Random address not well formed\r\n");
+    ErrorLog_Write("ble_mgr: MAC not well-formed - bailing");
     goto fail;
   }
 
@@ -3536,10 +3572,28 @@ static ble_status_t init_ble_manager_ble_stack(void)
   ret = aci_hal_write_config_data(ble_stack_value.config_value_offsets,
                                   ble_stack_value.config_value_length,
                                   ble_stack_value.ble_mac_address);
+  {
+    char m[64];
+    sprintf(m, "ble_mgr: write public BD_ADDR rc=%u", (unsigned)ret);
+    ErrorLog_Write(m);
+  }
+  /* Issue #14 (2026-05-10): on BlueNRG-LP / STM32WB07_06, writing the
+   * public address via aci_hal_write_config_data(0x00,…) is often
+   * rejected — chips don't allow runtime public-address override. Make
+   * non-fatal: the UID-derived MAC we generated is a STATIC RANDOM
+   * address (top bits 0xC0). The chip's advertising stack uses random
+   * addresses via aci_gap_set_advertising_parameters with own_addr_type
+   * = RANDOM, which is configured later via the same ble_stack_value.
+   * We just need to skip the public-write failure for these chips. */
   if (ret != BLE_STATUS_SUCCESS)
   {
     BLE_MANAGER_PRINTF("\r\nSetting Public BD_ADDR failed\r\n");
+#if ((BLUE_CORE == BLUENRG_LP) || (BLUE_CORE == STM32WB07_06))
+    ErrorLog_Write("ble_mgr: write public failed - non-fatal on BlueNRG-LP, continuing");
+    /* Don't goto fail — random-address advertising path doesn't need this. */
+#else
     goto fail;
+#endif
   }
 
 #if ((BLUE_CORE != BLUENRG_LP) && (BLUE_CORE != STM32WB07_06))
