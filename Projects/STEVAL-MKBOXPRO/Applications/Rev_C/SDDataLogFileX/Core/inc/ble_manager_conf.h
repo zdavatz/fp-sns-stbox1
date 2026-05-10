@@ -89,10 +89,12 @@ static inline void BleManager_InitialDelay(uint32_t ms)
 #define BLE_FREE_FUNCTION    free
 #define BLE_MEM_CPY          memcpy
 
-/* BLE manager's own debug printf — compiled out because UART4 is the GPS in
-   this app and there's no other free serial. Boot/sync events go to the SD
-   error log instead (see ble_sync.c → ErrorLog_Write). */
-#define BLE_MANAGER_PRINTF(...)
+/* BLE manager's own debug printf. Diagnostic build: route the format
+   string to ErrorLog_Write (no varargs — middleware uses %r etc. for
+   tBleStatus that printf-without-FP wouldn't render correctly anyway,
+   but the bare format string still tells us which call site fired). */
+#include "app_filex.h"
+#define BLE_MANAGER_PRINTF(fmt, ...)  ErrorLog_Write("ble_mgr: " fmt)
 
 #ifdef __cplusplus
 }

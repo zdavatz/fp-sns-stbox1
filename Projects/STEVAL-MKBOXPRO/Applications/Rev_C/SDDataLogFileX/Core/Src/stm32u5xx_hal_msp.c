@@ -42,17 +42,19 @@ void HAL_MspInit(void)
   HAL_PWREx_DisableUCPDDeadBattery();
 
   /* USER CODE BEGIN MspInit 1 */
-
-  /* Power the VddIO2 IO supply rail. ST's reference BLE firmware
-     (BLEDualProgram) calls this in MspInit + main; without it, GPIO banks
-     fed by VddIO2 read/write silently fail. The "BlueNRG-LP looks dead at
-     init" symptom on this board (bluetooth_init() returning non-zero on a
-     chip that worked under the original ST firmware a week earlier) maps
-     exactly onto a VddIO2-island bank being left unpowered. Cheap to keep
-     enabled even if no BLE-relevant signal is on a VddIO2 pin — costs one
-     bit in PWR->SVMCR. */
+  /* Match BLEDualProgram's SystemPower_Config exactly: VddIO2 enable +
+     SMPS regulator. VddIO2 powers the GPIO bank that BLE-relevant pins
+     live on (without it, "BlueNRG-LP looks dead at init"). The SMPS path
+     is what powers the chip's RF rail reliably during transmit; without
+     it, BLE init succeeds (HCI/GATT/advertising commands all return
+     SUCCESS) but the BlueNRG-LP never actually radiates — exactly the
+     "advertising started but invisible in scanners" symptom. Both fixes
+     from Peter's v35 fork (2026-05-10). */
   HAL_PWREx_EnableVddIO2();
-
+  if (HAL_PWREx_ConfigSupply(PWR_SMPS_SUPPLY) != HAL_OK) {
+    /* Non-fatal: fall back to LDO. The logger keeps working; only BLE
+       transmit needs SMPS reliably. */
+  }
   /* USER CODE END MspInit 1 */
 }
 

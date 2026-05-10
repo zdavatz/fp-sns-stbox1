@@ -90,7 +90,7 @@ extern "C" {
    If v77 logs Sens/Gps/Bat cleanly, the bug is somewhere in our BLE
    integration (chip-alive probe, init sequence, IRQ-storm handling,
    or interaction with the existing HAL_MspInit/clock/pin config). */
-#define STBOX1_ENABLE_BLE_SYNC 0
+#define STBOX1_ENABLE_BLE_SYNC 1
 
 /* USB CDC ACM debug console. Brings up OTG_FS as a virtual COM port so a
    host PC sees /dev/tty.usbmodem* (macOS) / /dev/ttyACM* (Linux) / COMxx
@@ -134,6 +134,12 @@ extern "C" {
 #define ILPS22QS_ODR 25.0f /* ODR = 25.0Hz */
 #define IIS2MDC_MAG_ODR 100.0f /* ODR = 100Hz */
 #define IIS2MDC_MAG_FS 50 /* FS = 50gauss */
+
+/* Diagnostic version tag — bump this every time we ship a new test
+   binary so FW_INFO.TXT and the boot marker tell us unambiguously
+   which build is on the chip. The bank-swap bug can otherwise leave
+   us guessing. */
+#define DIAG_VERSION "v35-spi-drain-fix"
 
 /**************************************
   * Don't Change the following defines *

@@ -83,6 +83,11 @@ int32_t BleSpi_Init(void)
     return -1;
   }
 
+  /* NOTE: HAL_SPIEx_SetConfigAutonomousMode(DISABLE) was tried in v32
+     to mirror BSP_SPI1_Init exactly, but caused the FIRST HCI command
+     to hang after payload xfer (slave responded with valid header but
+     subsequent send-receive interaction broke). Reverted in v33. */
+
   initialized = 1;
   return 0;
 }

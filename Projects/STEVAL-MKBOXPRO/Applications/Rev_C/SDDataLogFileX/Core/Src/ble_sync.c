@@ -175,11 +175,10 @@ static void ble_sync_thread_entry(ULONG arg)
      post-send IRQ poll, the BLE thread starting too early starves
      USB-CDC during the host's first enum descriptor reads (~100 ms
      window starting when D+ pull-up activates at end of UsbCdc_Init).
-     A 5 s sleep gives the host enum + driver bind + tty open all the
-     time they need before SPI/HCI activity begins. After enum is
-     established the host is patient with periodic CDC traffic, so
-     subsequent BLE init busy-waits don't tear it down. */
-  ErrorLog_Write("ble: pre-init holdoff (5 s) for USB-CDC enum");
+     A 5 s sleep also lets fx_thread complete fx_media_open +
+     WriteFwInfoFile + first sensor flush before any BLE/SPI traffic
+     hits the bus (Peter's same rationale on his fork). */
+  ErrorLog_Write("ble: pre-init holdoff (5 s) for USB-CDC enum + fx_thread");
   ErrorLog_Flush();
   printf("ble: pre-init holdoff (5 s) for USB-CDC enum\r\n");
   tx_thread_sleep(500);  /* 5 s at 10 ms tick */
@@ -204,19 +203,8 @@ static void ble_sync_thread_entry(ULONG arg)
   }
   g_ble_probe_status = 0xF2U;  /* probe returned alive=1, about to call bluetooth_init */
 
-  /* Post-HCI-Reset settle delay — mirrors ST's production firmware
-     (FUN_0802d5d8(2000) in FUN_08031468). v48 used HAL_Delay(2000) here
-     which is a SysTick busy-loop and DOES NOT yield to the ThreadX
-     scheduler. Result: with our priority-11 BLE thread running first,
-     the busy-wait monopolised the CPU for 2 s, fx_thread (priority 12)
-     never came up during the wait, and if bluetooth_init() then hung
-     waiting for a chip response, fx_thread stayed starved forever — v48
-     regressed in the field with the same "boot-beep then dark, SD empty"
-     symptom as v41. v49 swaps to `tx_thread_sleep(200)` (= 2 s at 10 ms
-     tick): the BLE thread yields the CPU during the settle, fx_thread
-     gets to come up, open the SD card and start logging, and only then
-     does the BLE thread try its bluetooth_init(). If BLE then hangs,
-     logging is already running. Issue #12 / Peter's reservebox. */
+  /* Post-HCI-Reset settle delay (yielding) so fx_thread keeps logging
+     even if bluetooth_init then hangs. Issue #12 / Peter's reservebox. */
   ErrorLog_Write("ble: probe OK - 2s settle (yielding), then bluetooth_init");
   ErrorLog_Flush();
   printf("ble: probe OK - 2s settle\r\n");
@@ -228,11 +216,14 @@ static void ble_sync_thread_entry(ULONG arg)
 
   /* Brings up the SPI-1/HCI link, registers GAP, sets the random address,
      and starts advertising as STBoxSync. */
+  uint32_t t0 = tx_time_get();
   uint8_t init_rc = bluetooth_init();
+  uint32_t dt = tx_time_get() - t0;
   g_ble_probe_status = 0xF3U;  /* bluetooth_init returned (any rc) */
   {
     char m[80];
-    sprintf(m, "ble: bluetooth_init returned rc=%u", (unsigned)init_rc);
+    sprintf(m, "ble: bluetooth_init returned rc=%u in %lu ms",
+            (unsigned)init_rc, (unsigned long)(dt * 10U));
     ErrorLog_Write(m);
     ErrorLog_Flush();
   }
@@ -240,24 +231,28 @@ static void ble_sync_thread_entry(ULONG arg)
   if (init_rc != 0U)
   {
     g_ble_probe_status = 2U;
-    char m[64];
-    sprintf(m, "ble: bluetooth_init returned rc=%u - parking", (unsigned)init_rc);
-    ErrorLog_Write(m);
-    for (;;) {
-      ErrorLog_Write("ble: still parked after init FAIL");
-      tx_thread_sleep(3000);
-    }
+    ErrorLog_Write("ble: init FAIL - thread parking, fx_thread keeps logging");
+    for (;;) { tx_thread_sleep(1000); }
   }
   g_ble_probe_status = 0xF4U;  /* about to arm EXTI11 */
-  ErrorLog_Write("ble: bluetooth_init OK - arming EXTI11");
+  ErrorLog_Write("ble: bluetooth_init OK - arming EXTI11 (factory pattern)");
   ErrorLog_Flush();
 
-  /* Hook EXTI11 → hci_tl_lowlevel_isr — what flips `hci_event` from
-     the NVIC when the BlueNRG-LP raises its IRQ line. */
+  /* Hook EXTI11 → hci_tl_lowlevel_isr. Matches factory firmware (FUN_08031468
+     from Ghidra analysis) — EXTI11 stays armed BEFORE hci_init/hci_reset
+     and through normal operation. Our middleware's init_ble_manager_ble_stack()
+     armed it during init, but our hci_tl_spi_send/receive disabled it for
+     the transaction duration. Re-arm now so post-init async events from the
+     chip (advertising state changes, connection events, etc.) get processed
+     by the ISR — without this, the chip may not radiate even though the
+     local advertising commands return SUCCESS. */
   init_ble_int_for_blue_nrglp();
   g_ble_probe_status = 1U;  /* SUCCESS: advertising + IRQ armed */
   ErrorLog_Write("ble: EXTI11 armed - advertising");
   ErrorLog_Flush();
+
+  extern uint8_t set_connectable;
+  extern void set_connectable_ble(void);
 
   for (;;)
   {
@@ -265,6 +260,12 @@ static void ble_sync_thread_entry(ULONG arg)
     {
       hci_event = 0;
       hci_user_evt_proc();
+    }
+    if (set_connectable)
+    {
+      set_connectable_ble();
+      set_connectable = 0U;
+      ErrorLog_Write("ble: advertising started");
     }
     BleFileSync_Tick();
     tx_thread_sleep(1);

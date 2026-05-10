@@ -334,6 +334,15 @@ static void ReadingTimerCallbackFunction(ULONG timer)
 
 static void fx_thread_entry(ULONG thread_input)
 {
+  /* Diagnostic: turn green LED on the moment fx_thread is scheduled.
+     If green is still dark after the boot beep + tx_app_define red blink,
+     fx_thread never got scheduled (priority inversion, scheduler hang,
+     etc.). If green appears immediately but the SD card stays empty,
+     fx_thread is running but blocks in CheckAndApplyFirmwareUpdate
+     (most likely fx_media_open). The COMMAND_START_LOG handler below
+     calls BSP_LED_On(LED_GREEN) again — idempotent, so this early
+     marker doesn't break the normal "green = logging" indication. */
+  BSP_LED_On(LED_GREEN);
 
   UINT status;
   MessageData_t *RMsg;
@@ -1431,7 +1440,7 @@ static void ErrorLog_Open(void)
                     (unsigned)FW_BUILD_NUM, __DATE__, __TIME__);
   fx_file_write(&ErrorLogFxFile, boot_msg, len);
   len = sprintf(boot_msg,
-    "fw: v%u build %s %s | GPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    "fw: v%u (" DIAG_VERSION ") build %s %s | GPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
     (unsigned)FW_BUILD_NUM,
     __DATE__, __TIME__,
     (unsigned)GPS_RATE_HZ,
@@ -1714,7 +1723,7 @@ static void WriteFwInfoFile(void)
   sprintf(fw_info_name, "FW_INFO_v%u.TXT", (unsigned)FW_BUILD_NUM);
 
   INT len = sprintf(info,
-    "fw: v%u build %s %s\r\nGPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
+    "fw: v%u (" DIAG_VERSION ") build %s %s\r\nGPS %uHz | AUDIO=%d BATTERY=%d | flash ~%luKB\r\n",
     (unsigned)FW_BUILD_NUM,
     __DATE__, __TIME__,
     (unsigned)GPS_RATE_HZ,

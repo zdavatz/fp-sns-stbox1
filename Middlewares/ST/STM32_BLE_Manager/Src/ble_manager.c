@@ -3461,15 +3461,24 @@ static ble_status_t init_ble_manager_ble_stack(void)
   /* Initialize the BlueNRG HCI */
   /*  hci_init(app_user_evt_rx, NULL); */
 
+  /* Diagnostic: bisect where init_ble_manager_ble_stack hangs on Peter's
+     box. Each marker lands on the SD card error log so we can read it
+     post-mortem after a hung boot. Remove this block once BLE comes up. */
+  extern void ErrorLog_Write(const char *msg);
+  ErrorLog_Write("ble_mgr: enter init_ble_manager_ble_stack");
+
 #if ((BLUE_CORE == BLUENRG_LP) || (BLUE_CORE == STM32WB07_06))
   init_ble_int_for_blue_nrglp();
+  ErrorLog_Write("ble_mgr: init_ble_int_for_blue_nrglp done");
 #endif /* ((BLUE_CORE == BLUENRG_LP) || (BLUE_CORE == STM32WB07_06)) */
 
   /* Initialize the BlueNRG HCI */
   hci_init(app_user_evt_rx, NULL);
+  ErrorLog_Write("ble_mgr: hci_init done");
 
   /* Sw reset of the device */
   hci_reset();
+  ErrorLog_Write("ble_mgr: hci_reset done");
 
   /* Wait some time for the BlueNRG to be fully operational */
 #ifndef  BLE_INITIAL_DELAY
@@ -3477,9 +3486,11 @@ static ble_status_t init_ble_manager_ble_stack(void)
 #else /* BLE_INITIAL_DELAY */
   BLE_INITIAL_DELAY(2000);
 #endif /* BLE_INITIAL_DELAY */
+  ErrorLog_Write("ble_mgr: 2 s settle delay done");
 
   /* get the BlueNRG HW and FW versions */
   get_blue_nrg_version(&hw_version, &fw_version);
+  ErrorLog_Write("ble_mgr: get_blue_nrg_version done");
 
   /* we will let the BLE chip to use its Random MAC address */
 #define CONFIG_DATA_RANDOM_ADDRESS          (0x80) /**< Stored static random address. Read-only. */

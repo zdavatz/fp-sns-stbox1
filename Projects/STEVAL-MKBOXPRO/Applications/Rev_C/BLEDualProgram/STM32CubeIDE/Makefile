@@ -1,0 +1,231 @@
+# Makefile for BLEDualProgram - STEVAL-MKBOXPRO Rev_C
+# Generated for arm-none-eabi-gcc command-line build
+# Cloned from SDDataLogFileX/STM32CubeIDE/Makefile (azure-rtos / filex deps stripped)
+
+ROOT = ../../../../../..
+-include $(ROOT)/config.mk
+TOOLCHAIN ?= $(HOME)/.software/arm-gnu-toolchain/bin
+PREFIX = $(TOOLCHAIN)/arm-none-eabi-
+CC = $(PREFIX)gcc
+AS = $(PREFIX)gcc -x assembler-with-cpp
+CP = $(PREFIX)objcopy
+SZ = $(PREFIX)size
+APP = ..
+
+CPU = -mcpu=cortex-m33 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard
+
+DEFS = \
+  -DUSE_HAL_DRIVER \
+  -DSTM32U585xx
+
+ASM_DEFS =
+
+INCLUDES = \
+  -I$(APP)/Inc \
+  -I$(ROOT)/Drivers/STM32U5xx_HAL_Driver/Inc \
+  -I$(ROOT)/Drivers/STM32U5xx_HAL_Driver/Inc/Legacy \
+  -I$(ROOT)/Drivers/CMSIS/Device/ST/STM32U5xx/Include \
+  -I$(ROOT)/Drivers/CMSIS/Include \
+  -I$(ROOT)/Drivers/BSP/SensorTileBoxPro \
+  -I$(ROOT)/Drivers/BSP/Components/Common \
+  -I$(ROOT)/Drivers/BSP/Components/lis2du12 \
+  -I$(ROOT)/Drivers/BSP/Components/lis2mdl \
+  -I$(ROOT)/Drivers/BSP/Components/lps22df \
+  -I$(ROOT)/Drivers/BSP/Components/lsm6dsv16x \
+  -I$(ROOT)/Drivers/BSP/Components/stts22h \
+  -I$(ROOT)/Drivers/BSP/Components/stc3115 \
+  -I$(ROOT)/Drivers/BSP/Components/ST25DV \
+  -I$(ROOT)/Drivers/BSP/Components/st25dvxxkc \
+  -I$(ROOT)/Middlewares/ST/STM32_BLE_Manager/Inc \
+  -I$(ROOT)/Middlewares/ST/STM32WB07_06/utils \
+  -I$(ROOT)/Middlewares/ST/STM32WB07_06/includes \
+  -I$(ROOT)/Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic \
+  -I$(ROOT)/Middlewares/ST/lib_nfc/Common/inc \
+  -I$(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/inc \
+  -I$(ROOT)/Middlewares/Third_Party/parson \
+  -I$(ROOT)/Middlewares/ST/threadx/common/inc \
+  -I$(ROOT)/Middlewares/ST/threadx/ports/cortex_m33/gnu/inc
+
+CFLAGS = $(CPU) $(DEFS) $(INCLUDES) -O2 -Wall -Wno-format -fdata-sections -ffunction-sections -g3
+
+LDSCRIPT = STM32U585AIIXQ_FLASH.ld
+LDFLAGS = $(CPU) -T$(LDSCRIPT) -Wl,--gc-sections -lm -lc --specs=nosys.specs --specs=nano.specs -u _printf_float -Wl,-Map=build/BLEDualProgram.map
+
+BUILD_DIR = build
+TARGET = BLEDualProgram
+
+# Application source files (from .project linkedResources)
+C_SOURCES = \
+  $(APP)/Src/main.c \
+  $(APP)/Src/app_bledualprogram.c \
+  $(APP)/Src/ble_function.c \
+  $(APP)/Src/ble_implementation.c \
+  $(APP)/Src/hci_tl_interface.c \
+  $(APP)/Src/lib_NDEF_config.c \
+  $(APP)/Src/ota.c \
+  $(APP)/Src/steval_mkboxpro.c \
+  $(APP)/Src/steval_mkboxpro_bus.c \
+  $(APP)/Src/stm32u5xx_hal_msp.c \
+  $(APP)/Src/stm32u5xx_it.c \
+  $(APP)/Src/system_stm32u5xx.c \
+  Application/User/syscalls.c \
+  Application/User/sysmem.c \
+  Application/User/threadx_shim.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_cortex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_crc.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_crc_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_dma.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_dma_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_exti.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_gpio.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_gtzc.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_i2c.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_i2c_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_icache.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mdf.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mmc.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_mmc_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_pcd.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_pcd_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_pwr.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_pwr_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rcc.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rcc_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rng.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rng_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rtc.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rtc_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sai.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sai_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sd.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_sd_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_spi.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_spi_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_tim.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_tim_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_uart.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_uart_ex.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_ll_dlyb.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_ll_sdmmc.c \
+  $(ROOT)/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_ll_usb.c \
+  $(ROOT)/Drivers/BSP/Components/stc3115/STC3115_Driver.c \
+  $(ROOT)/Drivers/BSP/Components/lis2du12/lis2du12.c \
+  $(ROOT)/Drivers/BSP/Components/lis2du12/lis2du12_reg.c \
+  $(ROOT)/Drivers/BSP/Components/lis2mdl/lis2mdl.c \
+  $(ROOT)/Drivers/BSP/Components/lis2mdl/lis2mdl_reg.c \
+  $(ROOT)/Drivers/BSP/Components/lps22df/lps22df.c \
+  $(ROOT)/Drivers/BSP/Components/lps22df/lps22df_reg.c \
+  $(ROOT)/Drivers/BSP/Components/lsm6dsv16x/lsm6dsv16x.c \
+  $(ROOT)/Drivers/BSP/Components/lsm6dsv16x/lsm6dsv16x_reg.c \
+  $(ROOT)/Drivers/BSP/Components/ST25DV/st25dv.c \
+  $(ROOT)/Drivers/BSP/Components/ST25DV/st25dv_reg.c \
+  $(ROOT)/Drivers/BSP/Components/st25dvxxkc/st25dvxxkc.c \
+  $(ROOT)/Drivers/BSP/Components/st25dvxxkc/st25dvxxkc_reg.c \
+  $(ROOT)/Drivers/BSP/Components/stts22h/stts22h.c \
+  $(ROOT)/Drivers/BSP/Components/stts22h/stts22h_reg.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_audio.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_env_sensors.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_env_sensors_ex.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_gg.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_motion_sensors.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_motion_sensors_ex.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_nfctag.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_nfctag_ex.c \
+  $(ROOT)/Drivers/BSP/SensorTileBoxPro/SensorTileBoxPro_sd.c \
+  $(ROOT)/Middlewares/Third_Party/parson/parson.c \
+  $(ROOT)/Middlewares/ST/STM32_BLE_Manager/Src/ble_manager.c \
+  $(ROOT)/Middlewares/ST/STM32_BLE_Manager/Src/ble_environmental.c \
+  $(ROOT)/Middlewares/ST/STM32_BLE_Manager/Src/ble_inertial.c \
+  $(ROOT)/Middlewares/ST/STM32_BLE_Manager/Src/ble_sensor_fusion.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/utils/ble_list.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic/hci_tl.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/stm32wb07_06_dev_config.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/stm32wb07_06_events.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/stm32wb07_06_events_cb.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/stm32wb07_06_hci_le.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/controller/stm32wb07_06_gap_aci.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/controller/stm32wb07_06_gatt_aci.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/controller/stm32wb07_06_hal_aci.c \
+  $(ROOT)/Middlewares/ST/STM32WB07_06/hci/controller/stm32wb07_06_l2cap_aci.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_AAR.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_Bluetooth.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_Email.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_Geo.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_Handover.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_MyApp.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_SMS.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_Text.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_URI.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_Vcard.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_NDEF_Wifi.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/lib_wrapper.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/tagtype3_wrapper.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/tagtype4_wrapper.c \
+  $(ROOT)/Middlewares/ST/lib_nfc/lib_NDEF/Core/src/tagtype5_wrapper.c
+
+# Assembly sources (.s lowercase = GNU as, .S uppercase = GNU as with cpp)
+ASM_SOURCES = \
+  Application/Startup/startup_stm32u585aiixq.s
+
+ASM_SOURCES_S =
+
+# Object files
+OBJECTS = $(addprefix $(BUILD_DIR)/,$(notdir $(C_SOURCES:.c=.o)))
+OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES:.s=.o)))
+OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES_S:.S=.o)))
+vpath %.c $(sort $(dir $(C_SOURCES)))
+vpath %.s $(sort $(dir $(ASM_SOURCES)))
+vpath %.S $(sort $(dir $(ASM_SOURCES_S)))
+
+all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/firmware.bin
+
+# Explicit rule for lib_NDEF_config.o so vpath can't pick the
+# Middlewares/ST/lib_nfc/lib_NDEF/Core/src/ default (which #includes a
+# different board's nfc04a1_nfctag.h). The .project pulls the override
+# from $(APP)/Src/lib_NDEF_config.c.
+$(BUILD_DIR)/lib_NDEF_config.o: $(APP)/Src/lib_NDEF_config.c | $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+# Explicit rule for hci_tl_interface.o that strips `static` from
+# is_data_available — the ThreadX-branch hci_tl.c (Middlewares,
+# uncommitted working-tree mod) emits `extern int32_t is_data_available`
+# and calls it from outside the TU. BLEDualProgram declares the function
+# `static` in its own hci_tl_interface.c, so without this rewrite the link
+# fails with "undefined reference to is_data_available". -Dstatic= scopes
+# the define to this one TU so other static symbols in the BLEDualProgram
+# tree aren't affected.
+$(BUILD_DIR)/hci_tl_interface.o: $(APP)/Src/hci_tl_interface.c | $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) -Dstatic= $< -o $@
+
+$(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
+	$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: %.s | $(BUILD_DIR)
+	$(AS) -c $(CPU) $(ASM_DEFS) -g3 $< -o $@
+
+$(BUILD_DIR)/%.o: %.S | $(BUILD_DIR)
+	$(AS) -c $(CPU) $(ASM_DEFS) -g3 $< -o $@
+
+$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS)
+	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
+	$(SZ) $@
+
+$(BUILD_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf
+	$(CP) -O binary $< $@
+
+# Copy also as firmware.bin so it can be dropped onto the SD card
+# as-is — the SD-flash code looks for exactly that name.
+$(BUILD_DIR)/firmware.bin: $(BUILD_DIR)/$(TARGET).bin
+	cp $< $@
+
+$(BUILD_DIR):
+	mkdir -p $@
+
+clean:
+	rm -rf $(BUILD_DIR)
+
+.PHONY: all clean
