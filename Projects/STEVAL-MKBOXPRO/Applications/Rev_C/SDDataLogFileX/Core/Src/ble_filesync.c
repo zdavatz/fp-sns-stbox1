@@ -38,6 +38,7 @@ extern FX_MEDIA sdio_disk;
 #define OP_READ       0x02
 #define OP_DELETE     0x03
 #define OP_STOP_LOG   0x04
+#define OP_START_LOG  0x05  /* + 4-byte LE duration in seconds (issue #14) */
 
 /* ---------- Status bytes returned over FileData --------------------------- */
 /* For DELETE / STOP_LOG the box answers with a single status byte so the
@@ -193,6 +194,37 @@ static void write_request_filecmd(void *ble_char_pointer, uint16_t attr_handle, 
          (sizes will stop growing) or by waiting and re-sending READ. */
       Ble_RequestStopLog();
       break;
+
+    case OP_START_LOG:
+    {
+      /* Issue #14 mode-switch: iPhone GUI sends START_LOG + 4-byte
+       * little-endian duration in seconds. Box writes BKP1R = LOG
+       * magic + BKP2R = duration, then NVIC_SystemReset → boots into
+       * LOG mode → fx_thread auto-starts logging → fx_thread monitors
+       * elapsed time → reboots back to BLE mode at expiry.
+       *
+       * We do all the BKP work synchronously here in the FileCmd
+       * write callback. By the time NVIC_SystemReset fires the host
+       * will have torn down the BLE connection — fine, since we're
+       * about to reboot anyway. No FileData response needed. */
+      if (data_length < 5) { state = ST_RESPOND_BADREQ; break; }
+      uint32_t duration = ((uint32_t)att_data[1])
+                        | ((uint32_t)att_data[2] << 8)
+                        | ((uint32_t)att_data[3] << 16)
+                        | ((uint32_t)att_data[4] << 24);
+      if (duration == 0U || duration > 86400U) {  /* sanity: 1s..1day */
+        state = ST_RESPOND_BADREQ;
+        break;
+      }
+      /* Backup-domain write access already enabled in main.c at boot. */
+      TAMP->BKP1R = 0x4C4F4720U;  /* 'LOG ' magic */
+      TAMP->BKP2R = duration;
+      __DSB();
+      /* No reply, no graceful BLE teardown — just reset. The reboot
+       * itself disconnects the host cleanly. */
+      NVIC_SystemReset();
+      for (;;) { }  /* unreachable */
+    }
 
     default:
       state = ST_RESPOND_BADREQ;

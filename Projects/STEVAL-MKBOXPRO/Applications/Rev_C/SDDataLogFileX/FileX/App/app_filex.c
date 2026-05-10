@@ -1113,6 +1113,32 @@ static void fx_thread_entry(ULONG thread_input)
 
         case COMMAND_SAVE_SENSORS:
         {
+          /* Mode-switch (issue #14, 2026-05-10): in LOG mode, watch
+           * for duration expiry. tx_time_get() returns ticks (10 ms
+           * each). g_log_duration_seconds is what the iPhone app sent
+           * via START command before reboot. When elapsed >= duration,
+           * close everything cleanly + reboot back to BLE mode. */
+          if (g_app_mode == APP_MODE_LOG && g_log_duration_seconds > 0U)
+          {
+            uint32_t elapsed_seconds = tx_time_get() / 100U;
+            if (elapsed_seconds >= g_log_duration_seconds)
+            {
+              ErrorLog_Write("mode: LOG duration expired - flushing + reboot to BLE");
+              ErrorLog_Flush();
+              if (SensorsFileOpen)  { (void)fx_file_close(&SensorsFxFile); SensorsFileOpen = 0; }
+              if (GpsFileOpen)      { (void)fx_file_close(&GpsFxFile);     GpsFileOpen = 0; }
+              if (BatteryFileOpen)  { (void)fx_file_close(&BatteryFxFile); BatteryFileOpen = 0; }
+              (void)fx_media_flush(&sdio_disk);
+              (void)fx_media_close(&sdio_disk);
+              /* Clear next-boot mode → defaults to BLE on reboot. */
+              TAMP->BKP1R = 0U;
+              TAMP->BKP2R = 0U;
+              __DSB();
+              NVIC_SystemReset();
+              for (;;) { }  /* unreachable */
+            }
+          }
+
           if (SensorsFileOpen)
           {
             CHAR data_s[256];
@@ -2112,7 +2138,13 @@ static void read_thread_entry(ULONG thread_input)
   MessageData_t *Msg;
   INT LogCommandType = COMMAND_STOP_LOG;
 
-  /* Auto-start logging on power-on */
+  /* Auto-start logging on power-on — only in LOG mode (issue #14
+   * mode-switch design). In BLE mode the box sits idle in BLE
+   * advertising, fx_thread waits for nothing, and the user starts
+   * logging via the iPhone app's START command (which writes
+   * BKP1R=LOG_MAGIC + duration → reboots → comes back here in LOG
+   * mode → auto-start fires). */
+  if (g_app_mode == APP_MODE_LOG)
   {
     Msg = (MessageData_t *)SensorBufferWritingPointer;
     SensorBufferWritingPointer += sizeof(MessageData_t);
@@ -2126,7 +2158,13 @@ static void read_thread_entry(ULONG thread_input)
       Error_Handler(__FILE__, __LINE__);
     }
     MessagePushed++;
-    STBOX1_PRINTF("Auto-start SD logging\r\n");
+    STBOX1_PRINTF("Auto-start SD logging (LOG mode)\r\n");
+    ErrorLog_Write("mode: LOG — autostart logging");
+  }
+  else
+  {
+    STBOX1_PRINTF("BLE mode — logger idle, waiting for START command\r\n");
+    ErrorLog_Write("mode: BLE — logger idle, advertising");
   }
 
   while (1)

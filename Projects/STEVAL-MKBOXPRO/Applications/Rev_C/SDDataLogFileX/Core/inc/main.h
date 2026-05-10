@@ -61,6 +61,21 @@ extern unsigned int ErrorLog_Flush(void);
 extern void ErrorLog_Close(void);
 extern void DiagBlinkRed(uint8_t n);
 
+/* Mode-switch (issue #14, 2026-05-10). Each mode runs ST's reference
+ * design exactly — never concurrent. Boot picks one based on TAMP
+ * backup register. fx_thread + ble_sync_thread read this and adjust
+ * behaviour: in LOG mode, ble_sync parks; in BLE mode, fx_thread
+ * doesn't open SD media for periodic writing. State transitions are
+ * via NVIC_SystemReset (BLE thread sets BKP1R=LOG magic + duration
+ * → reboot; fx_thread on duration expiry clears BKP1R + reboot back
+ * to BLE). */
+typedef enum {
+  APP_MODE_BLE = 0,  /* default — advertising, no logging */
+  APP_MODE_LOG = 1,  /* logger active, BLE off */
+} app_mode_t;
+extern volatile app_mode_t g_app_mode;
+extern volatile uint32_t   g_log_duration_seconds;  /* set by BLE thread, read by fx_thread */
+
 /* v57: post-mortem fault info, populated by ARM fault handlers in
    stm32u5xx_it.c and read by ErrorLog_Open after reset. Lives in
    .noinit section so it survives warm reset. */

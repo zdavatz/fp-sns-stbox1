@@ -92,6 +92,12 @@
    session" from "we crashed" — the 53s-abort signature we couldn't tell
    apart before. */
 uint32_t BootResetCsr;
+
+/* Mode-switch (issue #14, 2026-05-10). g_app_mode is set very early in
+ * main() from the TAMP backup register and read by fx_thread + ble_sync
+ * to decide what to do. */
+volatile app_mode_t g_app_mode = APP_MODE_BLE;
+volatile uint32_t g_log_duration_seconds = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -140,6 +146,37 @@ int main(void)
       __set_MSP(*(volatile uint32_t *) 0x0BF90000U);
       ((void (*)(void))(*(volatile uint32_t *) (0x0BF90000U + 4U)))();
       for (;;) { }  /* unreachable */
+    }
+  }
+
+  /* Mode-switch boot detection (issue #14, 2026-05-10).
+   *
+   * BKP1R = next-boot-mode magic
+   *   0x4C4F4720 ('LOG ') = boot into LOG mode (logger active, no BLE).
+   *   anything else       = boot into BLE mode (advertising, no logger).
+   *
+   * BKP2R = duration-seconds for the LOG session (set by BLE thread on
+   *         START command from iPhone, consumed by fx_thread which
+   *         self-terminates and reboots back to BLE mode at expiry).
+   *
+   * Default at first boot (cold reset, both BKP regs == 0) = BLE mode,
+   * since BKP1R != LOG magic.
+   *
+   * Mode persistence: BKP registers survive system reset (NVIC_SystemReset
+   * doesn't clear them) but are reset by Vbat loss (cold power-cycle).
+   * Cold power-cycle → BLE mode by default — clean restart UX.
+   */
+#define BKP_MAGIC_LOG_MODE  0x4C4F4720U  /* 'LOG ' */
+  {
+    uint32_t mode = TAMP->BKP1R;
+    if (mode == BKP_MAGIC_LOG_MODE) {
+      g_app_mode = APP_MODE_LOG;
+      g_log_duration_seconds = TAMP->BKP2R;
+      /* Clear next-boot mode so a crash mid-session goes back to BLE on
+       * next boot (avoids infinite log loop if logger crashes). */
+      TAMP->BKP1R = 0U;
+    } else {
+      g_app_mode = APP_MODE_BLE;
     }
   }
   /* USER CODE END 1 */
