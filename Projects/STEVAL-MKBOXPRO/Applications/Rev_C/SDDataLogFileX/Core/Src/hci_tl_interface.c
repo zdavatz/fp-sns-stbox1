@@ -116,22 +116,32 @@ int32_t hci_tl_spi_reset(void)
   ErrorLog_Write("spi_reset: post-sleep-2 (chip settled)");
   ErrorLog_Flush();
 
-  /* Clear any pending EXTI11 latched while masked. KEEP EXTI11 NVIC
-   * MASKED throughout the entire BLE init sequence (probe + bluetooth_init).
-   * Issue #12 / 2026-05-10: re-enabling EXTI11 NVIC while chip's IRQ
-   * pin is HIGH (boot-pending events) wedges SDMMC's transfer-complete
-   * IRQ servicing — fx_media_flush hangs. Even priority 15 doesn't
-   * help. Solution: no enable_irq during init. The BLE thread arms
-   * EXTI11 ONCE after bluetooth_init returns successfully (in
-   * init_ble_int_for_blue_nrglp). All SPI traffic during init runs
-   * with EXTI11 masked. The middleware polls for chip responses
-   * (is_data_available) so it doesn't need ISR-driven notification
-   * during init. */
+  /* Clear pending EXTI bits (latched while NVIC was masked during the
+   * 150 ms reset window), then re-enable + drain any chip boot events.
+   *
+   * Issue #15 mode-switch architecture: in BLE mode (where this runs)
+   * fx_thread is idle (logger doesn't auto-start), SDMMC is quiet, so
+   * the issue #12 BLE+SDMMC concurrency conflict simply doesn't arise.
+   * EXTI11 NVIC enable is safe.
+   *
+   * Without the drain (Peter's v35 hypothesis fix): chip raised IRQ
+   * during reset → boot-ready event with pending bytes → EXTI11 was
+   * masked, no edge fired → after re-enable, line is already HIGH so
+   * rising-edge trigger never fires → middleware's hci_send_req never
+   * sees the response → bluetooth_init hangs. Force-drain manually so
+   * the chip's IRQ pin drops LOW; future events then fire clean
+   * rising edges. */
+  /* Issue #15 final approach: NO drain in spi_reset, NO NVIC enable.
+   * EXTI11 stays masked through entire BLE init. Middleware's polling
+   * via hci_send_req's rx_queue is fed by post-send drain in
+   * hci_tl_spi_send (where pool is initialized — hci_init runs BEFORE
+   * any spi_send). hci_tl_spi_reset itself runs from inside hci_init
+   * (after pool init but before any HCI command), so we COULD drain
+   * here via hci_notify_asynch_evt — but it's not actually needed if
+   * spi_send drains its own response. Skip for simplicity. */
   __HAL_GPIO_EXTI_CLEAR_IT(HCI_TL_SPI_EXTI_PIN);
   HAL_NVIC_ClearPendingIRQ(HCI_TL_SPI_EXTI_IRQ_N);
-  ErrorLog_Write("spi_reset: exti cleared (NVIC stays masked through init)");
-  ErrorLog_Flush();
-  ErrorLog_Write("spi_reset: returning");
+  ErrorLog_Write("spi_reset: returning (NVIC stays masked through init)");
   return 0;
 }
 
@@ -278,19 +288,27 @@ int32_t hci_tl_spi_send(uint8_t *buffer, uint16_t size)
      * a separate top-level wallclock cap. */
   } while (result < 0);
 
-  /* Short sleep — chip's IRQ drops within microseconds normally. Was
-   * a 1 s busy-wait on TIMEOUT_IRQ_HIGH which starved USB-CDC service
-   * thread for the full timeout when the chip didn't actually need a
-   * wait. Replaced with 20 ms tx_thread_sleep yield (Peter's v35). */
+  /* Issue #15 / 2026-05-10: re-enable EXTI11 NVIC FIRST (before the
+   * settle sleep). Chip's response often arrives within microseconds
+   * of payload xfer — if NVIC is still masked when the rising edge
+   * happens, EXTI->PR1 latches but the level-based "still high"
+   * doesn't re-trigger after enable. Enabling first means NVIC is
+   * armed as soon as the chip raises IRQ for the response. Then we
+   * yield for 20 ms so the ISR has a chance to fire and populate
+   * rx_queue before hci_send_req's busy-wait starts polling. */
+  hci_tl_spi_enable_irq();
   tx_thread_sleep(2);
 
-  /* Issue #14 / 2026-05-10: re-enable EXTI11 NVIC after each spi_send
-   * to match BLEDualProgram's pattern. Without re-enable, EXTI11
-   * stays disabled after the first send → no more chip events fire
-   * the ISR → middleware's hci_send_req busy-waits forever on empty
-   * rx_queue. Safe during init (fx_thread suspended, SDMMC1 IRQ
-   * masked); harmless post-init since BLE events are infrequent. */
-  hci_tl_spi_enable_irq();
+  /* Drain any chip events that ISR didn't pick up yet (defensive —
+   * with EXTI11 enabled before the sleep, ISR should have fired, but
+   * if for some reason the chip's IRQ pin is still HIGH we manually
+   * pull events into rx_queue here). */
+  extern int32_t hci_notify_asynch_evt(void *pdata);
+  int post_drain = 0;
+  while (is_data_available() && post_drain < 8) {
+    hci_notify_asynch_evt(NULL);
+    post_drain++;
+  }
   return result;
 }
 

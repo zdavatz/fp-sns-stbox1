@@ -99,7 +99,7 @@ Each application:
 - `STBOX1_UPDATE_ENV` / `STBOX1_UPDATE_INV` — sensor polling intervals (timer ticks).
 - `STBOX1_LOG_AUDIO` (SDDataLogFileX) — gates `BSP_AUDIO_IN_*` calls and `.wav` files. Default `0`. Set to `1` only on unmodified hardware; on the 3.3V-modded board `BSP_AUDIO_IN_Init` blocks indefinitely.
 - `STBOX1_LOG_BATTERY` (SDDataLogFileX) — gates the STC3115 fuel-gauge path and `BatNNN.csv`. Default `1`. I²C failure is non-fatal — writes a marker to the error log and skips battery logging for the rest of the boot.
-- `STBOX1_ENABLE_BLE_SYNC` (SDDataLogFileX) — gates BLE FileSync (advertising + GATT + ThreadX BLE thread). **Default `0`** because adding the BLE manager dependency chain breaks `fx_media_flush` on the SD logger via a link-time memory layout interaction (root cause unidentified). When `1`: `BleSync_ThreadX_Init()` is a no-op returning `TX_SUCCESS`. Cost when on: +28 KB flash, +4.5 KB BSS.
+- `STBOX1_ENABLE_BLE_SYNC` (SDDataLogFileX) — gates BLE FileSync (advertising + GATT + ThreadX BLE thread). **Default `0`** because adding the BLE manager dependency chain breaks `fx_media_flush` on the SD logger via a link-time memory layout interaction (root cause unidentified). When `1`: `BleSync_ThreadX_Init()` is a no-op returning `TX_SUCCESS`. Cost when on: +28 KB flash, +4.5 KB BSS. **Issue #15 (2026-05-10):** mode-switch architecture in progress — boot picks BLE-only or LOG-only mode via TAMP backup register, the two never run concurrently to avoid the SDMMC/EXTI11-NVIC conflict (issue #12). BLE init still hangs at hci_reset response despite multiple drain strategies; latest experiment keeps EXTI11 NVIC masked through entire init and feeds `hci_send_req`'s rx_queue via post-send `hci_notify_asynch_evt` polling drain in `hci_tl_spi_send`. See issue #15 and the "BLE bring-up" section.
 - `STBOX1_ENABLE_WLC` (SDDataLogFileX) — BlueNRG-LP OTP programmer (reverse-engineered from ST firmware). Default `0`, **untested on real hardware**, no call site wired in. The flag-off compile is byte-identical to a build without the file.
 - `STBOX1_ENABLE_USB_CDC` (SDDataLogFileX) — USB CDC ACM virtual COM port over USB-C. Default `0`. When `1`, brings up OTG_FS via TinyUSB and routes `printf` / `STBOX1_PRINTF` over USB. Build with `make USB_CDC_ENABLED=1` (Makefile flag overrides the header default and pulls in the vendored TinyUSB stack). Cost when on: +15 KB flash, +5 KB BSS. **macOS Sequoia 15+ does NOT expose `/dev/tty.usbmodem*` for our descriptor** (kernel CDC driver `AppleUSBCDCCompositeDevice` partial-attaches in `IOMatchDefer = Yes` state and never registers; libusb can't claim the bulk endpoint either, even as root). Use a Linux box for live debug — `cdc_acm` attaches cleanly and `cat /dev/ttyACM0` streams the heartbeat. See "USB CDC ACM debug console" section below.
 
@@ -142,6 +142,28 @@ Things that have been changed from CubeMX defaults and **must stay set**:
 - **Two-stage chip-alive probe** in `Core/Src/ble_sync.c::ble_chip_alive_probe()` before `bluetooth_init()`: (1) `hci_tl_spi_send(HCI_Reset)` returns 0 within 15 ms, (2) chip raises IRQ within 500 ms with Command Complete. Bounded worst case ~670 ms. A SPI-ACK-only probe isn't enough — half-dead BlueNRG-LP can ACK SPI bytes but hang inside `init_ble_manager`.
 - **2-second `HAL_Delay(2000)` between probe and `bluetooth_init()`** — mirrors ST's production pattern (decompiled `FUN_08031468`). BlueNRG-LP needs this gap after HCI Reset for RF subsystem bring-up.
 - `g_ble_probe_status` codes (consumed by `app_filex.c::COMMAND_SAVE_SENSORS` periodic logger): 0xF0=thread entered, 0xF1=in probe, 0xF2=in `bluetooth_init`, 0xF3=transient, 0xF4=in `init_ble_int_for_blue_nrglp`, 0=probe failed, 1=advertising, 2=init failed, 0xFF=pending.
+
+#### Issue #15 mode-switch architecture (2026-05-10, work in progress)
+
+In response to issue #12 (BLE EXTI11 NVIC enable wedges SDMMC, even at priority 14/15), BLE and SDMMC are now structured to never run concurrently:
+
+1. Boot → BLE mode by default, advertising as `STBoxFs`. Logger does not auto-start. fx_thread idle on `MessageQueue` receive.
+2. iPhone connects, sees `STBoxFs`. App can list / read / delete existing SD files via `OP_LIST` / `OP_READ` / `OP_DELETE`.
+3. App writes `OP_START_LOG` (`0x05`) + 4 LE bytes duration → box stores `BKP1R = 0x4C4F4720` ("LOG ") + `BKP2R = duration` then `NVIC_SystemReset`.
+4. After reset main.c reads BKP1R; if magic, sets `g_app_mode = APP_MODE_LOG` + `g_log_duration_seconds` from BKP2R, clears BKP1R. fx_thread sees LOG mode, opens files, runs ST's reference logger. ble_sync_thread parks.
+5. fx_thread monitors `tx_time_get()/100 >= g_log_duration_seconds` per `COMMAND_SAVE_SENSORS` tick. On expiry: closes files, flushes, `fx_media_close`, clears BKP1R/BKP2R, `NVIC_SystemReset`.
+6. Reboot lands back in BLE mode. iPhone reconnects, downloads new files.
+
+Wire-up:
+- `Core/inc/main.h` — `app_mode_t` enum, `g_app_mode` / `g_log_duration_seconds`.
+- `Core/Src/main.c` — TAMP read at boot, sets globals, clears magic.
+- `Core/Src/ble_filesync.c` — `OP_START_LOG` handler.
+- `FileX/App/app_filex.c::read_thread_entry` — auto-`COMMAND_START_LOG` gated on `g_app_mode == APP_MODE_LOG`; expiry path in `COMMAND_SAVE_SENSORS`.
+- `Utilities/rust/stbox-viz-gui/src/{ble.rs,main.rs}` — `BleCmd::StartLog{duration_seconds}`, "Start session" button + DragValue.
+
+Open: BLE init still hangs at `hci_reset` response despite the SDMMC concern being structurally resolved (no concurrent fx_thread). v218 (current uncommitted state) keeps EXTI11 NVIC masked through `init_ble_int_for_blue_nrglp` and `spi_reset`; first `spi_send` enables NVIC + sleeps 20 ms + defensively drains via `hci_notify_asynch_evt`. Latest live trace stops at `spi_send: payload xfer rc=0` for HCI Reset — chip's response not landing in rx_queue. Tracked in issue #15.
+
+Diagnostic globals: `g_ble_init_skip_fx` flag avoids ErrorLog → fx_media_flush deadlock when fx_thread is suspended (USB CDC mirror still emits log lines). Mode-switch state survives via `TAMP->BKP1R` (LOG magic) + `TAMP->BKP2R` (duration in seconds) + `TAMP->BKP0R` (DFU magic — unrelated, see "Software DFU loop" below).
 
 ### LIS2MDL magnetometer (`Drivers/BSP/Components/lis2mdl/lis2mdl.c` Init)
 Three additions for drift reduction:
