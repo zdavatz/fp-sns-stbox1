@@ -289,21 +289,12 @@ void hci_tl_lowlevel_init(void)
 
 void hci_tl_lowlevel_isr(void)
 {
-  /* Bound the drain loop. If the BlueNRG IRQ pin is stuck high (chip in a
-     bad state, or it never boots cleanly), the original `while
-     (is_data_available())` spins forever inside the ISR — at the original
-     NVIC priority 0 that preempted SDMMC + SysTick + everything, and
-     fx_thread could never resume mid-write. Caps the loop to 16 events
-     per IRQ; if the line is still high after that, we just exit and the
-     next pending edge will re-fire the handler at its (now lowered)
-     priority, giving the rest of the system a chance to run. */
-  for (uint8_t i = 0; i < 16U; i++) {
-    if (!is_data_available()) {
-      break;
-    }
-    if (hci_notify_asynch_evt(NULL)) {
-      return;
-    }
-  }
+  /* Issue #14 / 2026-05-10: SUPER-THIN ISR. Just set the event flag
+   * and exit. Drain happens in thread context (in BLE thread's main
+   * loop, or in middleware's hci_send_req which polls hci_event).
+   * Earlier full-drain ISR (16-event loop with SPI traffic + 1 ms
+   * busy-wait) ran for milliseconds in IRQ context, blocking SDMMC1
+   * transfer-complete IRQ → fx_media_flush hangs. Microsecond-long
+   * ISR keeps SDMMC IRQ-service latency negligible. */
   hci_event = 1;
 }

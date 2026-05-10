@@ -36,3 +36,9 @@ whatsapp/package-lock.json
 # Rust workspace build artefacts
 Utilities/rust/target/
 Utilities/rust/*/target/
+
+# ST-distributed binaries — pull from st.com when needed (see CLAUDE.md
+# "BlueNRG-LP OTP / WLC" + README "First-time BlueNRG-LP OTP setup").
+# Not in our repo for license + bulk reasons.
+SensorTile.boxPRO.bin
+SensorTile.box*.bin
