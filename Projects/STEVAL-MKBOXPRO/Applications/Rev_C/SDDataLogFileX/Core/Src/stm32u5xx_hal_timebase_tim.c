@@ -45,8 +45,16 @@ HAL_StatusTypeDef HAL_InitTick(uint32_t TickPriority)
   uint32_t              uwTimclock = 0;
   uint32_t              uwPrescalerValue = 0;
   uint32_t              pFLatency;
-  /*Configure the TIM6 IRQ priority */
-  HAL_NVIC_SetPriority(TIM6_IRQn, TickPriority ,0);
+  /*Configure the TIM6 IRQ priority. Override the HAL default (15, the
+     lowest) — must be HIGHER (numerically lower) than EXTI11 (14, BLE
+     chip IRQ) and SDMMC1 (14) so TIM6 can preempt those ISRs and keep
+     HAL_GetTick advancing. Without this, any HAL_GetTick-based timeout
+     called from within those ISRs (e.g. hci_tl_spi_receive in the BLE
+     bring-up path) hangs forever, because the tick source is masked.
+     Stays below UART4 (6) so GPS line assembly isn't preempted by the
+     ~50 ns tick increment. */
+  (void)TickPriority;
+  HAL_NVIC_SetPriority(TIM6_IRQn, 13, 0);
 
   /* Enable the TIM6 global Interrupt */
   HAL_NVIC_EnableIRQ(TIM6_IRQn);

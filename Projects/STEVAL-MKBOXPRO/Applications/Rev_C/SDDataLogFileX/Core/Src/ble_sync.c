@@ -35,29 +35,43 @@ static void ble_sync_thread_entry(ULONG arg)
 {
   (void)arg;
 
+  /* Diagnostic: delay BLE init by 5 s so fx_thread can complete
+     fx_media_open + WriteFwInfoFile + first sensor flush before any
+     BLE/SPI traffic hits the bus. */
+  tx_thread_sleep(500);   /* 500 ticks = 5 s @ 10 ms/tick */
+  ErrorLog_Write("ble: thread woke after 5 s sleep, calling bluetooth_init");
+
   /* Brings up the SPI-1/HCI link, registers GAP, sets the random address,
      and starts advertising as STBoxSync. set_board_name() is called from
-     within init_ble_manager(). Non-zero return = the BlueNRG-LP didn't
-     answer the HCI handshake — most likely the chip is in a bad power
-     state. We must NOT arm the EXTI in that case: a stuck-high IRQ line
-     would otherwise storm the NVIC indefinitely and starve fx_thread
-     mid-write (the symptom Peter sees as "10 s logging then frozen
-     green LED, BLE never advertises"). */
+     within init_ble_manager(). */
+  uint32_t t0 = tx_time_get();
   uint8_t init_rc = bluetooth_init();
+  uint32_t dt = tx_time_get() - t0;
+  {
+    char m[64];
+    sprintf(m, "ble: bluetooth_init returned rc=%u in %lu ms",
+            (unsigned)init_rc, (unsigned long)(dt * 10U));
+    ErrorLog_Write(m);
+  }
   if (init_rc != 0U)
   {
-    char m[48];
-    sprintf(m, "ble: init FAIL rc=%u - thread bailing", (unsigned)init_rc);
-    ErrorLog_Write(m);
-    /* Park the thread so it never rearms the IRQ. fx_thread continues
-       writing the log untouched. */
+    ErrorLog_Write("ble: init FAIL - thread parking, fx_thread keeps logging");
     for (;;) { tx_thread_sleep(1000); }
   }
-  ErrorLog_Write("ble: init ok - arming EXTI11 at NVIC prio 14");
+  ErrorLog_Write("ble: init ok - re-arming EXTI11 (factory pattern)");
 
-  /* Hook EXTI11 → hci_tl_lowlevel_isr — this is what flips `hci_event`
-     from the NVIC when the BlueNRG-LP raises its IRQ line. */
+  /* Match factory firmware (FUN_08031468 from Ghidra analysis): EXTI11
+     IRQ stays armed BEFORE hci_init/hci_reset and through normal
+     operation. Our middleware's init_ble_manager_ble_stack() armed it
+     during init, but our hci_tl_spi_send/receive disabled it for the
+     transaction duration. Re-arm now so post-init async events from the
+     chip (advertising state changes, connection events, etc.) get
+     processed by the ISR — without this, the chip may not radiate even
+     though the local advertising commands return SUCCESS. */
   init_ble_int_for_blue_nrglp();
+
+  extern uint8_t set_connectable;
+  extern void set_connectable_ble(void);
 
   for (;;)
   {
@@ -66,12 +80,13 @@ static void ble_sync_thread_entry(ULONG arg)
       hci_event = 0;
       hci_user_evt_proc();
     }
-    /* Drives the LIST state machine — kept out of the HCI callback so
-       FileX directory walks don't block the event pump. */
+    if (set_connectable)
+    {
+      set_connectable_ble();
+      set_connectable = 0U;
+      ErrorLog_Write("ble: advertising started");
+    }
     BleFileSync_Tick();
-    /* 10 ms is roughly one ThreadX tick — short enough that connection-
-       interval timing isn't disturbed, long enough that an idle BLE link
-       doesn't burn CPU against the FileX writer. */
     tx_thread_sleep(1);
   }
 }

@@ -42,7 +42,17 @@ void HAL_MspInit(void)
   HAL_PWREx_DisableUCPDDeadBattery();
 
   /* USER CODE BEGIN MspInit 1 */
-
+  /* Match BLEDualProgram's SystemPower_Config exactly: VddIO2 enable +
+     SMPS regulator. The SMPS path is what powers the chip's RF rail
+     reliably during transmit; without it, BLE init succeeds (HCI, GATT,
+     advertising commands all return SUCCESS) but the BlueNRG-LP never
+     actually radiates — exactly the "advertising started but invisible
+     in scanners" symptom. */
+  HAL_PWREx_EnableVddIO2();
+  if (HAL_PWREx_ConfigSupply(PWR_SMPS_SUPPLY) != HAL_OK) {
+    /* Non-fatal: fall back to LDO. The logger keeps working; only BLE
+       transmit needs SMPS reliably. */
+  }
   /* USER CODE END MspInit 1 */
 }
 

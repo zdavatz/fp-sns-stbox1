@@ -23,24 +23,38 @@
 #include "SensorTileBoxPro.h"
 #include "stm32u5xx_hal.h"
 
+/* Busy-wait calibrated for ~160 MHz Cortex-M33. Each NOP is 1 cycle
+   (~6.25 ns), but with -O2 the compiler may convert the loop to one
+   counter-decrement per iteration (~1 cycle). 26_000_000 NOPs ≈ 162 ms
+   at -O0 / ≈ 162 ms at -O2 (volatile prevents elimination). Used in
+   halt_red_morse below — we cannot rely on HAL_Delay inside
+   tx_application_define because tx_kernel_enter may have remapped or
+   masked the SysTick IRQ that HAL_GetTick() depends on, in which case
+   HAL_Delay spins forever and the red LED never blinks. */
+static void busy_delay_ms(uint32_t ms)
+{
+  volatile uint32_t cnt = ms * 26000U;
+  while (cnt--) { __NOP(); }
+}
+
 /* Loop the red LED forever in a count-pause-count pattern. Used as a
    visible halt diagnostic in the four error paths in tx_application_define
-   below — without this, halt-before-tx_kernel_enter shows up as "3 green
-   boot blinks then dark", indistinguishable from a hang anywhere else.
-   Each pattern: `count` 200 ms on/off red blinks, then 1.2 s pause, repeat.
-   Patterns: 2 = tx_app_byte_pool failed, 4 = App_ThreadX_Init failed
-   (BLE thread alloc/create), 6 = fx_app_byte_pool failed, 8 = MX_FileX_Init
-   failed. */
+   below. Patterns:
+     2 blinks = tx_app_byte_pool_create failed
+     4 blinks = App_ThreadX_Init failed (BLE thread alloc/create)
+     6 blinks = fx_app_byte_pool_create failed
+     8 blinks = MX_FileX_Init failed
+   Independent of HAL tick — uses a CPU-cycle busy-wait. */
 static void halt_red_morse(uint8_t count)
 {
   for (;;) {
     for (uint8_t i = 0; i < count; i++) {
       BSP_LED_On(LED_RED);
-      HAL_Delay(200);
+      busy_delay_ms(200);
       BSP_LED_Off(LED_RED);
-      HAL_Delay(200);
+      busy_delay_ms(200);
     }
-    HAL_Delay(1200);
+    busy_delay_ms(1200);
   }
 }
 
@@ -72,7 +86,15 @@ static TX_BYTE_POOL fx_app_byte_pool;
 VOID tx_application_define(VOID *first_unused_memory)
 {
   /* USER CODE BEGIN  tx_application_define_1*/
-
+  /* Diagnostic bracket: red LED solid on while tx_application_define is
+     running; turned off only on full success (just before return). If the
+     LED is dark after the boot beep but no morse pattern follows, then
+     tx_application_define returned successfully and the hang is in a
+     thread (most likely fx_thread blocked in fx_media_open or similar).
+     If the LED stays solid red, we halted without reaching one of the
+     error paths — could be a stack overflow inside tx_byte_pool_create
+     or thread_create itself. */
+  BSP_LED_On(LED_RED);
   /* USER CODE END  tx_application_define_1 */
 #if (USE_MEMORY_POOL_ALLOCATION == 1)
   UINT status = TX_SUCCESS;
@@ -126,7 +148,10 @@ VOID tx_application_define(VOID *first_unused_memory)
       /* USER CODE END  MX_FileX_Init_Error */
     }
     /* USER CODE BEGIN  MX_FileX_Init_Success */
-
+    /* Successful exit from tx_application_define — clear the red LED so
+       a post-boot dark LED unambiguously means "we returned to
+       tx_kernel_enter and hand-off to threads is in progress / hung". */
+    BSP_LED_Off(LED_RED);
     /* USER CODE END  MX_FileX_Init_Success */
   }
 

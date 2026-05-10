@@ -134,6 +134,11 @@ int main(void)
   __HAL_RCC_CLEAR_RESET_FLAGS();
   /* USER CODE END Init */
 
+  /* v32 introduced an explicit SystemPower_Config() call here to mirror
+     BLEDualProgram exactly. Reverted in v33: the change made BLE
+     init worse (first HCI command started hanging instead of just
+     "advertising-not-visible"). SMPS+VDDIO2 stay in HAL_MspInit. */
+
   /* Configure the system clock */
   SystemClock_Config();
 

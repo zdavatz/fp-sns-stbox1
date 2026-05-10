@@ -32,7 +32,7 @@ extern "C" {
 #define ENABLE_CONFIG                               1
 #define ENABLE_SET_DATE_EXT_CONFIG                  0
 #define ENABLE_CHANGE_SECURE_PIN_EXT_CONFIG         0
-#define ENABLE_SECURE_CONNECTION                    1
+#define ENABLE_SECURE_CONNECTION                    1  /* match BLEDualProgram exactly */
 #define ENABLE_VERSION_FW_EXT_CONFIG                1
 #define ENABLE_READ_CERTIFICATE_EXT_CONFIG          0
 #define ENABLE_CLEAR_SECURE_DATA_BASE_EXT_CONFIG    1
@@ -68,7 +68,7 @@ extern "C" {
 #define BLE_VERSION_FW_MAJOR        '0'
 #define BLE_VERSION_FW_MINOR        '1'
 #define BLE_VERSION_FW_PATCH        '0'
-#define BLE_FW_PACKAGENAME          "STBoxSync"
+#define BLE_FW_PACKAGENAME          "STBoxFs"  /* 7 chars max — board_name[8] in ble_manager */
 
 /* Implemented in ble_implementation.c. ble_manager.c calls bluetooth_init()
    from init_ble_manager() and ble_init_custom_service() right after the
