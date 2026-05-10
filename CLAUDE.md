@@ -169,6 +169,8 @@ Mode-switch state survives via `TAMP->BKP1R` (LOG magic) + `TAMP->BKP2R` (durati
 
 #### BLE bring-up — current state (2026-05-10, end of session, v247)
 
+> **TL;DR — Issue #15 mode-switch is half-built:** LOG mode works (button → 5-min session → reboot → files on SD), but **BLE mode doesn't actually advertise** because of the `hci_tl_spi_send` wedge. iPhone never sees `STBoxFs`, so the GUI-driven `OP_START_LOG` path is non-functional. The button fallback (v227) is the only working trigger right now. All forward-looking talk about "BLE+USB live mode" or supporting the Flow-app trio of outputs (BLE/USB/SD) is moot until that wedge is solved. Fresh-eyes Linux session needed (USB CDC visibility we don't have on Mac).
+
 **The wedge has been narrowed to 2-3 instructions inside `hci_tl_spi_send`** — between the ErrorLog_Write `"spi_send: locals declared, about to disable_irq"` and the next ErrorLog_Write `"spi_send: irq disabled, CS low next"`. Either the single `HAL_NVIC_DisableIRQ(EXTI11)` call or an EXTI11 ISR firing between the two and getting stuck inside `hci_tl_lowlevel_isr`. SDMMC race hypothesis test (v247: dropped diagnostic flushes) was inconclusive — visibility was lost.
 
 **Confirmed working / not-the-cause** (don't re-test these tomorrow):
