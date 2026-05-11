@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MovementLogger — BLE FileSync button reference</title>
+<style>
+  @page { size: A4; margin: 22mm 20mm; }
+  body { font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+         font-size: 10.5pt; line-height: 1.45; color: #222; }
+  h1 { font-size: 18pt; margin: 0 0 4pt 0; }
+  h2 { font-size: 13pt; margin: 16pt 0 6pt 0; border-bottom: 1px solid #ccc; padding-bottom: 2pt; }
+  h3 { font-size: 11pt; margin: 12pt 0 4pt 0; }
+  p { margin: 4pt 0 6pt 0; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5pt;
+         background: #f3f3f3; padding: 1px 4px; border-radius: 3px; }
+  ul { margin: 4pt 0 6pt 18pt; padding: 0; }
+  li { margin: 2pt 0; }
+  table { border-collapse: collapse; margin: 6pt 0 8pt 0; font-size: 10pt; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 5pt 8pt; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; }
+  .meta { color: #666; font-size: 9.5pt; margin-bottom: 12pt; }
+  .note { background: #fff8e1; border-left: 3px solid #f0b400; padding: 6pt 10pt;
+          margin: 8pt 0; font-size: 10pt; }
+  .warn { background: #ffe8e0; border-left: 3px solid #d9532c; padding: 6pt 10pt;
+          margin: 8pt 0; font-size: 10pt; }
+  .button { display: inline-block; padding: 2px 8px; background: #e6e6e6;
+            border: 1px solid #b6b6b6; border-radius: 4px;
+            font-family: -apple-system, sans-serif; font-size: 10pt; font-weight: 500;
+            color: #333; }
+  .step { background: #f3f7fc; border-left: 3px solid #4a8fcc; padding: 6pt 10pt;
+          margin: 8pt 0; font-size: 10pt; }
+</style>
+</head>
+<body>
+
+<h1>MovementLogger — BLE FileSync button reference</h1>
+<p class="meta">Quick reference for the BLE FileSync panel in MovementLogger. Each button, what it does, when to use it, and what happens behind the scenes. May 2026.</p>
+
+<div class="note"><strong>Where to find it:</strong> Open MovementLogger, click <strong>BLE FileSync (download from PumpTsueri)</strong> to expand the panel. PIN is <code>123456</code> on first connect.</div>
+
+<h2>Connection lifecycle</h2>
+
+<table>
+  <tr><th style="width:22%">Button</th><th style="width:14%">Enabled when</th><th>What it does</th></tr>
+
+  <tr>
+    <td><span class="button">Scan</span></td>
+    <td>Disconnected (and not currently scanning)</td>
+    <td>Starts a 5-second BLE scan. Any peripheral advertising as <code>PumpTsueri</code> appears under <em>Discovered</em>. Click the device row that appears to bring up the Connect button. Re-clicking Scan clears the previous results.</td>
+  </tr>
+
+  <tr>
+    <td><span class="button">Connect</span></td>
+    <td>After Scan found a device</td>
+    <td>Pairs and connects to the box. macOS / Linux / Windows pops a Bluetooth permission dialog and a PIN dialog the first time — enter <strong><code>123456</code></strong>. The OS remembers the pairing; subsequent connects skip the PIN. On success the file list auto-loads.</td>
+  </tr>
+
+  <tr>
+    <td><span class="button">Disconnect</span></td>
+    <td>Connected</td>
+    <td>Cleanly tears down the BLE link (sends LL_TERMINATE_IND so the box can immediately accept the next host). The GUI returns to Idle state — Scan becomes available again. Box keeps advertising and is reachable within ~1 second.</td>
+  </tr>
+</table>
+
+<div class="warn"><strong>Don't <code>pkill -9</code> the GUI.</strong> A hard kill skips the graceful disconnect — the box's BLE link stays "occupied" until the supervision timeout (10–30 s on macOS), during which a fresh GUI launch can't connect. Close via <strong>Cmd-Q</strong> (red traffic light on macOS) for a clean exit, or simply Disconnect first.</div>
+
+<h2>File operations</h2>
+
+<table>
+  <tr><th style="width:22%">Button</th><th style="width:14%">Enabled when</th><th>What it does</th></tr>
+
+  <tr>
+    <td><span class="button">Refresh file list</span></td>
+    <td>Connected</td>
+    <td>Sends <code>OP_LIST</code> (<code>0x01</code>) to the box. Each file on the SD root comes back as a row with its size. Rows are split into two groups:
+      <ul>
+        <li><strong>Sensor</strong> — <code>Sens*.csv</code>, <code>Gps*.csv</code>, <code>Bat*.csv</code>, <code>Mic*.wav</code>. These are session data and default-ticked.</li>
+        <li><strong>Debug</strong> — <code>FW_INFO_v<em>N</em>.TXT</code>, <code>CHK<em>NN</em>.TXT</code>, the <code>Error_Log_Pump_Tsueri_*.log</code> error log, plus any macOS AppleDouble files (<code>._*</code>). Default-unticked.</li>
+      </ul>
+      Each group header has a <strong>Tick all / Untick all</strong> toggle.
+    </td>
+  </tr>
+
+  <tr>
+    <td><span class="button">Download selected</span></td>
+    <td>Connected, at least one row ticked and not yet downloaded</td>
+    <td>Reads all ticked, not-yet-downloaded files <strong>one at a time</strong> (serial queue — the box can only stream one file at a time). The button shows <em>Download selected (N queued)</em> while running. Each row gets:
+      <ul>
+        <li>A live progress bar (<em>1.23 / 5.00 MB</em>) updating every ~4 KB received.</li>
+        <li>A green <strong>✅ downloaded</strong> badge on completion.</li>
+      </ul>
+      Saved to the path in the <strong>Save to:</strong> field. <code>Sens*.csv</code> and <code>*_gps.csv</code> auto-fill the visualization form's top-level slots so you can hit Generate immediately. The same file can be re-downloaded by clicking <em>Refresh file list</em> first.
+    </td>
+  </tr>
+
+  <tr>
+    <td><span class="button" style="background:#f0f0f0;">🗑</span> (per row)</td>
+    <td>Connected, that row is not currently downloading</td>
+    <td>Sends <code>OP_DELETE</code> (<code>0x03</code>) for that single file. On success (<code>0x00</code> OK reply) the row vanishes from the list. Other replies surface in the Log panel: BUSY (logging in progress, send STOP_LOG first), NOT_FOUND, IO_ERROR. Be deliberate — there is no confirmation dialog.</td>
+  </tr>
+</table>
+
+<h2>Logging sessions</h2>
+
+<table>
+  <tr><th style="width:22%">Button</th><th style="width:14%">Enabled when</th><th>What it does</th></tr>
+
+  <tr>
+    <td><span class="button">STOP_LOG</span></td>
+    <td>Connected</td>
+    <td>Sends <code>OP_STOP_LOG</code> (<code>0x04</code>). If a logging session is in progress on the box, this gracefully closes <code>Sens<em>NNN</em>.csv</code>, <code>Gps<em>NNN</em>.csv</code>, etc. (so they're complete and downloadable). No reply from the box — the GUI logs <em>STOP_LOG sent</em> immediately. After a few seconds you can <em>Refresh file list</em> to see the closed files.</td>
+  </tr>
+
+  <tr>
+    <td><span class="button">1800 s</span></td>
+    <td>Connected</td>
+    <td>Session duration in seconds (1–86400). Click and drag to scrub, or click and type. Drives the next Start session. Default is 1800 s (30 minutes). For short tests drop to 60 s.</td>
+  </tr>
+
+  <tr>
+    <td><span class="button">Start session</span></td>
+    <td>Connected</td>
+    <td>Sends <code>OP_START_LOG</code> (<code>0x05</code>) plus the duration. The box writes a magic value to its backup register and immediately reboots into <strong>LOG mode</strong> (the BLE stack does not run in LOG mode — it's mutually exclusive with SD logging on this hardware). The BLE connection drops; the GUI flips to Idle. The box logs for the requested duration, then auto-reboots back into BLE mode and advertises <code>PumpTsueri</code> again.</td>
+  </tr>
+</table>
+
+<div class="note"><strong>While a session is running</strong> the GUI shows an amber banner above the action buttons: <em>"Logging in progress — M min SS s left … Box is silent, won't appear in Scan."</em> The countdown ticks every ~500 ms and clears itself automatically once the deadline expires (plus ~8 s for BLE bring-up). Once cleared, click Scan and the box reappears.</div>
+
+<div class="note"><strong>To abort a session early</strong> short-press the physical user button on the box. fx_thread sees the button event and closes the files cleanly; in some firmware versions the box also reboots back into BLE mode.</div>
+
+<h2>Sidebar elements</h2>
+
+<table>
+  <tr><th style="width:22%">Element</th><th>What it does</th></tr>
+
+  <tr>
+    <td><strong>Save to:</strong></td>
+    <td>Where downloads land on your computer. Defaults to <code>./csv/</code> relative to the GUI binary. Edit inline or click <strong>Browse…</strong> to pick a folder. The same path is used for every download in the session.</td>
+  </tr>
+
+  <tr>
+    <td><strong>Log panel</strong> (bottom)</td>
+    <td>Scrolling history of every BLE state transition: <em>LIST sent</em>, <em>reading X (N B)…</em>, <em>saved /path/to/X</em>, <em>DELETE X sent</em>, errors, etc. Fully selectable: click-drag to highlight, <kbd>Cmd-A</kbd> select all, <kbd>Cmd-C</kbd> copy. The <strong>Copy all</strong> button in the panel header dumps the whole buffer to the clipboard in one click.</td>
+  </tr>
+
+  <tr>
+    <td><strong>Window size</strong></td>
+    <td>The Log panel grows vertically with the window — drag the bottom-right corner down to see more lines without scrolling.</td>
+  </tr>
+</table>
+
+<h2>Status bytes you might see in the Log</h2>
+
+<table>
+  <tr><th style="width:18%">Code</th><th style="width:24%">Meaning</th><th>What to do</th></tr>
+  <tr><td><code>0x00</code></td><td>OK</td><td>Operation succeeded. (For READ/DELETE you'll see the ✅ badge / row vanish.)</td></tr>
+  <tr><td><code>0xB0</code></td><td>BUSY</td><td>Box is currently logging — close files first with <strong>STOP_LOG</strong>, then retry.</td></tr>
+  <tr><td><code>0xE1</code></td><td>NOT_FOUND</td><td>File is in the LIST but the box can't open it. Usually FAT corruption on the SD card — pull the card, copy off what you need, reformat as FAT32.</td></tr>
+  <tr><td><code>0xE2</code></td><td>IO_ERROR</td><td>Same diagnosis as NOT_FOUND but on the write side (DELETE). Reformat the SD card.</td></tr>
+  <tr><td><code>0xE3</code></td><td>BAD_REQUEST</td><td>Malformed opcode or filename — bug in the GUI. Please report.</td></tr>
+</table>
+
+<h2>Typical workflow</h2>
+
+<div class="step">
+1. <strong>Scan</strong> → wait 5 s → click discovered <code>PumpTsueri</code> → <strong>Connect</strong> (PIN <code>123456</code>).
+</div>
+<div class="step">
+2. File list auto-loads. Adjust ticks if needed.
+</div>
+<div class="step">
+3. <strong>Download selected</strong>. Wait for ✅ badges.
+</div>
+<div class="step">
+4. To record more data: set <strong>1800 s</strong> (or your preferred duration) → <strong>Start session</strong>. Watch the amber countdown banner. When it clears, the box is back.
+</div>
+<div class="step">
+5. <strong>Scan</strong> → <strong>Connect</strong> → <strong>Refresh file list</strong> → <strong>Download selected</strong> on the new <code>Sens<em>NNN</em>.csv</code> row.
+</div>
+<div class="step">
+6. <strong>Disconnect</strong> when done, or just <strong>Cmd-Q</strong> the app (it'll Disconnect automatically).
+</div>
+
+<h2>Where the code lives</h2>
+<ul>
+  <li><strong>Worker / BLE state machine</strong>: <code>Utilities/rust/stbox-viz-gui/src/ble.rs</code></li>
+  <li><strong>UI / button handlers</strong>: <code>Utilities/rust/stbox-viz-gui/src/main.rs</code> (<code>ui_ble_panel</code>, <code>pump_ble_events</code>)</li>
+  <li><strong>Firmware GATT service</strong>: <code>Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Core/Src/ble_filesync.c</code></li>
+  <li><strong>Wire protocol reference</strong>: <a href="BLE_FileSync.pdf">BLE_FileSync.pdf</a></li>
+</ul>
+
+</body>
+</html>
