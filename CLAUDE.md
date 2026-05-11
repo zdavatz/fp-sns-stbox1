@@ -99,7 +99,7 @@ Each application:
 - `STBOX1_UPDATE_ENV` / `STBOX1_UPDATE_INV` — sensor polling intervals (timer ticks).
 - `STBOX1_LOG_AUDIO` (SDDataLogFileX) — gates `BSP_AUDIO_IN_*` calls and `.wav` files. Default `0`. Set to `1` only on unmodified hardware; on the 3.3V-modded board `BSP_AUDIO_IN_Init` blocks indefinitely.
 - `STBOX1_LOG_BATTERY` (SDDataLogFileX) — gates the STC3115 fuel-gauge path and `BatNNN.csv`. Default `1`. I²C failure is non-fatal — writes a marker to the error log and skips battery logging for the rest of the boot.
-- `STBOX1_ENABLE_BLE_SYNC` (SDDataLogFileX) — gates BLE FileSync (advertising + GATT + ThreadX BLE thread). **Default `0`** because adding the BLE manager dependency chain breaks `fx_media_flush` on the SD logger via a link-time memory layout interaction (root cause unidentified). When `1`: `BleSync_ThreadX_Init()` is a no-op returning `TX_SUCCESS`. Cost when on: +28 KB flash, +4.5 KB BSS. **Issue #15 (2026-05-10):** mode-switch architecture in progress — boot picks BLE-only or LOG-only mode via TAMP backup register, the two never run concurrently to avoid the SDMMC/EXTI11-NVIC conflict (issue #12). BLE init still hangs at hci_reset response despite multiple drain strategies; latest experiment keeps EXTI11 NVIC masked through entire init and feeds `hci_send_req`'s rx_queue via post-send `hci_notify_asynch_evt` polling drain in `hci_tl_spi_send`. See issue #15 and the "BLE bring-up" section.
+- `STBOX1_ENABLE_BLE_SYNC` (SDDataLogFileX) — gates BLE FileSync (advertising + GATT + ThreadX BLE thread). **Default `0`** for builds that don't need BLE; flip to `1` for the issue #15 mode-switch firmware. When `1`: box advertises as `PumpTsueri` within ~8 s of boot, iPhone/Linux GUI can LIST/READ/DELETE/START_LOG. Cost when on: +28 KB flash, +4.5 KB BSS. Unblocked 2026-05-11 by adding the missing `EXTI11_IRQHandler` strong override (`stm32u5xx_it.c` had EXTI13 only; weak-bound EXTI11 fell through to `Default_Handler` infinite-loop, wedging the whole chip on first BlueNRG-LP IRQ). See "BLE bring-up — current state".
 - `STBOX1_ENABLE_WLC` (SDDataLogFileX) — BlueNRG-LP OTP programmer (reverse-engineered from ST firmware). Default `0`, **untested on real hardware**, no call site wired in. The flag-off compile is byte-identical to a build without the file.
 - `STBOX1_ENABLE_USB_CDC` (SDDataLogFileX) — USB CDC ACM virtual COM port over USB-C. Default `0`. When `1`, brings up OTG_FS via TinyUSB and routes `printf` / `STBOX1_PRINTF` over USB. Build with `make USB_CDC_ENABLED=1` (Makefile flag overrides the header default and pulls in the vendored TinyUSB stack). Cost when on: +15 KB flash, +5 KB BSS. **macOS Sequoia 15+ does NOT expose `/dev/tty.usbmodem*` for our descriptor** (kernel CDC driver `AppleUSBCDCCompositeDevice` partial-attaches in `IOMatchDefer = Yes` state and never registers; libusb can't claim the bulk endpoint either, even as root). Use a Linux box for live debug — `cdc_acm` attaches cleanly and `cat /dev/ttyACM0` streams the heartbeat. See "USB CDC ACM debug console" section below.
 
@@ -147,8 +147,8 @@ Things that have been changed from CubeMX defaults and **must stay set**:
 
 In response to issue #12 (BLE EXTI11 NVIC enable wedges SDMMC, even at priority 14/15), BLE and SDMMC are now structured to never run concurrently:
 
-1. Boot → BLE mode by default, advertising as `STBoxFs`. Logger does not auto-start. fx_thread idle on `MessageQueue` receive.
-2. iPhone connects, sees `STBoxFs`. App can list / read / delete existing SD files via `OP_LIST` / `OP_READ` / `OP_DELETE`.
+1. Boot → BLE mode by default, advertising as `PumpTsueri`. Logger does not auto-start. fx_thread idle on `MessageQueue` receive.
+2. iPhone connects, sees `PumpTsueri`. App can list / read / delete existing SD files via `OP_LIST` / `OP_READ` / `OP_DELETE`.
 3. App writes `OP_START_LOG` (`0x05`) + 4 LE bytes duration → box stores `BKP1R = 0x4C4F4720` ("LOG ") + `BKP2R = duration` then `NVIC_SystemReset`.
 4. After reset main.c reads BKP1R; if magic, sets `g_app_mode = APP_MODE_LOG` + `g_log_duration_seconds` from BKP2R, clears BKP1R. fx_thread sees LOG mode, opens files, runs ST's reference logger. ble_sync_thread parks.
 5. fx_thread monitors `tx_time_get()/100 >= g_log_duration_seconds` per `COMMAND_SAVE_SENSORS` tick. On expiry: closes files, flushes, `fx_media_close`, clears BKP1R/BKP2R, `NVIC_SystemReset`.
@@ -161,55 +161,40 @@ Wire-up:
 - `FileX/App/app_filex.c::read_thread_entry` — auto-`COMMAND_START_LOG` gated on `g_app_mode == APP_MODE_LOG`; expiry path in `COMMAND_SAVE_SENSORS`.
 - `Utilities/rust/stbox-viz-gui/src/{ble.rs,main.rs}` — `BleCmd::StartLog{duration_seconds}`, "Start session" button + DragValue.
 
-User-button gate (v227, 2026-05-10): in BLE mode a short button press **starts a 5-minute LOG session** via the same TAMP-magic + reset path the GUI's `OP_START_LOG` uses. Originally the issue #15 spec was "GUI-only", but with BLE init currently broken the iPhone never sees `STBoxFs` and there is no way to start a session — the button is the only fallback. In LOG mode the button still aborts a session early. See `app_filex.c::read_thread_entry`.
+User-button gate (v227, 2026-05-10): in BLE mode a short button press **starts a 5-minute LOG session** via the same TAMP-magic + reset path the GUI's `OP_START_LOG` uses. Originally the issue #15 spec was "GUI-only", but with BLE init currently broken the iPhone never sees `PumpTsueri` and there is no way to start a session — the button is the only fallback. In LOG mode the button still aborts a session early. See `app_filex.c::read_thread_entry`.
 
 ErrorLog at boot (v227): `ErrorLog_Open()` is called unconditionally right after `CheckAndApplyFirmwareUpdate()` — boot markers, BLE bring-up trace, and any later `ErrorLog_Write` calls now land on SD in BOTH modes. Previously gated inside `case COMMAND_START_LOG:` so BLE-mode boots produced no log file at all.
 
 Mode-switch state survives via `TAMP->BKP1R` (LOG magic) + `TAMP->BKP2R` (duration in seconds) + `TAMP->BKP0R` (DFU magic — unrelated, see "Software DFU loop" below).
 
-#### BLE bring-up — current state (2026-05-10, end of session, v247)
+#### BLE bring-up — current state (2026-05-11, v254, working end-to-end)
 
-> **TL;DR — Issue #15 mode-switch is half-built:** LOG mode works (button → 5-min session → reboot → files on SD), but **BLE mode doesn't actually advertise** because of the `hci_tl_spi_send` wedge. iPhone never sees `STBoxFs`, so the GUI-driven `OP_START_LOG` path is non-functional. The button fallback (v227) is the only working trigger right now. All forward-looking talk about "BLE+USB live mode" or supporting the Flow-app trio of outputs (BLE/USB/SD) is moot until that wedge is solved. Fresh-eyes Linux session needed (USB CDC visibility we don't have on Mac).
+> **TL;DR — Issue #15 mode-switch works end-to-end on Linux/iPhone.** Box advertises as `PumpTsueri` within ~8 s of boot; MovementLogger GUI and nRF Connect both connect, LIST, READ, START_LOG. Logger reboot cycle (LOG mode → reboot → BLE mode) tested. Diagnostic markers from the bring-up bisect (v218 → v254) are still in tree and can be cleaned up.
 
-**The wedge has been narrowed to 2-3 instructions inside `hci_tl_spi_send`** — between the ErrorLog_Write `"spi_send: locals declared, about to disable_irq"` and the next ErrorLog_Write `"spi_send: irq disabled, CS low next"`. Either the single `HAL_NVIC_DisableIRQ(EXTI11)` call or an EXTI11 ISR firing between the two and getting stuck inside `hci_tl_lowlevel_isr`. SDMMC race hypothesis test (v247: dropped diagnostic flushes) was inconclusive — visibility was lost.
+**Root cause of the v218-v247 wedge** (commit `96c6f829`): `stm32u5xx_it.c` had a strong handler for `EXTI13_IRQHandler` (user button) but no strong override of `EXTI11_IRQHandler` (BlueNRG-LP HCI IRQ). The GCC startup file weak-binds unhandled interrupts to `Default_Handler`, which is literally `b Default_Handler` — an infinite loop. The moment `hci_tl_spi_reset` re-enabled the EXTI11 NVIC and the BlueNRG-LP raised its IRQ line, the CPU vectored into `Default_Handler` and froze: no thread runs, USB heartbeat stops, BLE init wedges with no further trace. BLEDualProgram's `stm32u5xx_it.c:324` has the handler (`HAL_EXTI_IRQHandler(&H_EXTI_11)`); we didn't. Fix: add the same handler plus `g_exti11_irq_count` so future bring-up issues can be triangulated against ISR activity (surfaced in the USB heartbeat as `exti11=N`).
 
-**Confirmed working / not-the-cause** (don't re-test these tomorrow):
-- BLE chip + SPI/IRQ wiring: BLEDualProgram firmware advertises `FFoTABP` cleanly on the same hardware in 5 s. Verify with the prebuilt binary in `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLEDualProgram/Binary/BLEDualProgram.bin`.
-- macOS Sequoia BLE scan: `bleak` Python finds the device when it advertises (retracts the older note that Sequoia "drops bulk-IN bytes" — that was a separate USB CDC issue, not BLE).
-- Newlib reentrancy: `ErrorLog_Write` is now hand-formatted (zero newlib stdio in its body — see `app_filex.c:1635+`); all `printf`/`sprintf` calls in `ble_sync.c` and `ble_manager.c::init_ble_manager_ble_stack` were replaced with newlib-free `ErrorLog_Write`. Was suspected, was patched, wedge moved further but didn't unstick.
-- BLE thread stack: bumped 4 KB → 8 KB (v245) — wedge unchanged, so not stack overflow.
-- HAL_GetTick freezing in BLE thread: middleware's `hci_send_req` busy-loop at `Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic/hci_tl.c:322` was patched to use `tx_time_get()*10` instead via `#undef HAL_GetTick` shim at top of that file. Hang persisted, so timer source isn't the issue.
-- Boot-event drain (Peter's v35 fix from cc386415): correctly consumes the chip's 7-byte boot-ready event after spi_reset (we see "drained N boot events" + the `recv[1]` markers). Drain works as designed.
-- spi_reset NVIC handling: tried v240 (disable→reset→clear→re-enable) and v241 (BLEDualProgram-strict no-NVIC-touch). v241 wedged earlier; v240 made progress to `hci_reset`.
+**Advertising name `PumpTsueri`** (commit `1c8017e0`): the BLE manager middleware hardcoded a 7-char name field in the advertising packet (`manuf_data[3] = 8` = 1 AD-type byte + 7 name bytes), so longer names truncated silently. Three changes:
+- `Middlewares/ST/STM32_BLE_Manager/Inc/ble_manager.h`: `board_name[8]` → `board_name[16]`, `BLE_MANAGER_ADVERTISE_DATA_LENGHT` 28 → 31 (BlueNRG-LP / STM32WB07_06 branch only).
+- `Middlewares/ST/STM32_BLE_Manager/Src/ble_manager.c::set_connectable_ble`: rewritten as dynamic-length packet construction. Name field length = 1 + strlen(board_name); manufacturer-specific section starts at pos = 5 + name_len; final packet size (3 + 2 + name_len + 16 = 21 + name_len) passed to `aci_gap_set_advertising_data_nwk`. Apps with shorter names still work — packet just gets shorter.
+- `Core/inc/ble_implementation.h`: `BLE_FW_PACKAGENAME "STBoxFs"` → `"PumpTsueri"`.
 
-**Reached this point in the trace before the wedge:**
+**Header dependency gotcha**: the SDDataLogFileX Makefile doesn't generate `.d` files, so changes to headers don't trigger rebuilds of `.c` files that include them. Widening `board_name[8]` → `board_name[16]` in `ble_manager.h` rebuilt only `ble_manager.c` and `ble_implementation.c`, leaving `ble_function.c` linked with the old 8-byte struct layout. `ble_function.c::ble_set_custom_advertise_data` then wrote `board_id` to the old offset; `ble_manager.c::init_ble_manager` read from the new offset and got 0 → `Error ble_stack_value.board_id Not Defined`. **Always `make clean` after header changes** until `-MMD -MP` is wired in.
+
+**GUI side** (`Utilities/rust/stbox-viz-gui/src/ble.rs`): `BOX_NAME` filter updated to `"PumpTsueri"`. Scan emits per-peripheral debug lines (`seen: addr=… name=…`) plus a summary count so future name mismatches are easy to diagnose. Status label is `egui::Label::selectable(true)` so users can copy error text. Pairing on Linux requires a `bluetoothctl agent KeyboardOnly + default-agent + pair + trust` once — after that the bond is cached and the GUI's `connect()` succeeds in 1-2 s without re-prompting.
+
+**Known open issues:**
+- LIST state machine doesn't always return to `Idle` after the firmware's terminator notify, so subsequent Download hits "another op is in flight" until the 20 s watchdog fires. Workaround: Disconnect + Reconnect. Real fix: shorten LIST watchdog to ~2 s or use inactivity heuristic.
+- Diagnostic markers left in the BLE init path can be cleaned up:
+  - `Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic/hci_tl.c` — `send_cmd` + `hci_send_req` markers + `HAL_GetTick` shim
+  - `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Core/Src/hci_tl_interface.c` — bisect markers in `hci_tl_spi_send` + `hci_tl_spi_reset`
+  - `Middlewares/ST/STM32_BLE_Manager/Src/ble_manager.c` — flushes around hci_init/hci_reset
+
+**Verified flow (2026-05-11):**
 ```
-[xxx ms] spi_reset: drained N boot events (v243)
-[xxx ms] ble_mgr: hci_init done
-[xxx ms] ble_mgr: about to hci_reset
-[xxx ms] hci_send_req: entered
-[xxx ms] hci_send_req: about to list_init_head
-[xxx ms] hci_send_req: about to free_event_list
-[xxx ms] hci_send_req: about to send_cmd
-[xxx ms] send_cmd: entered
-[xxx ms] send_cmd: about to MEMCPY hc into payload
-[xxx ms] send_cmd: about to MEMCPY param into payload
-[xxx ms] send_cmd: about to call hci_tl_spi_send
-[xxx ms] spi_send: ENTRY
-[xxx ms] spi_send: locals declared, about to disable_irq    ← LAST
+power on → ~8 s → bluetoothctl scan le shows "PumpTsueri" DE:32:D2:B8:27:78
+nRF Connect (iPhone) → CONNECT → PIN 123456 → LIST opcode (0x01) → file rows + terminator
+MovementLogger GUI (Linux, after bluetoothctl pair+trust) → Scan → Connect → Refresh → file list populates
 ```
-
-**Next-session plan (Linux, where USB CDC heartbeat is visible):**
-1. Use `cat /dev/ttyACM0` to watch live trace + heartbeat. Mac was blind — `tud_mounted()` gate fix in `usb_cdc.c::UsbCdc_Write` makes USB stream work on Linux without DTR ceremony.
-2. JTAG/SWD step through the 3 instructions to find the actual stuck statement (without ErrorLog markers polluting the timing).
-3. Side-by-side diff of `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLEDualProgram/Src/hci_tl_interface.c` vs ours — the working reference.
-4. Consider: is EXTI11 ISR re-entering itself? `hci_tl_spi_disable_irq` only disables the NVIC enable bit, not the line. If chip's IRQ pin is HIGH at the disable, the hardware-pending edge stays latched in `EXTI->PR1`. When NVIC is re-enabled later, ISR fires immediately; could re-enter unbounded if the bounded loop somehow fails its `is_data_available` exit.
-5. Consider: bumping EXTI11 NVIC priority back to 14 (currently 15 from `hci_tl_spi_enable_irq`'s "issue #12 BISECT-G" — but mode-switch makes that conflict moot).
-
-**Stale bisect/diagnostic markers left in place** (clean up after BLE works):
-- `Middlewares/ST/STM32WB07_06/hci/hci_tl_patterns/Basic/hci_tl.c` — `send_cmd` + `hci_send_req` markers + `HAL_GetTick` shim
-- `Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/Core/Src/hci_tl_interface.c` — bisect markers in `hci_tl_spi_send` + `hci_tl_spi_reset`
-- `Middlewares/ST/STM32_BLE_Manager/Src/ble_manager.c` — flushes around hci_init/hci_reset
 
 #### USB CDC `tud_mounted` gate (v224, 2026-05-10)
 
@@ -342,7 +327,7 @@ ST BLE Sensor app uses a slightly different CSV format (date/time columns instea
 
 ## BLE FileSync — download SD-card files over Bluetooth
 
-When `STBOX1_ENABLE_BLE_SYNC=1`, the SDDataLogFileX firmware advertises as `STBoxSync` with PIN-secure pairing (PIN `123456`). Two characteristics under the BlueST features service (`00000000-0001-11e1-9ab4-0002a5d5c51b`):
+When `STBOX1_ENABLE_BLE_SYNC=1`, the SDDataLogFileX firmware advertises as `PumpTsueri` with PIN-secure pairing (PIN `123456`). Two characteristics under the BlueST features service (`00000000-0001-11e1-9ab4-0002a5d5c51b`):
 
 | Characteristic | UUID | Properties |
 |---|---|---|
@@ -582,7 +567,7 @@ Workspace at `Utilities/rust/Cargo.toml` lists `stbox-viz` and `stbox-viz-gui`. 
 - Top-right of title strip: app logo as frameless `egui::ImageButton` opening `mailto:<support>` via `ctx.open_url(OpenUrl::new_tab("mailto:..."))`. PNG baked with `include_bytes!`, decoded once with `image::load_from_memory` (default-features off, only `png`), lazy-uploaded to `ctx.load_texture` on first frame. Reuse PNG bytes in `egui::IconData` passed to `ViewportBuilder::with_icon`.
 
 ### BLE FileSync panel (v0.1.4+)
-Collapsible section. Workflow: Scan (5 s) → click STBoxSync → Connect (OS pops Bluetooth permission + PIN dialog `123456`) → Refresh file list → tick rows → Download selected. Files saved to `csv/` (configurable). `Sens*.csv` and `*_gps.csv` auto-route into form's Sensor / GPS slots.
+Collapsible section. Workflow: Scan (5 s) → click PumpTsueri → Connect (OS pops Bluetooth permission + PIN dialog `123456`) → Refresh file list → tick rows → Download selected. Files saved to `csv/` (configurable). `Sens*.csv` and `*_gps.csv` auto-route into form's Sensor / GPS slots.
 
 Backend in `src/ble.rs` uses `btleplug` (CoreBluetooth/BlueZ/WinRT) on a tokio current-thread runtime on a single dedicated worker thread. `std::sync::mpsc` channels shuttle commands and events to/from egui. **One notification stream per connection, not per op** — opened on Connect, demuxed inside `tokio::select!` between command channel and stream. Per-op streams risk losing the first packet if box notifies before `await` is parked. 200 ms watchdog tick surfaces stuck transfers.
 

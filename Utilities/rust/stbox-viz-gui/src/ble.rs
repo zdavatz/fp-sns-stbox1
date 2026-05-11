@@ -57,7 +57,7 @@ const OP_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug)]
 pub enum BleCmd {
-    /// Begin a 5-second scan; emits `Discovered` events as STBoxSync
+    /// Begin a 5-second scan; emits `Discovered` events as PumpTsueri
     /// peripherals appear, then `ScanStopped`.
     Scan,
     /// Connect by peripheral id (the platform-specific string from
@@ -316,19 +316,33 @@ impl WorkerState {
         let _ = adapter.stop_scan().await;
 
         let peripherals = adapter.peripherals().await.unwrap_or_default();
+        let mut matched = 0usize;
+        let mut all_count = 0usize;
         for p in peripherals {
+            all_count += 1;
             let props = p.properties().await.ok().flatten();
             let name  = props.as_ref().and_then(|pp| pp.local_name.clone());
-            // The box advertises as "STBoxSync"; everything else is
-            // someone's headphones / smartwatch / whatever.
-            if name.as_deref() == Some(BOX_NAME) {
+            let addr  = props.as_ref().map(|pp| pp.address.to_string()).unwrap_or_default();
+            // Debug: log every peripheral btleplug returned so we can see why
+            // PumpTsueri may be missing (cached as old name, no local_name in
+            // adv, etc.). Diagnostic — can be removed once stable.
+            self.emit(BleEvent::Status(format!(
+                "  seen: addr={} name={:?}", addr, name
+            )));
+            // Match by name OR by MAC (in case btleplug didn't get local_name).
+            let name_ok = name.as_deref() == Some(BOX_NAME);
+            if name_ok {
+                matched += 1;
                 self.emit(BleEvent::Discovered {
                     id: p.id().to_string(),
-                    name: name.unwrap(),
+                    name: name.unwrap_or_else(|| BOX_NAME.into()),
                     rssi: props.and_then(|pp| pp.rssi),
                 });
             }
         }
+        self.emit(BleEvent::Status(format!(
+            "scan saw {} peripheral(s), {} matched {}", all_count, matched, BOX_NAME
+        )));
         self.emit(BleEvent::ScanStopped);
     }
 
@@ -362,13 +376,13 @@ impl WorkerState {
         let data_char = match chars.iter().find(|c| c.uuid == FILEDATA_UUID).cloned() {
             Some(c) => c,
             None => {
-                self.emit_err("STBoxSync firmware doesn't expose FileSync chars — flash a newer build");
+                self.emit_err("PumpTsueri firmware doesn't expose FileSync chars — flash a newer build");
                 let _ = p.disconnect().await;
                 return;
             }
         };
         if !chars.iter().any(|c| c.uuid == FILECMD_UUID) {
-            self.emit_err("STBoxSync firmware doesn't expose FileSync chars — flash a newer build");
+            self.emit_err("PumpTsueri firmware doesn't expose FileSync chars — flash a newer build");
             let _ = p.disconnect().await;
             return;
         }

@@ -35,13 +35,13 @@ Drop multiple files at once — the classifier routes each to the right slot.
 | FPS | `--fps` | Default 15. |
 | Output folder | `-o` | Default `gif/` next to where MovementLogger was launched. |
 
-## BLE FileSync panel (download from STBoxSync)
+## BLE FileSync panel (download from PumpTsueri)
 
-A collapsible **BLE FileSync** section sits between the file summary and the animation parameters. It talks to a SensorTile.box running the `SDDataLogFileX` firmware (which advertises as `STBoxSync` with PIN-secure pairing — see the firmware's [BLE FileSync section](../../../README.md#ble-filesync--download-sd-card-files-over-bluetooth-sddatalogfilex) for the wire protocol).
+A collapsible **BLE FileSync** section sits between the file summary and the animation parameters. It talks to a SensorTile.box running the `SDDataLogFileX` firmware (which advertises as `PumpTsueri` with PIN-secure pairing — see the firmware's [BLE FileSync section](../../../README.md#ble-filesync--download-sd-card-files-over-bluetooth-sddatalogfilex) for the wire protocol).
 
 Workflow:
 
-1. **Scan** — 5 s scan, lists every `STBoxSync` peripheral with RSSI.
+1. **Scan** — 5 s scan, lists every `PumpTsueri` peripheral with RSSI.
 2. **Connect** — first time the OS pops a Bluetooth permission prompt and a pairing dialog (PIN `123456`).
 3. **Refresh file list** — sends LIST, populates a checklist with `name + size + checkbox` rows. All rows are pre-ticked.
 4. **Download selected** — for each ticked file: sends READ, accumulates raw bytes until the LIST size is reached, writes to the chosen output folder (default `csv/`). Files matching `Sens*.csv` or `*_gps.csv` auto-route into the form's Sensor / GPS slots so you can hit Generate without re-dragging.
