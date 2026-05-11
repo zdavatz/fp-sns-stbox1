@@ -784,15 +784,33 @@ impl AppState {
                     {
                         if let Some(b) = self.ble.as_ref() {
                             b.send(BleCmd::StartLog { duration_seconds: self.ble_session_duration_s });
+                            /* The firmware will NVIC_SystemReset within
+                               ~50 ms of receiving START_LOG — the BLE
+                               controller resets too, so the connection
+                               drops abruptly without LL_TERMINATE_IND.
+                               CoreBluetooth then needs the full link
+                               supervision timeout (6–30 s) to realise
+                               the peripheral is gone, and during that
+                               window the user can't cleanly reconnect.
+                               Send an explicit Disconnect right after
+                               START_LOG so the worker tears down the
+                               Mac-side state proactively; the write
+                               may race with the firmware reset but
+                               either way Mac state becomes Idle. */
+                            b.send(BleCmd::Disconnect);
                         }
-                        /* Box reboots into LOG mode and the BLE connection
-                           drops within ~50 ms — no FileData reply ever
-                           lands. Log immediately so the user sees the
-                           click took effect; the subsequent Disconnected
-                           event will also appear when the link drops. */
+                        /* Flip the GUI to Idle optimistically (same as
+                           the Disconnect button) so Scan / Connect are
+                           usable as soon as the box finishes booting
+                           back into BLE mode. */
+                        self.ble_state = BleState::Idle;
+                        self.ble_files.clear();
+                        self.ble_dl_queue.clear();
+                        self.ble_dl_in_flight = false;
+                        self.ble_status = format!("LOG session: {} s", self.ble_session_duration_s);
                         push_log(
                             &self.log,
-                            format!("ble: START_LOG sent ({} s) — box rebooting to LOG mode",
+                            format!("ble: START_LOG sent ({} s) — box rebooting to LOG mode, GUI returning to Idle",
                                 self.ble_session_duration_s),
                         );
                     }
