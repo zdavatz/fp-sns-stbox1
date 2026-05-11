@@ -101,7 +101,7 @@ struct AppState {
     /// so the tokio runtime doesn't start unless the user actually opens
     /// the panel.
     ble: Option<BleBackend>,
-    /// Discovered STBoxSync peripherals from the most recent scan.
+    /// Discovered STBoxFs peripherals from the most recent scan.
     ble_devices: Vec<BleDevice>,
     /// Connection lifecycle state — drives which buttons are enabled.
     ble_state: BleState,
@@ -527,7 +527,7 @@ fn save_downloaded_file(dir: &Path, name: &str, content: &[u8]) -> std::io::Resu
 
 impl AppState {
     fn ui_ble_panel(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("BLE FileSync (download from STBoxSync)")
+        egui::CollapsingHeader::new("BLE FileSync (download from STBoxFs)")
             .default_open(false)
             .show(ui, |ui| {
                 ui.label(

@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 use uuid::Uuid;
 
-const BOX_NAME:    &str  = "STBoxSync";
+const BOX_NAME:    &str  = "STBoxFs";
 const FILECMD_UUID: Uuid = Uuid::from_u128(0x00000080_0010_11e1_ac36_0002a5d5c51b);
 const FILEDATA_UUID: Uuid = Uuid::from_u128(0x00000040_0010_11e1_ac36_0002a5d5c51b);
 
@@ -55,7 +55,7 @@ const OP_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug)]
 pub enum BleCmd {
-    /// Begin a 5-second scan; emits `Discovered` events as STBoxSync
+    /// Begin a 5-second scan; emits `Discovered` events as STBoxFs
     /// peripherals appear, then `ScanStopped`.
     Scan,
     /// Connect by peripheral id (the platform-specific string from
@@ -310,7 +310,7 @@ impl WorkerState {
         for p in peripherals {
             let props = p.properties().await.ok().flatten();
             let name  = props.as_ref().and_then(|pp| pp.local_name.clone());
-            // The box advertises as "STBoxSync"; everything else is
+            // The box advertises as "STBoxFs"; everything else is
             // someone's headphones / smartwatch / whatever.
             if name.as_deref() == Some(BOX_NAME) {
                 self.emit(BleEvent::Discovered {
@@ -353,13 +353,13 @@ impl WorkerState {
         let data_char = match chars.iter().find(|c| c.uuid == FILEDATA_UUID).cloned() {
             Some(c) => c,
             None => {
-                self.emit_err("STBoxSync firmware doesn't expose FileSync chars — flash a newer build");
+                self.emit_err("STBoxFs firmware doesn't expose FileSync chars — flash a newer build");
                 let _ = p.disconnect().await;
                 return;
             }
         };
         if !chars.iter().any(|c| c.uuid == FILECMD_UUID) {
-            self.emit_err("STBoxSync firmware doesn't expose FileSync chars — flash a newer build");
+            self.emit_err("STBoxFs firmware doesn't expose FileSync chars — flash a newer build");
             let _ = p.disconnect().await;
             return;
         }

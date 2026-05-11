@@ -22,6 +22,8 @@
 #include "hci_const.h"
 #include "hci.h"
 #include "hci_tl.h"
+#include "tx_api.h"
+#include <stdio.h>
 
 #define HCI_LOG_ON                      0
 #define HCI_PCK_TYPE_OFFSET             0
@@ -315,19 +317,65 @@ int32_t hci_send_req(struct hci_request *req_t, BOOL async)
     evt_le_meta_event *me;
     uint32_t len;
 
-    uint32_t tickstart = HAL_GetTick();
+    /* v36: drain HCI events in thread context, not via the EXTI ISR.
+       Reason: when hci_tl_spi_send/receive runs, it masks EXTI11 for the
+       duration of the SPI transaction. The chip can raise its IRQ during
+       that masked window (e.g. preparing the Command Complete response).
+       When EXTI11 is re-enabled, the line is already HIGH, no rising edge
+       fires, and the ISR never runs. This wait loop then spins forever
+       on an empty rx_queue.
+       Fix: poll is_data_available() in thread context and call
+       hci_notify_asynch_evt(NULL) directly when data is pending. The
+       middleware's hci_tl_spi_receive function (called by
+       hci_notify_asynch_evt) handles its own EXTI masking, so this is
+       race-free with respect to any concurrently-firing ISR.
+       Also use tx_time_get() instead of HAL_GetTick() for timeout —
+       HAL_GetTick has been observed to be frozen during the busy-wait,
+       making the original goto-failed path unreachable. */
+    extern void ErrorLog_Write(const char *msg);
+    extern int32_t hci_notify_asynch_evt(void *pdata);
+    extern int32_t is_data_available(void);
+    ULONG tickstart_tx = tx_time_get();
+    uint32_t iter_count = 0;
+    uint32_t notify_count = 0;
+    ErrorLog_Write("hci_send_req: entering wait (in-band drain v36)");
 
     while (1)
     {
-      if ((HAL_GetTick() - tickstart) > HCI_DEFAULT_TIMEOUT_MS)
+      iter_count++;
+
+      if ((tx_time_get() - tickstart_tx) > (HCI_DEFAULT_TIMEOUT_MS / 10U))
       {
+        char m[80];
+        sprintf(m, "hci_send_req: timeout iter=%lu notify=%lu",
+                (unsigned long)iter_count, (unsigned long)notify_count);
+        ErrorLog_Write(m);
         goto failed;
+      }
+
+      if (is_data_available()) {
+        notify_count++;
+        if (notify_count == 1U) {
+          ErrorLog_Write("hci_send_req: pre-notify[1]");
+        }
+        int32_t nrc = hci_notify_asynch_evt(NULL);
+        if (notify_count == 1U) {
+          char m[64];
+          sprintf(m, "hci_send_req: post-notify[1] rc=%ld", (long)nrc);
+          ErrorLog_Write(m);
+        }
       }
 
       if (!list_is_empty(&hci_read_pkt_rx_queue))
       {
+        char m[80];
+        sprintf(m, "hci_send_req: got response iter=%lu notify=%lu",
+                (unsigned long)iter_count, (unsigned long)notify_count);
+        ErrorLog_Write(m);
         break;
       }
+
+      tx_thread_relinquish();
     }
 
     /* Extract packet from HCI event queue. */

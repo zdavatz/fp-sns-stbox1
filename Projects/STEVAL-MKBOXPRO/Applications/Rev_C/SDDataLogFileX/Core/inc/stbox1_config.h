@@ -86,7 +86,7 @@ extern "C" {
    binary so FW_INFO.TXT and the boot marker tell us unambiguously
    which build is on the chip. The bank-swap bug can otherwise leave
    us guessing. */
-#define DIAG_VERSION "v35-spi-drain-fix"
+#define DIAG_VERSION "v43-dispatch-fix"
 
 /**************************************
   * Don't Change the following defines *

@@ -129,14 +129,26 @@ static void attr_mod_request_filedata(void *ble_char_pointer, uint16_t attr_hand
 {
   (void)ble_char_pointer; (void)attr_handle; (void)offset;
 
+  extern void ErrorLog_Write(const char *msg);
+  {
+    char m[64];
+    sprintf(m, "filesync: CCCD write len=%u data[0]=0x%02x",
+            (unsigned)data_length, data_length > 0 ? att_data[0] : 0);
+    ErrorLog_Write(m);
+  }
+
   if (data_length >= 1)
   {
     /* CCCD low byte: 0x01 = notify enable. Anything with bit-0 set turns
        it on; 0 turns it off. */
     notifications_enabled = (att_data[0] & 0x01U) ? 1U : 0U;
+    {
+      char m[48];
+      sprintf(m, "filesync: notifications_enabled=%u", (unsigned)notifications_enabled);
+      ErrorLog_Write(m);
+    }
     if (!notifications_enabled)
     {
-      /* Host detached its subscription mid-walk — abort cleanly. */
       state = ST_IDLE;
     }
   }
@@ -162,11 +174,17 @@ static void write_request_filecmd(void *ble_char_pointer, uint16_t attr_handle, 
 {
   (void)ble_char_pointer; (void)attr_handle; (void)offset;
 
+  extern void ErrorLog_Write(const char *msg);
+  {
+    char m[64];
+    sprintf(m, "filesync: FileCmd write len=%u op=0x%02x state=%d notif=%u",
+            (unsigned)data_length, data_length > 0 ? att_data[0] : 0,
+            (int)state, (unsigned)notifications_enabled);
+    ErrorLog_Write(m);
+  }
+
   if (data_length < 1) return;
 
-  /* Reject any new opcode while one is still in flight — keeps the state
-     machine simple and prevents a misbehaving host from corrupting an
-     in-progress LIST or READ stream. */
   if (state != ST_IDLE && att_data[0] != OP_STOP_LOG) return;
 
   switch (att_data[0])
@@ -232,6 +250,17 @@ void BleFileSync_Tick(void)
   int            n;
 
   if (state == ST_IDLE)        return;
+
+  /* Log state transitions only once per non-idle session. */
+  extern void ErrorLog_Write(const char *msg);
+  static filesync_state_t last_logged_state = ST_IDLE;
+  if (state != last_logged_state) {
+    char m[48];
+    sprintf(m, "filesync: tick state=%d notif=%u", (int)state, (unsigned)notifications_enabled);
+    ErrorLog_Write(m);
+    last_logged_state = state;
+  }
+
   if (!notifications_enabled)  { state = ST_IDLE; return; }
 
   switch (state)

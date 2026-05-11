@@ -97,12 +97,14 @@ int32_t hci_tl_spi_reset(void)
   HAL_GPIO_WritePin(HCI_TL_RST_PORT,    HCI_TL_RST_PIN,    GPIO_PIN_SET);
   tx_thread_sleep(15);    /* 150 ms, was HAL_Delay(150) */
   ErrorLog_Write("spi_reset: post-sleep-2 (chip settled)");
-  /* Clear any pending EXTI11 latched while masked, then re-enable. */
+  /* Clear any pending EXTI11 latched while masked.
+     v38: do NOT re-enable EXTI here. EXTI gets re-armed after
+     bluetooth_init by init_ble_int_for_blue_nrglp(). During init we
+     drain in thread context. */
   __HAL_GPIO_EXTI_CLEAR_IT(HCI_TL_SPI_EXTI_PIN);
   ErrorLog_Write("spi_reset: exti cleared");
   HAL_NVIC_ClearPendingIRQ(HCI_TL_SPI_EXTI_IRQ_N);
-  ErrorLog_Write("spi_reset: nvic cleared");
-  hci_tl_spi_enable_irq();
+  ErrorLog_Write("spi_reset: nvic cleared (v38: not re-enabling)");
 
   /* v35 hypothesis fix: while EXTI11 was masked above, the chip's
      IRQ line went HIGH (boot-ready event with pending data — we see
@@ -187,11 +189,9 @@ int32_t hci_tl_spi_receive(uint8_t *buffer, uint16_t size)
     }
   }
 
-  /* Re-enable EXTI11 to match factory firmware behavior — it stays
-     armed throughout. The earlier nested-ISR-hang concern is addressed
-     by TIM6 priority 13 + cycle-counted IRQ-drop wait above (no more
-     HAL_GetTick dependence inside the ISR). */
-  hci_tl_spi_enable_irq();
+  /* v38: do NOT re-enable EXTI11 here. Same reason as spi_send: during
+     init we drain in thread context and don't need EXTI on. After
+     bluetooth_init returns, init_ble_int_for_blue_nrglp() arms it. */
   HAL_GPIO_WritePin(HCI_TL_SPI_CS_PORT, HCI_TL_SPI_CS_PIN, GPIO_PIN_SET);
   if (recv_call_count == 1U) {
     char m[40];
@@ -262,22 +262,44 @@ int32_t hci_tl_spi_send(uint8_t *buffer, uint16_t size)
     }
 
     HAL_GPIO_WritePin(HCI_TL_SPI_CS_PORT, HCI_TL_SPI_CS_PIN, GPIO_PIN_SET);
+    ErrorLog_Write("spi_send: CS HIGH after payload");
 
     if ((tx_time_get() - tickstart) > 2U) {
       result = -3;
       break;
     }
   } while (result < 0);
+  ErrorLog_Write("spi_send: do-while exit");
 
-  /* Short sleep — chip's IRQ drops within microseconds normally. */
-  tx_thread_sleep(2);
+  /* v37: removed tx_thread_sleep(2) — was suspected to hang.
+     BLEDualProgram doesn't have it and works fine. The chip's IRQ
+     drops within microseconds anyway. */
 
-  /* Re-enable EXTI11 so async events from the chip (post-command status,
-     advertising state changes, connection events) trigger the ISR. Match
-     factory firmware which keeps EXTI11 armed throughout. The earlier
-     concern about ISR-side hangs is addressed by TIM6 priority 13 +
-     cycle-counted IRQ-drop wait inside hci_tl_spi_receive. */
-  hci_tl_spi_enable_irq();
+  /* v38: do NOT re-enable EXTI11 here. We saw v37 hang precisely at
+     hci_tl_spi_enable_irq() — the EXTI->PR pending flag from the chip
+     raising its IRQ during the just-completed SPI transaction caused
+     the ISR to fire IMMEDIATELY upon enable, and the nested SPI access
+     from hci_notify_asynch_evt collided with our thread-context state.
+     EXTI gets re-armed after bluetooth_init returns by
+     init_ble_int_for_blue_nrglp() in ble_sync.c. During init we drain
+     in thread context only. */
+  ErrorLog_Write("spi_send: skipping enable_irq (v38)");
+
+  /* In-thread drain: pull any pending events the chip prepared while
+     EXTI was masked. Caps at 32 to bound time. */
+  extern int32_t hci_notify_asynch_evt(void *pdata);
+  int drain = 0;
+  while (is_data_available() && drain < 32) {
+    hci_notify_asynch_evt(NULL);
+    drain++;
+  }
+  {
+    char m[48];
+    sprintf(m, "spi_send: post-tx drained %d events", drain);
+    ErrorLog_Write(m);
+  }
+
+  ErrorLog_Write("spi_send: returning");
   return result;
 }
 
