@@ -555,6 +555,19 @@ impl WorkerState {
             self.emit_err(e);
             return;
         }
+        /* CoreBluetooth's WriteWithoutResponse has no delegate
+           callback, so p.write(...).await returns as soon as the bytes
+           are queued in the kernel — not when they've actually been
+           transmitted. If the GUI queues a Disconnect right behind
+           START_LOG (which it does, to free the Mac-side connection
+           state for the reconnect after the LOG session ends), the
+           Disconnect can tear the link down BEFORE the OP_START_LOG
+           bytes ever hit the air, and the box never reboots into LOG
+           mode. 500 ms is comfortably above CoreBluetooth's typical
+           write-buffer flush time on FS-class peripherals — plenty for
+           a 5-byte opcode payload to make it across before the
+           subsequent Disconnect command runs. */
+        tokio::time::sleep(Duration::from_millis(500)).await;
         self.emit(BleEvent::Status(format!(
             "START_LOG sent ({} s) — box rebooting to LOG mode",
             duration_seconds
