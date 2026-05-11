@@ -1,0 +1,133 @@
+name: Release Firmware
+
+# Trigger: push a tag matching `firmware-v<N>` (e.g. firmware-v260).
+# The workflow parses N from the tag, pre-sets .build_counter to N-1
+# so the single `make` invocation bumps the counter to exactly N and
+# emits firmware_v<N>.bin, then uploads it to the corresponding
+# GitHub release (creating one if it doesn't exist).
+#
+# Workflow-dispatch is also supported: pick a number manually from
+# the Actions tab. Useful for hot-fix builds without a fresh git tag.
+on:
+  push:
+    tags:
+      - 'firmware-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Firmware version number, e.g. 260 (without the "v")'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history so .build_counter rewrite doesn't trip up
+          # any future "verify HEAD is at the tag" sanity checks.
+          fetch-depth: 0
+
+      - name: Install ARM GCC toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi make
+
+      - name: Resolve version from tag or dispatch input
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            n="${{ inputs.version }}"
+            tag="firmware-v${n}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+            n="${tag#firmware-v}"
+          fi
+          # Sanity check: n must be a positive integer.
+          if ! [[ "$n" =~ ^[0-9]+$ ]] || [ "$n" -lt 1 ]; then
+            echo "::error::could not parse version number from tag '$tag'"
+            exit 1
+          fi
+          echo "n=$n" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Building firmware_v${n}.bin for tag ${tag}"
+
+      - name: Pre-set build counter so the build emits firmware_v<N>.bin
+        working-directory: Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE
+        env:
+          N: ${{ steps.ver.outputs.n }}
+        run: |
+          set -euo pipefail
+          # The Makefile bumps .build_counter at parse-time and uses
+          # the bumped value as FW_BUILD_NUM. To emit exactly v<N>,
+          # write (N-1) into .build_counter so the single `make`
+          # invocation below bumps it to N. We do NOT commit this
+          # rewrite — the working-directory copy is throwaway.
+          echo "$((N - 1))" > .build_counter
+          echo "Pre-set .build_counter to $((N - 1))"
+
+      - name: Build firmware (USB_CDC + BLE FileSync on, AUDIO off, BATTERY on)
+        working-directory: Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE
+        run: make USB_CDC_ENABLED=1 -j$(nproc)
+
+      - name: Verify firmware_v<N>.bin exists + compute SHA256
+        id: artifact
+        working-directory: Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE/build
+        env:
+          N: ${{ steps.ver.outputs.n }}
+        run: |
+          set -euo pipefail
+          bin="firmware_v${N}.bin"
+          if [ ! -f "$bin" ]; then
+            echo "::error::expected $bin not produced by make — counter math probably off"
+            ls -la
+            exit 1
+          fi
+          sha256sum "$bin" | tee "${bin}.sha256"
+          size=$(stat -c%s "$bin")
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+          echo "Built $bin ($size bytes)"
+
+      - name: Upload to GitHub release (create if missing)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          N: ${{ steps.ver.outputs.n }}
+          BIN: ${{ steps.artifact.outputs.bin }}
+          SIZE: ${{ steps.artifact.outputs.size }}
+        working-directory: Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE/build
+        run: |
+          set -euo pipefail
+          notes="SDDataLogFileX firmware v${N} for SensorTile.box PRO Rev_C.
+
+          **Build flags:**
+          - \`STBOX1_ENABLE_BLE_SYNC=1\` — advertises as \`PumpTsueri\`, BLE FileSync GATT (LIST / READ / DELETE / START_LOG / STOP_LOG, PIN 123456)
+          - \`STBOX1_ENABLE_USB_CDC=1\` — USB heartbeat at 1 Hz on \`/dev/ttyACM0\`, software DFU listener (\`echo DFU > /dev/ttyACM0\`)
+          - \`GPS_RATE_HZ=10\`, \`STBOX1_LOG_AUDIO=0\`, \`STBOX1_LOG_BATTERY=1\`
+
+          **Flash via DFU:**
+          \`\`\`sh
+          # If the box already runs a USB-CDC-enabled firmware:
+          echo DFU > /dev/ttyACM0
+          sleep 1
+          sudo dfu-util -d 0483:df11 -a 0 -s 0x08000000:mass-erase:force:leave -D firmware_v${N}.bin
+          \`\`\`
+
+          Or manual BOOT0 dance (slider OFF → hold button 2 → slider ON → release after 2 s)."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG exists — uploading artifacts (clobber)"
+            gh release upload "$TAG" "$BIN" "${BIN}.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            echo "Creating release $TAG"
+            gh release create "$TAG" "$BIN" "${BIN}.sha256" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Firmware v${N}" \
+              --notes "$notes"
+          fi
