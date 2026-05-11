@@ -41,7 +41,7 @@ are new in the same BlueST-style namespace.
 |---|---|---|---|---|
 | FileCmd | `00000080-0010-11e1-ac36-0002a5d5c51b` | write w/o response | 20 B | host → box. Opcode + args. |
 | FileData | `00000040-0010-11e1-ac36-0002a5d5c51b` | notify | 20 B | box → host. Notification chunks: file listing rows, file body chunks, single-byte status replies. |
-| SensorStream | `00000100-0010-11e1-ac36-0002a5d5c51b` | notify | 20 B | box → host. One packed sensor sample per notify (Section 3). Only active in STREAM mode. |
+| SensorStream | `00000100-0010-11e1-ac36-0002a5d5c51b` | notify | 46 B (single notify w/ MTU upgrade) or 3 × ~20 B chunks (default MTU fallback) | box → host. One packed all-sensor snapshot every 2 s (Section 3). Only active in STREAM mode. |
 | BatteryStatus | `00000200-0010-11e1-ac36-0002a5d5c51b` | read + notify | 8 B | box → host. SOC / mV / current. Notify once per minute when connected (Section 4). |
 
 Each notify-capable characteristic carries an implicit CCCD descriptor
@@ -126,44 +126,72 @@ acceptable corner case.)
 
 ## 3. Live-stream sample format
 
-`SensorStream` carries one packed binary sample per notify. Fixed layout,
-little-endian throughout, 20 B exactly.
+`SensorStream` carries one packed binary snapshot per notify covering
+**all** sensors (IMU + mag + baro + GPS). Fixed layout, little-endian
+throughout, **46 bytes**. Notify cadence: **0.5 Hz** (one packet every
+2 seconds — sufficient for live calibration and debugging; higher rates
+are a future feature if needed).
 
 ```
-offset  size  field                    units              source
-------  ----  -----------------------  -----------------  -----------------
-  0       4   timestamp_ms             ms since boot      free-running counter
-  4       2   acc_x                    mg                 LSM6DSV16X
-  6       2   acc_y                    mg
-  8       2   acc_z                    mg
- 10       2   gyro_x                   centi-dps          LSM6DSV16X (÷100)
- 12       2   gyro_y                   centi-dps
- 14       2   gyro_z                   centi-dps
- 16       2   pressure                 Pa / 10            LPS22DF (×10, fits int16)
- 18       1   flags                    bit field          see below
- 19       1   reserved                 0x00
+offset  size  field                   units             source
+------  ----  ----------------------  ----------------  -----------------
+  0       4   timestamp_ms            ms since boot     free counter
+  4       2   acc_x                   mg                LSM6DSV16X
+  6       2   acc_y                   mg
+  8       2   acc_z                   mg
+ 10       2   gyro_x                  centi-dps         LSM6DSV16X (× 1.75)
+ 12       2   gyro_y                  centi-dps
+ 14       2   gyro_z                  centi-dps
+ 16       2   mag_x                   mgauss            LIS2MDL
+ 18       2   mag_y                   mgauss
+ 20       2   mag_z                   mgauss
+ 22       4   pressure_pa             Pa                LPS22DF (full int32)
+ 26       2   temperature_cC          0.01 °C           LPS22DF
+ 28       4   gps_lat_e7              degrees × 10^7    u-blox MAX-M10S
+ 32       4   gps_lon_e7              degrees × 10^7
+ 36       2   gps_alt_m               metres (signed)
+ 38       2   gps_speed_cmh           cm/h × 10         u-blox (≈ km/h × 100)
+ 40       2   gps_course_cdeg         centi-degrees     0..35999
+ 42       1   gps_fix_q               0=none 1=GPS …    u-blox NMEA GGA
+ 43       1   gps_nsat                # satellites
+ 44       1   flags                   bit field         see below
+ 45       1   reserved                0x00
 ```
 
 **flags** (bit 0 = LSB):
-- bit 0: GPS valid in this sample (host then knows to look up the most-recent GPS fix in its own stream context — GPS itself goes on a separate channel; see below).
-- bit 1: low-battery warning active.
-- bits 2-7: reserved, must be 0.
+- bit 0: gps_valid (set when the most-recent GPS fix is fresh — within the last 5 seconds).
+- bit 1: low_battery_warning_active.
+- bit 2: in_log_mode_concurrent (always 0 in STREAM, reserved for future use).
+- bits 3-7: reserved, must be 0.
 
 **Gyro scaling**: the LSM6DSV16X at ±500 dps with 17.5 mdps/LSB has a
 ±9 deg/s range across an int16 — we'd lose precision. So we send
-centi-degrees-per-second = LSB × 17.5 / 1000 × 100 = LSB × 1.75
-truncated to int16. Range ±327.67 dps. Sufficient for normal motion;
-extreme spins are clipped, which is logged in the error log if it ever
-happens.
+centi-degrees-per-second = raw_LSB × 1.75 truncated to int16. Range
+±327.67 dps. Extreme spins are clipped (and logged in the error log if
+it ever happens).
 
-**Magnetometer + GPS** are *not* in this packet. They update at lower
-rates and the host gets them via SD-file sync. Sending mag at 100 Hz
-over BLE would dominate the link without adding much for live
-calibration use.
+**Pressure**: LPS22DF gives 24-bit pressure in Pa (range ~30000-110000
+Pa for normal altitudes). Fits comfortably in int32. We send the raw
+Pa value, not hPa — host divides by 100 for display.
 
-**Notify cadence**: 100 Hz default. The box rate-limits to whatever the
-BLE connection interval allows; if the host requests a longer interval
-(slower link), the box drops samples in flight rather than queueing.
+**GPS handling when no fix**: when the GPS module hasn't acquired a fix
+yet (or has lost it), `gps_lat_e7` / `gps_lon_e7` are set to `0x7FFFFFFF`,
+`gps_alt_m` / `gps_speed_cmh` to `0`, `gps_fix_q` to `0`, and the
+`gps_valid` flag is cleared. Host detects "no fix" via the flag.
+
+### MTU negotiation
+
+46 bytes exceeds the default BLE 4.0 ATT MTU (23 bytes → 20 byte
+notify payload). The box requests an MTU upgrade right after connect:
+
+- HCI command `ACI_GATT_EXCHANGE_CONFIG` sent at connect with MTU 100.
+- Most modern hosts (macOS, recent Android) accept this; the BlueNRG-LP
+  reports the negotiated MTU in the response.
+- If the host refuses or the negotiated MTU is too small, the box falls
+  back to **chunked mode**: the same 46-byte snapshot is split into
+  three sequential notifies (`0x00 <bytes 0-18>`, `0x01 <bytes 19-37>`,
+  `0x02 <bytes 38-45>`). First byte of each chunk = sequence index.
+  Host reassembles. At 0.5 Hz this adds negligible latency.
 
 ---
 
@@ -219,6 +247,12 @@ crashing the logger.
 After advertising is enabled, the BLE task enters its steady-state loop:
 poll for chip events, dispatch to the GATT handlers, service active
 FileSync / SensorStream / BatteryStatus operations.
+
+**On connect**: immediately after the chip reports
+`HCI_LE_CONNECTION_COMPLETE`, the box sends
+`ACI_GATT_EXCHANGE_CONFIG` (`0xFD03`) requesting MTU = 100. Result is
+remembered so the SensorStream emitter chooses single-notify vs
+chunked mode (Section 3).
 
 **On disconnect**: the chip generates a `HCI_DISCONNECTION_COMPLETE`
 event. The firmware re-enables advertising (`ACI_GAP_SET_ADVERTISING_ENABLE`)

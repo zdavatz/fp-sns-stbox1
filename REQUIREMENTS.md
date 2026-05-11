@@ -113,7 +113,7 @@ While in STREAM mode this is paused; it resumes on STREAM_STOP / reconnect.
 |---|---|
 | F-LIVE-1 | Host writes opcode `0x10 STREAM_START` on FileCmd → box switches to STREAM mode. `0x11 STREAM_STOP` returns to LOG mode. |
 | F-LIVE-2 | While in STREAM, sensor reads land in notifications on a dedicated `SensorStream` characteristic (UUID TBD). One packed binary sample per notify: acc XYZ + gyro XYZ + mag XYZ + pressure + temperature + (when valid) GPS lat/lon. Format finalized in design phase. |
-| F-LIVE-3 | Stream rate matches the native sensor rate (≥ 10 Hz, target 100 Hz when BLE bandwidth allows). |
+| F-LIVE-3 | Stream rate **0.5 Hz** by default (one packet every 2 s). Sufficient for calibration / debugging use cases. One packet carries the full sensor snapshot (acc, gyro, mag, baro, GPS). Higher rates are a future feature if needed. |
 | F-LIVE-4 | While in STREAM, the active `Sens/Gps/Bat*.csv` files are closed cleanly — no dangling half-written session. Re-entering LOG mode opens fresh `SensNNN+1.csv` etc. |
 | F-LIVE-5 | Connection drop in STREAM mode → auto-revert to LOG mode after a 5-second grace window, so the box never sits in stream mode with no host listening, missing real ride data. |
 
