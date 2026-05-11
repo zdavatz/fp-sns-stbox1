@@ -86,6 +86,9 @@ pub enum BleCmd {
     /// when box reboots). Caller should expect Disconnected event
     /// shortly after sending.
     StartLog { duration_seconds: u32 },
+    /// DELETE opcode — drop `name` from the SD card. Single-byte status
+    /// reply: 0x00 OK / 0xB0 BUSY / 0xE1 NOT_FOUND / 0xE2 IO_ERROR / 0xE3 BAD_REQUEST.
+    Delete { name: String },
 }
 
 #[derive(Clone, Debug)]
@@ -102,6 +105,8 @@ pub enum BleEvent {
     ReadStarted { name: String, size: u64 },
     ReadProgress { name: String, bytes_done: u64 },
     ReadDone { name: String, content: Vec<u8> },
+    /// DELETE finished successfully (status byte 0x00 received).
+    DeleteDone { name: String },
     /// User-facing error — display in the log panel.
     Error(String),
 }
@@ -246,6 +251,8 @@ enum CurrentOp {
         /// from "first byte of a 1-byte file".
         first_packet: bool,
     },
+    /// DELETE in flight — waiting for the single-byte status response.
+    Deleting { name: String, last_progress: Instant },
 }
 
 type NotifStream = Pin<Box<dyn Stream<Item = ValueNotification> + Send>>;
@@ -308,6 +315,7 @@ impl WorkerState {
             BleCmd::Read { name, size } => self.read(name, size).await,
             BleCmd::StopLog     => self.stop_log().await,
             BleCmd::StartLog { duration_seconds } => self.start_log(duration_seconds).await,
+            BleCmd::Delete { name } => self.delete(name).await,
         }
     }
 
@@ -429,6 +437,8 @@ impl WorkerState {
             ));
         } else if let CurrentOp::Listing { .. } = &self.op {
             self.emit_err("LIST aborted by disconnect");
+        } else if let CurrentOp::Deleting { name, .. } = &self.op {
+            self.emit_err(format!("DELETE {name} aborted by disconnect"));
         }
         self.op           = CurrentOp::Idle;
         self.notif_stream = None;
@@ -499,6 +509,27 @@ impl WorkerState {
             first_packet: true,
         };
         self.emit(BleEvent::ReadStarted { name, size });
+    }
+
+    async fn delete(&mut self, name: String) {
+        if !matches!(self.op, CurrentOp::Idle) {
+            self.emit_err("another op is in flight — wait or Disconnect");
+            return;
+        }
+        if self.peripheral.is_none() {
+            self.emit_err("not connected");
+            return;
+        }
+        // Opcode payload: 0x03 + filename bytes (no NUL).
+        let mut payload = Vec::with_capacity(1 + name.len());
+        payload.push(0x03);
+        payload.extend_from_slice(name.as_bytes());
+        if let Err(e) = self.write_cmd(&payload).await {
+            self.emit_err(e);
+            return;
+        }
+        self.op = CurrentOp::Deleting { name: name.clone(), last_progress: Instant::now() };
+        self.emit(BleEvent::Status(format!("DELETE {name} sent")));
     }
 
     async fn stop_log(&mut self) {
@@ -591,9 +622,12 @@ impl WorkerState {
 
                 content.extend_from_slice(&n.value);
 
-                // Throttle progress events — every ~16 KB or at EOF.
+                // Throttle progress events — every ~4 KB or at EOF.
+                // 4 KB is a compromise between channel-spam and a smooth
+                // progress bar: at BLE FileSync's real-world ~1-3 KB/s the
+                // bar updates every 1-4 s. 16 KB was too coarse (5-16 s).
                 let done = content.len() as u64;
-                if done - *last_emit >= 16 * 1024 || done >= *expected {
+                if done - *last_emit >= 4 * 1024 || done >= *expected {
                     *last_emit = done;
                     self.emit(BleEvent::ReadProgress { name: name.clone(), bytes_done: done });
                 }
@@ -608,6 +642,29 @@ impl WorkerState {
                     self.op = CurrentOp::Idle;
                     return;
                 }
+            }
+            CurrentOp::Deleting { name, .. } => {
+                /* Firmware replies with exactly one byte: 0x00 OK or one
+                   of the error codes. */
+                if n.value.is_empty() {
+                    return;  // shouldn't happen, but be tolerant
+                }
+                let s = n.value[0];
+                if s == 0x00 {
+                    let final_name = std::mem::take(name);
+                    self.emit(BleEvent::DeleteDone { name: final_name });
+                } else {
+                    let msg = match s {
+                        0xB0 => "BUSY (logging in progress, send STOP_LOG first)",
+                        0xE1 => "NOT_FOUND",
+                        0xE2 => "IO_ERROR",
+                        0xE3 => "BAD_REQUEST",
+                        _    => "unknown error",
+                    };
+                    self.emit_err(format!("DELETE {name}: {msg} (0x{s:02X})"));
+                }
+                self.op = CurrentOp::Idle;
+                return;
             }
         }
 
@@ -637,8 +694,9 @@ impl WorkerState {
         }
 
         let stale = match &self.op {
-            CurrentOp::Listing { last_progress, .. } => now.duration_since(*last_progress) > OP_IDLE_TIMEOUT,
-            CurrentOp::Reading { last_progress, .. } => now.duration_since(*last_progress) > OP_IDLE_TIMEOUT,
+            CurrentOp::Listing  { last_progress, .. } => now.duration_since(*last_progress) > OP_IDLE_TIMEOUT,
+            CurrentOp::Reading  { last_progress, .. } => now.duration_since(*last_progress) > OP_IDLE_TIMEOUT,
+            CurrentOp::Deleting { last_progress, .. } => now.duration_since(*last_progress) > OP_IDLE_TIMEOUT,
             CurrentOp::Idle => false,
         };
         if !stale { return; }
@@ -652,6 +710,9 @@ impl WorkerState {
                     "READ {name} timed out at {}/{} B — no notifies for 20 s",
                     content.len(), expected
                 ));
+            }
+            CurrentOp::Deleting { name, .. } => {
+                self.emit_err(format!("DELETE {name} timed out — no notify for 20 s"));
             }
             CurrentOp::Idle => {}
         }

@@ -17,6 +17,7 @@
 mod ble;
 
 use eframe::egui;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
@@ -117,6 +118,15 @@ struct AppState {
     /// field. Sent as the START_LOG payload (issue #15). Default 1800 s
     /// = 30 minutes.
     ble_session_duration_s: u32,
+    /// Serial download queue. "Download selected" pushes all ticked files
+    /// here; the head is sent to the worker. The next entry is popped and
+    /// sent on ReadDone or on a READ-side error event. Required because
+    /// the worker has a single in-flight slot and blasting all reads in
+    /// one shot rejects all but the first with "another op is in flight".
+    ble_dl_queue: VecDeque<(String, u64)>,
+    /// True iff a Read is in flight in the worker (Download or queue head).
+    /// Drives queue advancement when a Read completes or errors out.
+    ble_dl_in_flight: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +142,10 @@ struct BleFile {
     size: u64,
     selected: bool,
     downloaded: bool,
+    /// Bytes received so far on the current read. Reset to 0 on
+    /// ReadStarted, advanced on each ReadProgress notify, and bumped to
+    /// `size` on ReadDone. Drives the per-row progress bar.
+    bytes_done: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -443,7 +457,20 @@ impl AppState {
         let events = b.try_recv_all();
         for e in events {
             match e {
-                BleEvent::Status(s) => self.ble_status = s,
+                BleEvent::Status(s) => {
+                    /* Mirror Status events into the Log so the user has a
+                       scrollable history of BLE state transitions — the
+                       single-line ble_status badge was the only surface
+                       before, which made it easy to miss a transient
+                       message like "LIST sent" or "STOP_LOG sent". Skip
+                       the high-frequency "reading X: N B" progress
+                       chatter — that already has the per-row progress
+                       bar; tee-ing it would drown out everything else. */
+                    if !s.starts_with("reading ") {
+                        push_log(&self.log, format!("ble: {s}"));
+                    }
+                    self.ble_status = s;
+                }
                 BleEvent::Discovered { id, name, rssi } => {
                     if !self.ble_devices.iter().any(|d| d.id == id) {
                         self.ble_devices.push(BleDevice { id, name, rssi });
@@ -461,10 +488,21 @@ impl AppState {
                     self.ble_state = BleState::Idle;
                     self.ble_files.clear();
                     self.ble_status = "disconnected".into();
+                    self.ble_dl_queue.clear();
+                    self.ble_dl_in_flight = false;
                 }
                 BleEvent::ListEntry { name, size } => {
+                    /* Default-tick only sensor-data rows (Sens*.csv,
+                       Gps*.csv, Bat*.csv, Mic*.wav). Everything else
+                       (FW_INFO, CHK, error log, macOS AppleDouble,
+                       0-byte phantoms like PUMPTSUE.RI) goes in the
+                       Debug group and stays unticked so a bulk
+                       Download grabs only what the user wants. */
+                    let selected = is_sensor_data_name(&name);
                     self.ble_files.push(BleFile {
-                        name, size, selected: true, downloaded: false,
+                        name, size, selected,
+                        downloaded: false,
+                        bytes_done: 0,
                     });
                 }
                 BleEvent::ListDone => {
@@ -472,16 +510,25 @@ impl AppState {
                 }
                 BleEvent::ReadStarted { name, size } => {
                     self.ble_status = format!("reading {name} ({size} B)…");
+                    for f in self.ble_files.iter_mut() {
+                        if f.name == name { f.bytes_done = 0; }
+                    }
                 }
                 BleEvent::ReadProgress { name, bytes_done } => {
                     self.ble_status = format!("reading {name}: {bytes_done} B");
+                    for f in self.ble_files.iter_mut() {
+                        if f.name == name { f.bytes_done = bytes_done; }
+                    }
                 }
                 BleEvent::ReadDone { name, content } => {
                     match save_downloaded_file(&self.ble_out_dir, &name, &content) {
                         Ok(path) => {
                             self.ble_status = format!("saved {} ({} B)", path.display(), content.len());
                             for f in self.ble_files.iter_mut() {
-                                if f.name == name { f.downloaded = true; }
+                                if f.name == name {
+                                    f.downloaded = true;
+                                    f.bytes_done = f.size;
+                                }
                             }
                             // Auto-route into the existing animate
                             // pipeline so the user can immediately hit
@@ -494,6 +541,13 @@ impl AppState {
                             push_log(&self.log, format!("ble error: {e}"));
                         }
                     }
+                    self.ble_dl_in_flight = false;
+                    self.advance_download_queue();
+                }
+                BleEvent::DeleteDone { name } => {
+                    self.ble_status = format!("deleted {name}");
+                    self.ble_files.retain(|f| f.name != name);
+                    push_log(&self.log, format!("ble: deleted {name}"));
                 }
                 BleEvent::Error(msg) => {
                     self.ble_status = format!("error: {msg}");
@@ -501,9 +555,36 @@ impl AppState {
                     if matches!(self.ble_state, BleState::Scanning | BleState::Connecting) {
                         self.ble_state = BleState::Idle;
                     }
+                    /* A READ-side error (NOT_FOUND, BUSY, IO_ERROR, BAD_REQUEST,
+                       timeout, disconnect mid-op) ends the in-flight read. Advance
+                       the queue so the next ticked file gets its turn instead of
+                       the whole batch being eaten by one bad row (typical case:
+                       the phantom 0-byte `PUMPTSUE.RI` returning NOT_FOUND blocks
+                       all subsequent reads). The "another op is in flight" guard
+                       triggers when the worker rejects a queued Read — that's not
+                       a real READ error, so don't advance on it. */
+                    if msg.starts_with("READ ") {
+                        self.ble_dl_in_flight = false;
+                        self.advance_download_queue();
+                    }
                 }
             }
         }
+    }
+
+    /// Pop the next file off the download queue and send it to the
+    /// worker. No-op if queue empty or another read is already in flight.
+    /// Called from ReadDone and READ-side error event handlers so each
+    /// completed read triggers the next, giving us serial multi-file
+    /// downloads instead of the original blast-all-at-once behaviour
+    /// (which had the worker reject every read after the first).
+    fn advance_download_queue(&mut self) {
+        if self.ble_dl_in_flight { return; }
+        let Some((name, size)) = self.ble_dl_queue.pop_front() else { return; };
+        let Some(b) = self.ble.as_ref() else { return; };
+        b.send(BleCmd::Read { name: name.clone(), size });
+        self.ble_dl_in_flight = true;
+        push_log(&self.log, format!("ble: reading {name} ({size} B)"));
     }
 
     /// If the saved file is a Sens*.csv or matching _gps.csv, set it on
@@ -528,6 +609,103 @@ fn save_downloaded_file(dir: &Path, name: &str, content: &[u8]) -> std::io::Resu
     let path = dir.join(name);
     std::fs::write(&path, content)?;
     Ok(path)
+}
+
+/// True for the four sensor-data row types the firmware creates per
+/// logging session (Sens*.csv, Gps*.csv, Bat*.csv, Mic*.wav). Used both
+/// for the default-ticked state in the file list and for splitting the
+/// list into the Sensor / Debug groups. macOS AppleDouble sidecars
+/// (`._<name>`) match the inner pattern by accident, so guard the
+/// prefix explicitly.
+fn is_sensor_data_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("._") { return false; }
+    (lower.starts_with("sens") && lower.ends_with(".csv"))
+        || (lower.starts_with("gps")  && lower.ends_with(".csv"))
+        || (lower.starts_with("bat")  && lower.ends_with(".csv"))
+        || (lower.starts_with("mic")  && lower.ends_with(".wav"))
+}
+
+/// Render one group ("Sensor" or "Debug") inside the BLE file list.
+/// Borrows `files` mutably to flip per-row checkboxes; pushes a delete
+/// target name when the user clicks the trash icon so the caller can
+/// send the BLE command outside of this borrow. Indices are looked up
+/// by position; the caller is responsible for partitioning them.
+fn render_file_group(
+    ui: &mut egui::Ui,
+    title: &str,
+    indices: &[usize],
+    files: &mut [BleFile],
+    delete_target: &mut Option<String>,
+) {
+    if indices.is_empty() { return; }
+    /* Header strip with a "Select all" toggle on the right. The
+       toggle reads the common state of the group (all on / all off /
+       mixed) so the user can flip the whole section in one click. */
+    let all_on  = indices.iter().all(|&i| files[i].selected);
+    let none_on = indices.iter().all(|&i| !files[i].selected);
+    ui.horizontal(|ui| {
+        ui.add(egui::Label::new(
+            egui::RichText::new(title).strong().size(13.0)
+        ));
+        ui.label(egui::RichText::new(format!("({})", indices.len()))
+            .small()
+            .color(egui::Color32::from_gray(140)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let label = if all_on { "Untick all" }
+                        else if none_on { "Tick all" }
+                        else { "Tick all" };
+            if ui.small_button(label).clicked() {
+                let new_val = !all_on;
+                for &i in indices { files[i].selected = new_val; }
+            }
+        });
+    });
+    for &i in indices {
+        let f = &mut files[i];
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut f.selected, "");
+            ui.label(format!("{:>10} B  {}", f.size, f.name));
+            if f.downloaded {
+                /* Clear "downloaded" badge. Earlier code used `✓` U+2713,
+                   which is missing from egui's default proportional font
+                   and rendered as an empty tofu box. Use ✅ U+2705 (the
+                   emoji form) which egui can rasterise from its emoji
+                   fallback font — same path as the 🗑 trash button. The
+                   plain-text "done" suffix is the guaranteed-readable
+                   backup if the user's font config drops emoji entirely. */
+                ui.colored_label(
+                    egui::Color32::from_rgb(0, 170, 0),
+                    egui::RichText::new("✅ downloaded").strong(),
+                );
+            }
+            let busy = f.bytes_done > 0 && !f.downloaded;
+            if ui.add_enabled(
+                !busy,
+                egui::Button::new("🗑").small(),
+            )
+                .on_hover_text("Delete this file from the SD card")
+                .clicked()
+            {
+                *delete_target = Some(f.name.clone());
+            }
+        });
+        if !f.downloaded && f.bytes_done > 0 && f.size > 0 {
+            let frac = (f.bytes_done as f32 / f.size as f32).clamp(0.0, 1.0);
+            let bytes_str = if f.size >= 1024 * 1024 {
+                format!("{:.2} / {:.2} MB",
+                    f.bytes_done as f64 / 1_048_576.0,
+                    f.size as f64 / 1_048_576.0)
+            } else {
+                format!("{} / {} B", f.bytes_done, f.size)
+            };
+            ui.add(
+                egui::ProgressBar::new(frac)
+                    .desired_width(360.0)
+                    .text(bytes_str),
+            );
+        }
+    }
 }
 
 impl AppState {
@@ -570,6 +748,12 @@ impl AppState {
                         .clicked()
                     {
                         if let Some(b) = self.ble.as_ref() { b.send(BleCmd::StopLog); }
+                        /* STOP_LOG is a fire-and-forget side-channel write —
+                           the firmware does NOT emit a FileData reply (see
+                           `ble_filesync.c::OP_STOP_LOG`). Without an explicit
+                           log line the user has no on-screen confirmation
+                           the click registered, so push one here. */
+                        push_log(&self.log, "ble: STOP_LOG sent".into());
                     }
                     /* Issue #15 — START_LOG triggers a LOG-mode session of
                      * `ble_session_duration_s` seconds. Box reboots into
@@ -591,12 +775,36 @@ impl AppState {
                         if let Some(b) = self.ble.as_ref() {
                             b.send(BleCmd::StartLog { duration_seconds: self.ble_session_duration_s });
                         }
+                        /* Box reboots into LOG mode and the BLE connection
+                           drops within ~50 ms — no FileData reply ever
+                           lands. Log immediately so the user sees the
+                           click took effect; the subsequent Disconnected
+                           event will also appear when the link drops. */
+                        push_log(
+                            &self.log,
+                            format!("ble: START_LOG sent ({} s) — box rebooting to LOG mode",
+                                self.ble_session_duration_s),
+                        );
                     }
                     if ui
                         .add_enabled(connected, egui::Button::new("Disconnect"))
                         .clicked()
                     {
                         if let Some(b) = self.ble.as_ref() { b.send(BleCmd::Disconnect); }
+                        /* Optimistic state transition: drop straight to
+                           Idle without waiting for the worker's eventual
+                           Disconnected event. `peripheral.disconnect()`
+                           can take a few seconds on macOS CoreBluetooth
+                           while the LL_TERMINATE_IND propagates — without
+                           this, Scan stays disabled in that window. The
+                           worker's Disconnected event will arrive later
+                           and is idempotent (sets state to Idle again). */
+                        self.ble_state = BleState::Idle;
+                        self.ble_files.clear();
+                        self.ble_dl_queue.clear();
+                        self.ble_dl_in_flight = false;
+                        self.ble_status = "disconnecting…".into();
+                        push_log(&self.log, "ble: Disconnect requested".into());
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if !self.ble_status.is_empty() {
@@ -663,33 +871,78 @@ impl AppState {
                         );
                     } else {
                         ui.add_space(4.0);
+                        /* `delete_target` is set inside the per-row loop
+                           when the user clicks the trash button. We can't
+                           send to the BLE backend from inside the row
+                           closure because that path borrows self.ble_files
+                           mutably; defer the send until after the loop. */
+                        let mut delete_target: Option<String> = None;
+                        /* Split rows by index into two groups so the user
+                           sees session data (Sensor) above noise (Debug)
+                           and can mass-tick either header. Indices stay
+                           valid for the lifetime of this frame because we
+                           don't mutate self.ble_files in between. */
+                        let mut sensor_idx: Vec<usize> = Vec::new();
+                        let mut debug_idx:  Vec<usize> = Vec::new();
+                        for (i, f) in self.ble_files.iter().enumerate() {
+                            if is_sensor_data_name(&f.name) {
+                                sensor_idx.push(i);
+                            } else {
+                                debug_idx.push(i);
+                            }
+                        }
+
                         egui::ScrollArea::vertical()
-                            .max_height(160.0)
+                            .max_height(220.0)
                             .id_salt("ble-file-list")
                             .show(ui, |ui| {
-                                for f in self.ble_files.iter_mut() {
-                                    ui.horizontal(|ui| {
-                                        ui.checkbox(&mut f.selected, "");
-                                        ui.label(format!("{:>10} B  {}", f.size, f.name));
-                                        if f.downloaded {
-                                            ui.colored_label(egui::Color32::LIGHT_GREEN, "✓");
-                                        }
-                                    });
-                                }
+                                render_file_group(
+                                    ui,
+                                    "Sensor",
+                                    &sensor_idx,
+                                    &mut self.ble_files,
+                                    &mut delete_target,
+                                );
+                                ui.add_space(4.0);
+                                render_file_group(
+                                    ui,
+                                    "Debug",
+                                    &debug_idx,
+                                    &mut self.ble_files,
+                                    &mut delete_target,
+                                );
                             });
+                        /* Defer the BLE send out of the row closure to keep
+                           the borrow of self.ble_files local. The firmware
+                           rejects DELETE while logging is active (BUSY); the
+                           error surfaces via BleEvent::Error in the log. */
+                        if let Some(name) = delete_target {
+                            if let Some(b) = self.ble.as_ref() {
+                                b.send(BleCmd::Delete { name: name.clone() });
+                                push_log(&self.log, format!("ble: deleting {name}"));
+                            }
+                        }
 
                         ui.add_space(4.0);
-                        if ui.button("Download selected").clicked() {
-                            if let Some(b) = self.ble.as_ref() {
-                                for f in self.ble_files.iter() {
-                                    if f.selected && !f.downloaded {
-                                        b.send(BleCmd::Read {
-                                            name: f.name.clone(),
-                                            size: f.size,
-                                        });
-                                    }
+                        let queue_len = self.ble_dl_queue.len();
+                        let any_in_flight = self.ble_dl_in_flight;
+                        let dl_label = if any_in_flight || queue_len > 0 {
+                            format!("Download selected ({} queued)", queue_len + (any_in_flight as usize))
+                        } else {
+                            "Download selected".to_string()
+                        };
+                        if ui.add_enabled(!any_in_flight, egui::Button::new(dl_label)).clicked() {
+                            /* Queue all ticked, not-yet-downloaded files
+                               serially. The first one is sent immediately
+                               by advance_download_queue(); the rest start
+                               on each ReadDone / READ-error event. */
+                            self.ble_dl_queue.clear();
+                            for f in self.ble_files.iter() {
+                                if f.selected && !f.downloaded {
+                                    self.ble_dl_queue.push_back((f.name.clone(), f.size));
                                 }
                             }
+                            self.advance_download_queue();
                         }
                     }
                 }
@@ -732,6 +985,27 @@ impl AppState {
 }
 
 impl eframe::App for AppState {
+    /// Called by eframe when the window is closed cleanly (Cmd-Q, red
+    /// traffic-light, app menu Quit). We send Disconnect to the BLE
+    /// worker before egui tears the runtime down so btleplug gets to
+    /// emit LL_TERMINATE_IND to the box. Without this, the firmware
+    /// keeps the GATT connection alive until the supervision timeout
+    /// (~10-30 s on macOS), and a fresh GUI launched in that window
+    /// can't see `STBoxFs` because the box is still advertising as
+    /// non-connectable to others. A hard `pkill -9` skips this path —
+    /// in that case only a box reboot resets the link.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(b) = self.ble.as_ref() {
+            b.send(BleCmd::Disconnect);
+            /* Give the worker thread ~250 ms to actually emit the
+               disconnect over the air before the process exits. Not
+               a guarantee — btleplug's per-platform stack may need
+               longer — but enough on macOS Core Bluetooth in
+               practice. */
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Drag-and-drop handling. Plain files come through
         // `dropped_files`; `hovered_files` lets us highlight the drop
@@ -964,20 +1238,43 @@ impl eframe::App for AppState {
             ui.separator();
 
             // ----- Log panel ------------------------------------------
-            ui.label("Log");
+            ui.horizontal(|ui| {
+                ui.label("Log");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Copy all").clicked() {
+                        let lines = self.log.lock().map(|v| v.clone()).unwrap_or_default();
+                        ui.output_mut(|o| o.copied_text = lines.join("\n"));
+                    }
+                });
+            });
+            /* Grow the log to fill the remaining window space so resizing
+               the window enlarges the log instead of leaving dead grey
+               below it. `desired_rows` is computed from the available
+               pixel height divided by the monospace row height; the
+               ScrollArea still provides stick-to-bottom auto-scroll
+               and a horizontal-overflow handler. */
+            let row_h = ui.text_style_height(&egui::TextStyle::Monospace).max(1.0);
+            let avail_h = ui.available_height().max(row_h * 4.0);
+            let rows = (avail_h / row_h) as usize;
             egui::ScrollArea::vertical()
-                .max_height(ui.available_height())
+                .max_height(avail_h)
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     let lines = self.log.lock().map(|v| v.clone()).unwrap_or_default();
                     let text = lines.join("\n");
                     let mut owned = text;
+                    /* No .interactive(false) → TextEdit is selectable
+                       (Cmd-A to select all, Cmd-C to copy). Any typing
+                       lands in the local `owned` and is discarded on
+                       the next frame when we rebuild from self.log, so
+                       the buffer remains effectively read-only without
+                       blocking the user's mouse selection — which the
+                       `.interactive(false)` path did. */
                     ui.add(
                         egui::TextEdit::multiline(&mut owned)
                             .desired_width(f32::INFINITY)
-                            .desired_rows(12)
-                            .font(egui::TextStyle::Monospace)
-                            .interactive(false),
+                            .desired_rows(rows.max(4))
+                            .font(egui::TextStyle::Monospace),
                     );
                 });
         });
