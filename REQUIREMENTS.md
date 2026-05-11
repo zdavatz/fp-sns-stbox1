@@ -1,6 +1,6 @@
 # Requirements — SensorTile.box PRO firmware rewrite
 
-**Status:** review v0.2 · 2026-05-11
+**Status:** **LOCKED v0.3** · 2026-05-11
 **Working name:** STBox PumpLogger (final name TBD)
 **Audience:** Peter (review), Claude (implementation), zeno (review)
 
@@ -15,6 +15,7 @@
 7. [Out of scope](#7-out-of-scope)
 8. [Design decisions](#8-design-decisions)
 9. [Glossary](#9-glossary)
+10. [Implementation phases](#10-implementation-phases)
 
 ---
 
@@ -330,6 +331,36 @@ revisit the trade-offs.
 
 ---
 
-**Next step.** Peter reviews this draft. When locked, we move to the
-design phase (UUIDs, exact byte layouts, file-format details), then
-implementation per the phased plan from 2026-05-11.
+## 10. Implementation phases
+
+Each phase ends with a flashable binary that demonstrates one capability.
+Peter tests on the real box before we move to the next phase. Each phase
+ends with a git commit + push.
+
+| # | Phase | Deliverable | Effort |
+|---|---|---|---|
+| 1 | Design | `DESIGN.md` — concrete UUIDs, byte layouts, HCI command sequence, memory map, module boundaries. Peter reviews + locks. | 1-2 d |
+| 2 | Skeleton + boot-beep | Flashable binary that cold-boots, beeps once, blinks LED. Bare-metal scheduler in place, empty module skeletons. | 2-3 d |
+| 3 | Logger without BLE | Binary that logs sensors + GPS + battery to SD identically to today's firmware, but with no ThreadX / FileX / BSP middleware. From this point Peter has a usable logger for field data while phases 4-7 happen. | 2-3 d |
+| 4 | BLE bringup | Box advertises as `STBoxFs`, Mac can connect with PIN. Custom HCI command sequence, polled SPI, four empty GATT characteristics. | 3-5 d |
+| 5 | FileSync | LIST + READ-with-offset + DELETE. GUI can download files end-to-end, resume after a drop. | 1-2 d |
+| 6 | Live stream + mode switch | STREAM_START / STREAM_STOP. GUI can flip the box to live-stream mode and back. Auto-revert on disconnect. | 1-2 d |
+| 7 | Battery status char | Per-minute notifications + low-battery beep. GUI shows live battery. | 0.5 d |
+| 8 | Hardening | 1000 × power-cycle test, 1000 × BLE-reconnect test, plausibility watchdog tuning, READMEs. | 2-3 d |
+
+**Total ≈ 12-20 days of focused work.**
+
+**Meta-rules:**
+
+1. Every phase ends with commit + push (clean git history, easy revert).
+2. Every phase is verified on the real box before the next starts.
+3. If any phase exposes a requirement gap, work pauses to update this
+   document before continuing.
+4. Peter may say "stop, re-evaluate" at any point.
+5. From Phase 3 onward, Peter has a usable logger for actual rides;
+   the BLE work happens in parallel with real-world data collection.
+
+---
+
+**Next step:** Peter has reviewed. Requirements locked 2026-05-11.
+Phase 1 (DESIGN.md draft) starts now.
