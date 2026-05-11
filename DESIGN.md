@@ -1,6 +1,6 @@
 # Design — SensorTile.box PRO firmware rewrite
 
-**Status:** draft v0.1 · 2026-05-11
+**Status:** **LOCKED v0.2** · 2026-05-11
 **Reference:** [REQUIREMENTS.md](./REQUIREMENTS.md) v0.3 (locked)
 
 This document fills in the concrete numbers, formats, and module
@@ -491,19 +491,45 @@ PumpLogger/
 
 ## 11. Watchdog details
 
-### IWDG (hardware loop-alive watchdog)
+Three independent layers, by purpose:
 
-- LSI clock @ 32 kHz, prescaler `/256`, reload `0xFA0` (4000).
-- Period = 256 × 4000 / 32000 = **32 seconds** — far longer than any
-  legitimate main-loop iteration but short enough that a hang doesn't
-  leave the user puzzled.
-- Actually, **per F-WDG-1 (2 s)**, set prescaler `/16` reload `0xFA0`:
-  period = 16 × 4000 / 32000 = 2 seconds. Use this.
+| Layer | Period | Source | Action on trip |
+|---|---|---|---|
+| WWDG (primary loop-alive, with ISR) | 1.5 s, early-warning 50 ms before | hardware, kicked from main loop | ISR: errlog + beep, then reset |
+| IWDG (belt-and-suspenders) | 2.0 s | hardware, kicked from main loop | direct reset, no ISR |
+| Sensor-plausibility (data-alive) | 5 s | software, in watchdog_tick() | errlog + beep + `NVIC_SystemReset()` |
+
+### WWDG (primary loop-alive watchdog)
+
+- APB1 clock @ 80 MHz / 4096 prescaler / 64 (`WDGTB[2:0] = 7`) = 305 Hz
+  count rate ≈ 3.3 ms per count.
+- Window register set so a kick is valid at any time (no early-kick
+  reset).
+- Counter starts at `0x7F` (max). Re-armed back to `0x7F` on every
+  main-loop iteration.
+- Early-warning fires when the counter passes `0x40` going downward —
+  about 50 ms before the reset point. ISR fires, runs:
+  1. `errlog_write("watchdog: WWDG fired; main loop hung")` — atomic
+     append to the open error-log file.
+  2. `buzzer_blocking_pattern(WD_PATTERN)` — beeps a distinctive
+     pattern even though we're about to reset (~30 ms beep, fits in
+     the 50 ms slack before reset).
+  3. `NVIC_SystemReset()` — explicit reset, doesn't wait for the
+     hardware to fire.
+- Counter back to `0x7F` on a normal main-loop iteration; we never
+  reach the early-warning threshold in steady state.
+
+### IWDG (belt-and-suspenders)
+
+- LSI clock @ 32 kHz, prescaler `/16`, reload `0xFA0` (4000).
+- Period = 16 × 4000 / 32000 = **2 seconds**.
 - Kicked unconditionally at the top of the main loop.
+- Purpose: if the WWDG ISR itself hangs (e.g. errlog write blocks on a
+  stuck SD bus), IWDG eventually resets the chip anyway. No log
+  preserved in that case — but reset *will* happen, the box won't sit
+  bricked.
 
-### Sensor-plausibility watchdog (software)
-
-Implemented in `watchdog.c`:
+### Sensor-plausibility watchdog (software, in `watchdog.c`)
 
 ```
 state per sensor: last_value_hash[N_SENSORS]  (uint32_t)
@@ -517,8 +543,8 @@ every plausibility tick (1 Hz):
       last_change_ms[sensor]  = now_ms()
 
   if ALL sensors have (now_ms - last_change_ms) > 5000:
-    errlog_write("watchdog: all sensors frozen for 5s, resetting")
-    buzzer_pattern(WD_PATTERN)
+    errlog_write("watchdog: all sensors frozen for 5 s, resetting")
+    buzzer_blocking_pattern(WD_PATTERN)
     NVIC_SystemReset()
 ```
 
@@ -526,12 +552,10 @@ every plausibility tick (1 Hz):
 "new data" vs "identical bytes". 1 LSB jitter on a single axis already
 changes the hash.
 
-### WWDG early-warning (optional, decided in Phase 2)
-
-If experiments show the system-reset wipes the error log before flush,
-configure WWDG to fire its ISR 100 ms before reset, giving us time to
-`errlog_flush()` and the beep. Otherwise we drop WWDG and accept that
-the last log line on a hard hang might not survive.
+Note: this watchdog runs *inside* the main loop, so it benefits from
+all the housekeeping — IWDG / WWDG are kicked normally. If the main
+loop is alive but the sensor pipeline is dead, this is the layer that
+catches it.
 
 ---
 
@@ -569,7 +593,6 @@ here:
 
 - Exact byte format of `manufacturer data` in the advertising packet
   (firmware version + maybe device ID). Trivial.
-- WWDG yes/no (see Section 11).
 - Exact 1 ms tick budget per sub-task — measured empirically in
   Phase 3 and 4.
 - Whether to expose the firmware version as a separate read-only

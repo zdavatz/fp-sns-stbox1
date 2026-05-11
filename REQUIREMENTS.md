@@ -165,8 +165,8 @@ While in STREAM mode this is paused; it resumes on STREAM_STOP / reconnect.
 | F-ARCH-6 | **Polling-only design.** No application-level ISRs. All peripherals (SPI, UART, I²C, SDMMC, EXTI, DMA-complete) are accessed via polled HAL calls from the main loop. Eliminates the nested-interrupt + race-condition bug class that wrecked the current firmware. |
 | F-ARCH-7 | Permitted exceptions to F-ARCH-6, deliberately minimal: |
 |          | • **SysTick @ 1 ms** as the system time base. Kept because HAL needs it and the ISR is one counter-increment. |
-|          | • **IWDG** as the hardware watchdog — produces no ISR, just resets the chip on miss. |
-|          | • **WWDG early-warning ISR** may be used by the sensor-plausibility watchdog (F-WDG-2) for a last-gasp beep + log line. Decided in design phase. |
+|          | • **IWDG** as the hardware loop-alive watchdog — produces no ISR, just resets the chip on miss. Belt-and-suspenders backup if WWDG ISR itself hangs. |
+|          | • **WWDG early-warning ISR**: fires ~50 ms before WWDG would reset. ISR writes a last-gasp error-log line ("watchdog: about to reset, last_task=…"), plays the watchdog-beep pattern, then either returns (letting reset happen naturally) or calls `NVIC_SystemReset()` directly. Lets us preserve the diagnostic on the SD card across the reset. |
 | F-ARCH-8 | No dynamic memory allocation after init. Heap is off-limits at runtime (see NF-SIZE-3). |
 
 ---
