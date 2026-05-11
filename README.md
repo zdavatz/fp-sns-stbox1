@@ -186,6 +186,8 @@ Opcodes (one byte + optional payload — payload is the filename without trailin
 
 Status bytes used by READ/DELETE replies: `0x00` OK, `0xB0` BUSY (logging in progress, send STOP_LOG first), `0xE1` NOT_FOUND, `0xE2` IO_ERROR, `0xE3` BAD_REQUEST. READ and DELETE are rejected with `BUSY` while a `Sens*.csv` or `Gps*.csv` is open for writing.
 
+**Disconnect resets the FileSync state machine** (firmware build v255+). When a host drops mid-LIST or mid-READ, `disconnection_completed_function` in `ble_function.c` calls `BleFileSync_Reset()` to roll `state` back to `ST_IDLE` and clear `notifications_enabled`. Without this, the next reconnect would issue `OP_LIST` and the firmware would silently drop it (`write_request_filecmd` ignores opcodes when state ≠ ST_IDLE) — the user would see an empty file list and no error. Older builds: reboot the box between BLE sessions to recover.
+
 The easiest way to use this is the `MovementLogger` GUI's **BLE FileSync** panel — see [its README](Utilities/rust/stbox-viz-gui/README.md). For ad-hoc poking, any generic GATT client (nRF Connect on iOS/Android, LightBlue on macOS) works: write `01` to FileCmd, watch FileData stream the listing.
 
 A reader-friendly walkthrough of the protocol + firmware/GUI architecture (with per-platform download links to the latest GUI release) is at [**Documentation/BLE_FileSync.pdf**](Documentation/BLE_FileSync.pdf). Send to field testers via `~/software/pegelstand/whatsapp/send-doc.mjs <jid> Documentation/BLE_FileSync.pdf "<caption>"`. Update `BLE_FileSync.html` and re-render the PDF whenever the wire protocol or download links change.
