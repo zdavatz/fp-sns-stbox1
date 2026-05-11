@@ -88,6 +88,7 @@
 
 #include "stm32u5xx_hal.h"
 #include "SensorTileBoxPro.h"
+#include "hci_tl_interface.h"
 
 /* fault_info_t typedef is in main.h (so app_filex.c can read it).
    Placed in .noinit so values survive warm reset; ErrorLog_Open on
@@ -312,6 +313,22 @@ void SDMMC1_IRQHandler(void)
 }
 
 /* USER CODE END 1 */
+
+/**
+  * @brief This function handles EXTI Line11 interrupt (BlueNRG-LP HCI IRQ).
+  *
+  * Was missing from this file — the GCC startup weak-binds EXTI11_IRQHandler
+  * to Default_Handler (an infinite-loop trap). Without a strong override,
+  * any EXTI11 edge wedges the whole chip (no thread, no ISR, no heartbeat).
+  * BLEDualProgram has this; we didn't, which is why hci_reset locked up
+  * the moment EXTI11 NVIC was enabled and the BlueNRG-LP raised IRQ.
+  */
+volatile uint32_t g_exti11_irq_count = 0;
+void EXTI11_IRQHandler(void)
+{
+  g_exti11_irq_count++;
+  HAL_EXTI_IRQHandler(&H_EXTI_11);
+}
 
 /**
   * @brief This function handles EXTI Line13 interrupt.

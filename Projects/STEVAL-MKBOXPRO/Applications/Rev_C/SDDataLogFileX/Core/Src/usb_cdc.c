@@ -322,6 +322,18 @@ static void usb_thread_entry(ULONG arg) {
       const char *mid4 = " mounted=";
       while (*mid4) *p++ = *mid4++;
       *p++ = (char)('0' + (tud_mounted() ? 1 : 0));
+      /* EXTI11 (BlueNRG-LP HCI IRQ) counter. If this grows quickly while ble= is
+         stuck mid-init, we know the chip is firing IRQ faster than we drain it. */
+      {
+        extern volatile uint32_t g_exti11_irq_count;
+        const char *mid5 = " exti11=";
+        while (*mid5) *p++ = *mid5++;
+        v = (unsigned long) g_exti11_irq_count;
+        d0 = p;
+        if (v == 0) { *p++ = '0'; }
+        else { while (v) { *p++ = (char)('0' + v % 10); v /= 10; } }
+        for (char *a = d0, *b = p - 1; a < b; ++a, --b) { char t = *a; *a = *b; *b = t; }
+      }
       *p++ = '\r'; *p++ = '\n'; *p = '\0';
       UsbCdc_WriteString(hb);
     }
