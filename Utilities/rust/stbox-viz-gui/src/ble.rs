@@ -50,6 +50,15 @@ const FILEDATA_UUID: Uuid = Uuid::from_u128(0x00000040_0010_11e1_ac36_0002a5d5c5
 /// left staring at "running…" forever (e.g. after a drop-out the box
 /// reconnects but our subscription went stale).
 const OP_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
+/* If LIST has produced at least one entry and no new bytes have arrived for
+   this long, treat LIST as complete and go back to Idle. Defensive: the
+   firmware's terminator notify can be missed/merged on flaky BLE links and
+   without this fallback the GUI sits in `Listing` state until the 20 s
+   OP_IDLE_TIMEOUT, blocking any Download click with "another op is in
+   flight". 500 ms is comfortably above the firmware's per-tick processing
+   delay (~50 ms per row) so we won't fire prematurely while LIST is still
+   producing rows. */
+const LIST_INACTIVITY_DONE: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
 //  Public command / event API
@@ -225,7 +234,7 @@ async fn worker_loop(cmd_rx: Receiver<BleCmd>, evt_tx: Sender<BleEvent>) {
 
 enum CurrentOp {
     Idle,
-    Listing { line: Vec<u8>, last_progress: Instant },
+    Listing { line: Vec<u8>, last_progress: Instant, rows_seen: u32 },
     Reading {
         name: String,
         expected: u64,
@@ -459,6 +468,7 @@ impl WorkerState {
         self.op = CurrentOp::Listing {
             line: Vec::with_capacity(64),
             last_progress: Instant::now(),
+            rows_seen: 0,
         };
         self.emit(BleEvent::Status("LIST sent".into()));
     }
@@ -533,7 +543,7 @@ impl WorkerState {
             CurrentOp::Idle => {
                 // Stray notify between ops — harmless, ignore.
             }
-            CurrentOp::Listing { line, last_progress } => {
+            CurrentOp::Listing { line, last_progress, rows_seen } => {
                 *last_progress = Instant::now();
                 for b in n.value.iter() {
                     if *b == b'\n' {
@@ -546,6 +556,7 @@ impl WorkerState {
                         }
                         if let Some((name, size)) = parse_list_row(line) {
                             self.emit(BleEvent::ListEntry { name, size });
+                            *rows_seen += 1;
                         }
                         line.clear();
                     } else {
@@ -611,6 +622,20 @@ impl WorkerState {
 
     fn tick_watchdog(&mut self) {
         let now = Instant::now();
+
+        /* LIST inactivity-done fallback: if at least one row arrived and no
+           new bytes have come in for LIST_INACTIVITY_DONE, assume the firmware
+           finished and we just missed the terminator notify. Treat as
+           success — emit ListDone and return to Idle so the next op (typically
+           Download) doesn't trip the "another op is in flight" guard. */
+        if let CurrentOp::Listing { last_progress, rows_seen, .. } = &self.op {
+            if *rows_seen > 0 && now.duration_since(*last_progress) > LIST_INACTIVITY_DONE {
+                self.op = CurrentOp::Idle;
+                self.emit(BleEvent::ListDone);
+                return;
+            }
+        }
+
         let stale = match &self.op {
             CurrentOp::Listing { last_progress, .. } => now.duration_since(*last_progress) > OP_IDLE_TIMEOUT,
             CurrentOp::Reading { last_progress, .. } => now.duration_since(*last_progress) > OP_IDLE_TIMEOUT,
