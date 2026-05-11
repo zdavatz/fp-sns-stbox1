@@ -22,17 +22,15 @@ static void gpio_init_leds(void);
 
 int main(void)
 {
-  /* HAL init = NVIC priority group + SysTick reload at default 1 kHz.
-     SystemCoreClock is still the post-reset MSI value (~4 MHz) here. */
+  /* HAL_MspInit (defined below) lands SMPS + VDDIO2 + UCPD-dead-battery
+     setup INSIDE HAL_Init() so the chip is ready for scale 1 / 160 MHz
+     before any other HAL call. Required on STM32U5: doing the PWR
+     config *after* HAL_Init hangs SystemClock_Config at the voltage-
+     stabilization wait. */
   HAL_Init();
-
-  /* HSI → PLL → 160 MHz sysclk. After this returns, SystemCoreClock is
-     updated by HAL_RCC_ClockConfig and SysTick is reloaded accordingly. */
   SystemClock_Config();
 
-  /* Red LED on while we set up peripherals; green LED idle off. The user
-     sees solid red until the main loop starts, which becomes a quick
-     "boot indicator" without needing the buzzer to be alive yet. */
+  /* Red LED on while we set up peripherals; green LED idle off. */
   gpio_init_leds();
   HAL_GPIO_WritePin(PL_LED_RED_PORT,   PL_LED_RED_PIN,   GPIO_PIN_SET);
   HAL_GPIO_WritePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN, GPIO_PIN_RESET);
@@ -41,8 +39,8 @@ int main(void)
   Buzzer_Init();
   Buzzer_BootDone();
 
-  /* Hand-off: red LED off, green LED on. From this point on the scheduler
-     drives everything via the SysTick-incremented tick counter. */
+  /* Hand-off: red off, green on. From here on the scheduler drives
+     everything via SysTick. */
   HAL_GPIO_WritePin(PL_LED_RED_PORT,   PL_LED_RED_PIN,   GPIO_PIN_RESET);
   HAL_GPIO_WritePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN, GPIO_PIN_SET);
 
@@ -167,3 +165,16 @@ void assert_failed(uint8_t *file, uint32_t line)
   Error_Handler((const char *)file, (int)line);
 }
 #endif
+
+/* Override the weak HAL_MspInit so PWR config lands INSIDE HAL_Init.
+   Same body as SDDataLogFileX's HAL_MspInit — disable the UCPD
+   dead-battery pull-downs, enable VddIO2 (for PG[15:2] / PI pins),
+   and switch the regulator from LDO to SMPS so the chip can deliver
+   the higher current required at scale 1 / 160 MHz. */
+void HAL_MspInit(void)
+{
+  __HAL_RCC_PWR_CLK_ENABLE();
+  HAL_PWREx_DisableUCPDDeadBattery();
+  HAL_PWREx_EnableVddIO2();
+  HAL_PWREx_ConfigSupply(PWR_SMPS_SUPPLY);
+}
