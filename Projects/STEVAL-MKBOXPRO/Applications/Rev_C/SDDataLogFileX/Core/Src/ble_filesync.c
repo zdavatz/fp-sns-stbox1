@@ -379,6 +379,17 @@ void BleFileSync_Tick(void)
     case ST_DELETE:
     {
       rc = fx_file_delete(&sdio_disk, (CHAR *)pending_name);
+      if (rc != FX_SUCCESS) {
+        /* Surface the actual FileX rc to the error log + USB CDC. Same
+           rationale as the READ-open diagnostic — IO_ERROR is a catch-all
+           that hides whether we hit FAT corruption (FX_FILE_CORRUPT 0x08),
+           write-protect (FX_WRITE_PROTECT 0x09), access conflict
+           (FX_ACCESS_ERROR 0x05), or a real media I/O failure
+           (FX_IO_ERROR 0x90 / FX_FAT_READ_ERROR 0x91 etc.). */
+        CHAR diag[64];
+        sprintf(diag, "ble: DELETE '%s' rc=0x%X", pending_name, (unsigned)rc);
+        ErrorLog_Write(diag);
+      }
       uint8_t status_byte = (rc == FX_SUCCESS)        ? ST_OK
                           : (rc == FX_NOT_FOUND)      ? ST_NOTFND
                           : ST_IOERR;
