@@ -2454,19 +2454,24 @@ void update_adv_data()
   */
 void set_connectable_ble(void)
 {
+  /* Widened from 8 → 16 bytes (1 AD_TYPE + up to 15 name chars). Old code
+     hardcoded 7 board_name chars padded with NULs even when the name was
+     shorter, which left zero-bytes in the adv packet for short names like
+     "Pump". Build the buffer dynamically: copy strlen() name chars only,
+     and pass (1 + strlen) as the AD field size below. */
 #if (BLUE_CORE == BLUENRG_MS)
-  char local_name[8] = {AD_TYPE_COMPLETE_LOCAL_NAME,
+  char local_name[16];
 #else /* (BLUE_CORE == BLUENRG_MS) */
-  uint8_t local_name[8] = {AD_TYPE_COMPLETE_LOCAL_NAME,
+  uint8_t local_name[16];
 #endif /* (BLUE_CORE == BLUENRG_MS) */
-                        ble_stack_value.board_name[0],
-                        ble_stack_value.board_name[1],
-                        ble_stack_value.board_name[2],
-                        ble_stack_value.board_name[3],
-                        ble_stack_value.board_name[4],
-                        ble_stack_value.board_name[5],
-                        ble_stack_value.board_name[6]
-                       };
+  local_name[0] = AD_TYPE_COMPLETE_LOCAL_NAME;
+  uint8_t name_len = 0;
+  while (name_len < (uint8_t)(sizeof(local_name) - 1U) &&
+         ble_stack_value.board_name[name_len] != '\0') {
+    local_name[1U + name_len] = (uint8_t)ble_stack_value.board_name[name_len];
+    name_len++;
+  }
+  uint8_t local_name_field_size = (uint8_t)(1U + name_len);
   ble_status_t ret_status = BLE_STATUS_SUCCESS;
 
   /* disable scan response */
@@ -2487,7 +2492,7 @@ void set_connectable_ble(void)
     ret_status = aci_gap_set_discoverable(ADV_IND, ble_stack_value.adv_interval_min, ble_stack_value.adv_interval_max,
                                           ble_stack_value.own_address_type,
                                           ble_stack_value.advertising_filter,
-                                          (uint8_t)(sizeof(local_name)), local_name, 0, NULL, 0, 0);
+                                          local_name_field_size, local_name, 0, NULL, 0, 0);
     if (ret_status != (ble_status_t)BLE_STATUS_SUCCESS)
     {
       BLE_MANAGER_PRINTF("Error: aci_gap_set_discoverable [%x] Filter=%x\r\n",
@@ -2671,34 +2676,47 @@ void set_connectable_ble(void)
   ble_status_t ret;
   advertising_set_parameters_t advertising_set_parameters[1];
 
-  manuf_data[0 ] = 0x02;
-  manuf_data[1 ] = AD_TYPE_FLAGS;
-  manuf_data[2 ] = FLAG_BIT_LE_GENERAL_DISCOVERABLE_MODE | FLAG_BIT_BR_EDR_NOT_SUPPORTED;
-  manuf_data[3 ] = 8;
-  manuf_data[4 ] = 0x09;
-  manuf_data[5 ] = ble_stack_value.board_name[0]; /* Complete Name */
-  manuf_data[6 ] = ble_stack_value.board_name[1];
-  manuf_data[7 ] = ble_stack_value.board_name[2];
-  manuf_data[8 ] = ble_stack_value.board_name[3];
-  manuf_data[9 ] = ble_stack_value.board_name[4];
-  manuf_data[10] = ble_stack_value.board_name[5];
-  manuf_data[11] = ble_stack_value.board_name[6];
-  manuf_data[12] = 15;
-  manuf_data[13] = 0xFF;
-  manuf_data[14] = 0x30;
-  manuf_data[15] = 0x00; /* STM Manufacter AD */
-  manuf_data[16] = 0x02; /* SDK version */
-  manuf_data[17] = ble_stack_value.board_id; /* BoardType*/
-  manuf_data[18] = 0x00; /* Fw ID*/
-  manuf_data[19] = 0x00; /* Second Custom Byte -> Not Used */
-  manuf_data[20] = 0x00; /* Third  Custom Byte -> Not Used */
-  manuf_data[21] = 0x00; /* Fourth Custom Byte -> Not Used */
-  manuf_data[22] = ble_stack_value.ble_mac_address[5]; /* BLE MAC start - MSB first - */
-  manuf_data[23] = ble_stack_value.ble_mac_address[4];
-  manuf_data[24] = ble_stack_value.ble_mac_address[3];
-  manuf_data[25] = ble_stack_value.ble_mac_address[2];
-  manuf_data[26] = ble_stack_value.ble_mac_address[1];
-  manuf_data[27] = ble_stack_value.ble_mac_address[0]; /* BLE MAC stop */
+  /* Dynamic packet construction: name length comes from strlen(board_name)
+     so apps with names longer than 7 chars (e.g. "PumpTsueri" = 10) fit.
+     The manufacturer-specific section after the name shifts by name_len-7
+     vs. the old hardcoded layout. Total packet stays within BLE legacy 31. */
+  uint8_t name_len = 0U;
+  while (name_len < 10U && ble_stack_value.board_name[name_len] != '\0')
+  {
+    name_len++;
+  }
+  if (name_len == 0U)
+  {
+    name_len = 1U;
+    ((char *)ble_stack_value.board_name)[0] = '?';
+  }
+  uint8_t pos = 0U;
+  manuf_data[pos++] = 0x02;
+  manuf_data[pos++] = AD_TYPE_FLAGS;
+  manuf_data[pos++] = FLAG_BIT_LE_GENERAL_DISCOVERABLE_MODE | FLAG_BIT_BR_EDR_NOT_SUPPORTED;
+  manuf_data[pos++] = (uint8_t)(1U + name_len);          /* AD field length: 1 type + name */
+  manuf_data[pos++] = 0x09;                              /* AD_TYPE_COMPLETE_LOCAL_NAME */
+  for (uint8_t i = 0U; i < name_len; i++)
+  {
+    manuf_data[pos++] = (uint8_t)ble_stack_value.board_name[i];
+  }
+  /* AD manufacturer-specific (16 bytes total: 1 len + 1 type + 14 data) */
+  manuf_data[pos++] = 15;
+  manuf_data[pos++] = 0xFF;
+  manuf_data[pos++] = 0x30;
+  manuf_data[pos++] = 0x00; /* STM Manufacter AD */
+  manuf_data[pos++] = 0x02; /* SDK version */
+  manuf_data[pos++] = ble_stack_value.board_id; /* BoardType*/
+  manuf_data[pos++] = 0x00; /* Fw ID*/
+  manuf_data[pos++] = 0x00; /* Second Custom Byte -> Not Used */
+  manuf_data[pos++] = 0x00; /* Third  Custom Byte -> Not Used */
+  manuf_data[pos++] = 0x00; /* Fourth Custom Byte -> Not Used */
+  manuf_data[pos++] = ble_stack_value.ble_mac_address[5]; /* BLE MAC start - MSB first - */
+  manuf_data[pos++] = ble_stack_value.ble_mac_address[4];
+  manuf_data[pos++] = ble_stack_value.ble_mac_address[3];
+  manuf_data[pos++] = ble_stack_value.ble_mac_address[2];
+  manuf_data[pos++] = ble_stack_value.ble_mac_address[1];
+  manuf_data[pos++] = ble_stack_value.ble_mac_address[0]; /* BLE MAC stop */
 
   /* Set the Custom BLE Advertise Data */
   ble_set_custom_advertise_data(manuf_data);
@@ -2729,7 +2747,7 @@ void set_connectable_ble(void)
     BLE_MANAGER_PRINTF("aci_gap_set_advertising_configuration\r\n");
   }
 
-  ret = aci_gap_set_advertising_data_nwk(0, ADV_COMPLETE_DATA, BLE_MANAGER_ADVERTISE_DATA_LENGHT, manuf_data);
+  ret = aci_gap_set_advertising_data_nwk(0, ADV_COMPLETE_DATA, pos, manuf_data);
   if (ret != BLE_STATUS_SUCCESS)
   {
     BLE_MANAGER_PRINTF("aci_gap_set_advertising_data_nwk failed: 0x%02x\r\n", ret);

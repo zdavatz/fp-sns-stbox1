@@ -111,11 +111,14 @@ extern "C" {
 #define BLE_MANAGER_VERSION_MINOR '0'
 #define BLE_MANAGER_VERSION_PATCH '0'
 
-/* Length of AdvData in octets */
+/* Length of AdvData in octets. Bumped from 28 → 31 on BlueNRG-LP / STM32WB07_06
+   so set_connectable_ble can fit a complete-local-name field up to 11 chars
+   (1 length + 1 type + up to 10 name chars) alongside the 16-byte manufacturer-
+   specific field, staying within the BLE legacy advertising 31-byte limit. */
 #if ((BLUE_CORE != BLUENRG_LP) && (BLUE_CORE != STM32WB07_06) && (BLUE_CORE != STM32WB05N))
 #define BLE_MANAGER_ADVERTISE_DATA_LENGHT 25
 #else /* ((BLUE_CORE != BLUENRG_LP) && (BLUE_CORE != STM32WB07_06) && (BLUE_CORE != STM32WB05N)) */
-#define BLE_MANAGER_ADVERTISE_DATA_LENGHT 28
+#define BLE_MANAGER_ADVERTISE_DATA_LENGHT 31
 #endif /* ((BLUE_CORE != BLUENRG_LP) && (BLUE_CORE != STM32WB07_06) && (BLUE_CORE != STM32WB05N)) */
 
 /* SDK value for used platform */
@@ -232,8 +235,11 @@ typedef struct
   uint8_t enable_ext_config;
 #endif /* BLE_MANAGER_NO_PARSON */
 
-  /* BLE Board Name */
-  char board_name[8];
+  /* BLE Board Name. Widened from 8 → 16 (15-char + NUL) so BLE_FW_PACKAGENAME
+     like "PumpTsueri" (10 chars) fits. Apps with shorter names still work —
+     set_connectable_ble() advertises only strlen(board_name)+1 bytes, no
+     trailing-zero pad. */
+  char board_name[16];
 
   /* For enabling the Secure BLE connection */
   uint8_t enable_secure_connection;

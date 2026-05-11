@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 use uuid::Uuid;
 
-const BOX_NAME:    &str  = "STBoxSync";
+const BOX_NAME:    &str  = "PumpTsueri";
 const FILECMD_UUID: Uuid = Uuid::from_u128(0x00000080_0010_11e1_ac36_0002a5d5c51b);
 const FILEDATA_UUID: Uuid = Uuid::from_u128(0x00000040_0010_11e1_ac36_0002a5d5c51b);
 

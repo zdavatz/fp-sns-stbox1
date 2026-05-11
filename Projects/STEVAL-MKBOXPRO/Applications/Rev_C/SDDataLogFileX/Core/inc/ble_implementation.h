@@ -68,7 +68,7 @@ extern "C" {
 #define BLE_VERSION_FW_MAJOR        '0'
 #define BLE_VERSION_FW_MINOR        '1'
 #define BLE_VERSION_FW_PATCH        '0'
-#define BLE_FW_PACKAGENAME          "STBoxFs"  /* 7 chars max — board_name[8] in ble_manager */
+#define BLE_FW_PACKAGENAME          "PumpTsueri"  /* 15 chars max — board_name[16] in ble_manager */
 
 /* Implemented in ble_implementation.c. ble_manager.c calls bluetooth_init()
    from init_ble_manager() and ble_init_custom_service() right after the
