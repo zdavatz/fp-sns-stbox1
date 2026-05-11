@@ -13,6 +13,7 @@
 #include <string.h>
 #include "ble_manager.h"
 #include "ble_implementation.h"
+#include "ble_filesync.h"
 
 #ifndef FALSE
 #define FALSE 0
@@ -67,6 +68,11 @@ void disconnection_completed_function(void)
   connected = FALSE;
   paired    = FALSE;
   ConnectionBleStatus = 0;
+  /* Reset the FileSync state machine so a mid-LIST or mid-READ drop
+     doesn't poison the next reconnect — without this, the next LIST
+     opcode is silently dropped because state != ST_IDLE, and the user
+     sees an empty file list after Refresh. */
+  BleFileSync_Reset();
 }
 
 void pairing_completed_function(uint8_t PairingStatus)

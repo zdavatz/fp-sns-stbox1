@@ -123,6 +123,19 @@ void BleFileSync_Register(void)
   ble_manager_add_char(&ble_char_file_data);
 }
 
+void BleFileSync_Reset(void)
+{
+  /* Force the state machine back to ST_IDLE so a partial LIST/READ
+     from a prior connection doesn't cause the next OP_LIST opcode to
+     be silently dropped by write_request_filecmd's
+     `state != ST_IDLE` guard. Also clear notifications_enabled —
+     CCCD is per-connection (unless bonded), so the new host has to
+     re-subscribe anyway; starting from 0 makes the subsequent CCCD
+     write callback actually re-fire instead of being a no-op. */
+  state = ST_IDLE;
+  notifications_enabled = 0;
+}
+
 /* ---------- Callbacks ----------------------------------------------------- */
 
 static void attr_mod_request_filedata(void *ble_char_pointer, uint16_t attr_handle, uint16_t offset,

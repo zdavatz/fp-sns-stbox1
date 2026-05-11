@@ -483,6 +483,16 @@ impl AppState {
                 BleEvent::Connected => {
                     self.ble_state = BleState::Connected;
                     self.ble_status = "connected".into();
+                    /* Auto-refresh the file list on every successful
+                       Connect (initial or post-reconnect). Previously the
+                       user had to click Refresh manually — easy to miss
+                       after a Disconnect+Reconnect cycle because the
+                       list pane already showed "No file list yet — hit
+                       Refresh." which looked like a transient state. */
+                    self.ble_files.clear();
+                    if let Some(b) = self.ble.as_ref() {
+                        b.send(BleCmd::List);
+                    }
                 }
                 BleEvent::Disconnected => {
                     self.ble_state = BleState::Idle;

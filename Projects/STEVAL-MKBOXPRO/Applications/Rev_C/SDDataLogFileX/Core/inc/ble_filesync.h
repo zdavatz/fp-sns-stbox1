@@ -50,6 +50,14 @@ void BleFileSync_Register(void);
    the LIST state machine without blocking the HCI event pump. */
 void BleFileSync_Tick(void);
 
+/* Reset the FileSync state machine + notification-enabled flag. Called
+   from ble_function.c::disconnection_completed_function so a host that
+   drops mid-LIST (or mid-READ) doesn't leave the state stuck in
+   ST_LIST_EMIT — which would silently swallow the next OP_LIST from
+   the same or a new host after reconnect (write_request_filecmd
+   ignores opcodes when state != ST_IDLE). */
+void BleFileSync_Reset(void);
+
 #ifdef __cplusplus
 }
 #endif
