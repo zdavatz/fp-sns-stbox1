@@ -127,6 +127,12 @@ struct AppState {
     /// True iff a Read is in flight in the worker (Download or queue head).
     /// Drives queue advancement when a Read completes or errors out.
     ble_dl_in_flight: bool,
+    /// `(start_instant, duration_seconds)` while a LOG session is running
+    /// on the box. Set when Start session is clicked, cleared when the
+    /// remaining time falls to zero (after which the box should be back
+    /// in BLE mode and Scan-able). Drives the countdown banner that
+    /// replaces the file list while the box is silent.
+    ble_session_running: Option<(std::time::Instant, u32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -732,6 +738,44 @@ impl AppState {
                 );
                 ui.add_space(4.0);
 
+                /* LOG session countdown banner. During a session the box
+                   is in LOG mode and doesn't advertise — Scan returns
+                   nothing — so the user needs a visible "wait this long"
+                   message + ETA. Cleared automatically once the deadline
+                   passes (plus a ~8 s bring-up margin), at which point
+                   the box should be advertising PumpTsueri again. */
+                if let Some((started, dur)) = self.ble_session_running {
+                    const BLE_BRINGUP_S: u64 = 8;
+                    let elapsed_s = started.elapsed().as_secs();
+                    let total_with_bringup = dur as u64 + BLE_BRINGUP_S;
+                    if elapsed_s >= total_with_bringup {
+                        self.ble_session_running = None;
+                        push_log(&self.log, "ble: LOG session deadline reached — box should be advertising again".into());
+                    } else {
+                        let remaining = total_with_bringup - elapsed_s;
+                        let m = remaining / 60;
+                        let s = remaining % 60;
+                        let total_m = dur / 60;
+                        let total_s = dur % 60;
+                        let msg = if m > 0 {
+                            format!("Logging in progress — {} min {:02} s left (of {} min {:02} s + ~8 s reboot). Box is silent, won't appear in Scan.", m, s, total_m, total_s)
+                        } else {
+                            format!("Logging in progress — {} s left (of {} min {:02} s + ~8 s reboot). Box is silent, won't appear in Scan.", s, total_m, total_s)
+                        };
+                        egui::Frame::group(ui.style())
+                            .fill(egui::Color32::from_rgb(255, 244, 204))   // soft amber
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 150, 60)))
+                            .show(ui, |ui| {
+                                ui.colored_label(egui::Color32::from_rgb(120, 80, 20), msg);
+                            });
+                        /* Force the UI to keep ticking once a second so the
+                           countdown actually advances even when the user
+                           isn't moving the mouse. */
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                    }
+                    ui.add_space(4.0);
+                }
+
                 // ----- Action buttons -------------------------------
                 ui.horizontal(|ui| {
                     let scanning  = matches!(self.ble_state, BleState::Scanning | BleState::Connecting);
@@ -779,7 +823,7 @@ impl AppState {
                     ).on_hover_text("Session duration in seconds (1..86400)");
                     if ui
                         .add_enabled(connected, egui::Button::new("Start session"))
-                        .on_hover_text("Box reboots into LOG mode, logs for the duration above, then auto-returns to BLE mode for download")
+                        .on_hover_text("Box reboots into LOG mode and is INVISIBLE to Scan for the configured duration. After it expires the box auto-reboots back to BLE mode (~8 s) and reappears. Short-press the user button on the box to abort a session early.")
                         .clicked()
                     {
                         if let Some(b) = self.ble.as_ref() {
@@ -808,6 +852,14 @@ impl AppState {
                         self.ble_dl_queue.clear();
                         self.ble_dl_in_flight = false;
                         self.ble_status = format!("LOG session: {} s", self.ble_session_duration_s);
+                        /* Start the countdown banner. Stored as
+                           (start_instant, duration_seconds) so each
+                           frame can compute the remaining time without
+                           depending on system clock drift. */
+                        self.ble_session_running = Some((
+                            std::time::Instant::now(),
+                            self.ble_session_duration_s,
+                        ));
                         push_log(
                             &self.log,
                             format!("ble: START_LOG sent ({} s) — box rebooting to LOG mode, GUI returning to Idle",
