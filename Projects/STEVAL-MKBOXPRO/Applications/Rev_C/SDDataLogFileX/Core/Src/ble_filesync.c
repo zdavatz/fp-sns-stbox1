@@ -323,7 +323,19 @@ void BleFileSync_Tick(void)
     /* ----------------- READ ---------------------------------------------- */
     case ST_READ_OPEN:
       rc = fx_file_open(&sdio_disk, &read_file, (CHAR *)pending_name, FX_OPEN_FOR_READ);
-      if (rc != FX_SUCCESS) { state = ST_RESPOND_NOTFND; break; }
+      if (rc != FX_SUCCESS) {
+        /* Surface the actual FileX rc to the error log + USB CDC so a
+           "NOT_FOUND" surprise on a file that LIST clearly enumerated is
+           debuggable without having to pull the card. FX_NOT_FOUND (4)
+           usually means FAT/LFN corruption; FX_ACCESS_ERROR (5) means
+           something already holds the file open; FX_MEDIA_NOT_OPEN (1)
+           means we lost the volume mid-session. */
+        CHAR diag[64];
+        sprintf(diag, "ble: READ open '%s' rc=0x%X", pending_name, (unsigned)rc);
+        ErrorLog_Write(diag);
+        state = ST_RESPOND_NOTFND;
+        break;
+      }
       read_remaining = read_file.fx_file_current_file_size;
       state = ST_READ_STREAM;
       /* Empty file: skip straight to close so we don't try a 0-byte
