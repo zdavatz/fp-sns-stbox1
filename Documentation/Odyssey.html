@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>An odyssey on ST's SensorTile.box PRO — field notes from building an open-source movement logger</title>
+<style>
+  @page { size: A4; margin: 22mm 20mm; }
+  body { font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+         font-size: 10.5pt; line-height: 1.45; color: #222; }
+  h1 { font-size: 18pt; margin: 0 0 4pt 0; }
+  h2 { font-size: 13pt; margin: 16pt 0 6pt 0; border-bottom: 1px solid #ccc; padding-bottom: 2pt; }
+  h3 { font-size: 11pt; margin: 12pt 0 4pt 0; }
+  p { margin: 4pt 0 6pt 0; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9.5pt;
+         background: #f3f3f3; padding: 1px 4px; border-radius: 3px; }
+  pre  { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 9pt;
+         background: #f6f6f6; padding: 8pt 10pt; border-radius: 4px;
+         border: 1px solid #e3e3e3; overflow-x: auto; line-height: 1.35; }
+  ul { margin: 4pt 0 6pt 18pt; padding: 0; }
+  li { margin: 2pt 0; }
+  table { border-collapse: collapse; margin: 6pt 0 8pt 0; font-size: 10pt; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 4pt 7pt; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; }
+  .meta { color: #666; font-size: 9.5pt; margin-bottom: 12pt; }
+  .note { background: #fff8e1; border-left: 3px solid #f0b400; padding: 6pt 10pt;
+          margin: 8pt 0; font-size: 10pt; }
+</style>
+</head>
+<body>
+
+<h1>An odyssey on ST's SensorTile.box PRO</h1>
+<p class="meta">Field notes from building an open-source movement logger for foiling — STM32U585, BlueNRG-LP, ThreadX/FileX, BLE, GPS, and a cross-platform Rust desktop GUI. May 2026.</p>
+
+<div class="note"><strong>Source &amp; downloads.</strong> Firmware + visualizer + GUI on GitHub:
+<a href="https://github.com/zdavatz/fp-sns-stbox1">github.com/zdavatz/fp-sns-stbox1</a> — based on ST's
+<a href="https://www.st.com/en/embedded-software/fp-sns-stbox1.html">FP-SNS-STBOX1</a> function pack
+(BSD-3-Clause), our additions where original under MIT.</div>
+
+<h2>What we set out to do</h2>
+<p>Build a self-contained <em>movement logger</em> for pump foiling: a small box on the mast that records
+inertial data, magnetometer, barometer, GPS and audio to an SD card; sync the files to a desktop GUI
+over Bluetooth; visualize the ride. Open source end-to-end, no cloud.</p>
+
+<p>The hardware target was STMicroelectronics' <strong>STEVAL-MKBOXPRO</strong> (the "SensorTile.box PRO"):
+STM32U585 host, BlueNRG-LP BLE controller, LSM6DSV16X IMU, LIS2MDL magnetometer, LPS22DF barometer, STTS22H
+thermometer, MEMS mic, microSD slot, USB-C, LiPo charger — packaged in a 50&nbsp;×&nbsp;35&nbsp;mm enclosure with a
+piezo buzzer, LEDs, and two buttons. ST ships an MCU package with HAL + RTOS + BLE examples. Perfect starting point.</p>
+
+<p>"Perfect" is the dangerous word. What follows is the highlight reel of where reality diverged from the
+datasheets — and how an open codebase plus one very patient field tester got us through.</p>
+
+<h2>Mod #1: the 3.3&nbsp;V rail</h2>
+<p>The box natively drives sensors at 1.8&nbsp;V to save power. We wanted to add an external u-blox MAX-M10S GPS
+module, which is firmly 3.3&nbsp;V. So we lifted the rail. The mod worked perfectly for a year — until BLE
+was switched on, at which point everything fell over. The chip wasn't drawing more current; the
+hardware mod was a red herring (more on that below).</p>
+
+<h2>The SD logging stack</h2>
+<p>Logging at 100&nbsp;Hz sensors + 10&nbsp;Hz GPS + 16&nbsp;kHz audio + 1&nbsp;Hz battery to FAT32 over SDMMC is not
+glamorous, but it's where most of the firmware sweat lives. Azure RTOS ThreadX + FileX (also from ST,
+also free) does the heavy lifting. A few unglamorous decisions that <em>must</em> stay set after every
+CubeMX regenerate:</p>
+
+<ul>
+  <li><strong>SDMMC kernel clock at NSPEED (~12.5&nbsp;MHz), not HSPEED (~25&nbsp;MHz).</strong> Halves the bandwidth ceiling to ~6&nbsp;MB/s, which is still 1000× the logger's budget, and buys back signal-integrity margin on the 3.3&nbsp;V-modded rail.</li>
+  <li><strong>UART4 IRQ pushes raw bytes, parses in thread.</strong> NMEA assembly used to run in <code>HAL_UART_RxCpltCallback</code> at NVIC priority 6 — above SDMMC. At 10&nbsp;Hz GPS, SDMMC's budget blew out after ~90&nbsp;s, the message queue filled, the sample rate collapsed from 100&nbsp;Hz to ~77&nbsp;Hz. Moving the parser to thread context fixed it cold.</li>
+  <li><strong>I²C4 timing 0xA040184A</strong> (~145&nbsp;kHz) for the STC3115 fuel gauge. CubeMX's default 0x00F07BFF (~421&nbsp;kHz) overshoots STC3115 Fast-Mode and the chip NAKs every other transfer.</li>
+  <li><strong><code>fx_media_flush</code> every 100 sensor samples</strong> (≈ once per second). Without periodic flushes, FAT directory entries only update on file close — so power-off mid-session leaves zero-byte files on disk. With them, the worst case is one second of data lost.</li>
+</ul>
+
+<h2>The "BLE on, SD writes hang" odyssey (Issue #12)</h2>
+<p>This one took weeks. With <code>STBOX1_ENABLE_BLE_SYNC=1</code>, the SD writer wedged deterministically
+on <code>fx_file_create("Sens000.csv")</code>. Disable the flag → SD logging perfect. Re-enable → hung.</p>
+
+<p>The obvious theory was: <em>BLE preempts SDMMC at NVIC priority X, corrupts state, hangs FAT.</em>
+That theory was wrong. We pinned EXTI11 (BLE HCI IRQ) to priority 14, same as SDMMC. Still hung. We
+bounded the BLE ISR to 16 events per IRQ. Still hung. We added a thread that parked
+<em>before</em> calling <code>bluetooth_init</code>. Still hung.</p>
+
+<p>A field tester — Peter, owner of the only 3.3&nbsp;V-modded board in active use — walked us
+through a six-build bisect over three days:</p>
+
+<table>
+  <tr><th>Build</th><th>BLE</th><th>VddIO2 enable</th><th>SD logging</th></tr>
+  <tr><td>v6 / v8</td><td>off</td><td>on</td><td>hung</td></tr>
+  <tr><td>v14</td><td>on</td><td>off</td><td>hung</td></tr>
+  <tr><td>v16</td><td>off</td><td>off</td><td><strong>works</strong></td></tr>
+</table>
+
+<p>Two independent failure modes. Both had to be off for the field box to log.</p>
+
+<p>The first culprit was a single line in <code>HAL_MspInit</code>:
+<code>HAL_PWREx_EnableVddIO2()</code>. Required by BLE on Rev_C (PG[15:2] is gated behind a separate
+I/O supply), it always ran — even when the BLE compile flag was off. On a stock 1.8&nbsp;V board it is
+harmless; on the 3.3&nbsp;V-modded board, with BLE not actually consuming the rail, the extra rail load was
+enough to perturb SDMMC. The BLE-flag gate had been incomplete.</p>
+
+<p>The second culprit is still being narrowed (a knob, <code>STBOX1_BLE_BISECT_STAGE</code>, walks through
+chip-alive probe / <code>bluetooth_init</code> / EXTI11 enable, one stage at a time). What this odyssey
+already taught us:</p>
+
+<ul>
+  <li>A compile flag named <code>ENABLE_BLE</code> doesn't mean "nothing related to BLE runs." Audit every site that touches BLE-relevant hardware (power rails, GPIO banks, clocks) and gate them too.</li>
+  <li>One marginal hardware mod can mask <em>and</em> unmask completely unrelated bugs. Test on stock and modded units in parallel.</li>
+  <li>If you have a field tester willing to flash six builds and read back error logs, you have a luxury most embedded shops don't. Cherish them.</li>
+</ul>
+
+<h2>The one-line fix that took a week: <code>EXTI11_IRQHandler</code></h2>
+<p>Symptom: every variant of the BLE bring-up code wedged the moment BlueNRG-LP raised its HCI IRQ.
+USB heartbeat stopped, no thread ran, no further trace, no crash dump.</p>
+
+<p>Cause: <code>stm32u5xx_it.c</code> had a strong handler for <code>EXTI13_IRQHandler</code> (user button)
+but <em>no</em> strong override of <code>EXTI11_IRQHandler</code>. GCC's startup file weak-binds unhandled
+interrupts to <code>Default_Handler</code>, which is literally:</p>
+
+<pre>Default_Handler:
+    b Default_Handler</pre>
+
+<p>An infinite loop in assembly. The moment EXTI11 fired, the CPU vectored in and never came out. The
+fix was three lines — declare an <code>EXTI11_IRQHandler</code> that calls
+<code>HAL_EXTI_IRQHandler(&amp;H_EXTI_11)</code>. A reference implementation in
+<code>BLEDualProgram</code> in the same repo had it; we'd copy-pasted everything <em>except</em> the line
+that mattered.</p>
+
+<h2>Advertising name truncation: <code>PumpTsueri</code> → <code>PumpTsu</code></h2>
+<p>We chose <code>PumpTsueri</code> as the advertised BLE name (a nickname for the pump-foil device). On
+the phone, the box showed up as <code>PumpTsu</code>. The middleware
+(<code>Middlewares/ST/STM32_BLE_Manager/Src/ble_manager.c</code>) had hardcoded the advertising packet's
+name field at 7 bytes. We widened the struct (8 → 16), rewrote <code>set_connectable_ble</code> as a
+dynamic-length packet builder, rebuilt.</p>
+
+<p>Still <code>PumpTsu</code>. The Makefile in the SDDataLogFileX application didn't emit
+<code>-MMD -MP</code> dependency files, so the header change rebuilt only the <code>.c</code> files we'd
+also touched. <code>ble_function.c</code> linked against the <em>old</em> struct layout and wrote
+<code>board_id</code> at the old offset; <code>ble_manager.c</code> read from the <em>new</em> offset and
+got zero. <code>make clean</code> fixed it. Lesson: ship dependency tracking from day one, even when
+the project "doesn't need it yet."</p>
+
+<h2>USB CDC console, killed by macOS Sequoia</h2>
+<p>To iterate faster than "DFU-flash, eject SD, read log, repeat", we brought up a USB CDC ACM virtual
+COM port over STM32U585's OTG_FS using TinyUSB. Heartbeat at 1&nbsp;Hz prints ThreadX tick, OTG_FS IRQ
+count, BLE bring-up phase, USB state. Linux loves it — <code>cdc_acm</code> auto-attaches,
+<code>cat&nbsp;/dev/ttyACM0</code> streams.</p>
+
+<p>macOS Sequoia 15 does not. The kernel CDC driver <code>AppleUSBCDCCompositeDevice</code>
+partial-attaches in <code>IOMatchDefer = Yes</code> state and never registers
+<code>/dev/tty.usbmodem*</code>. <code>libusb</code> can't claim the bulk endpoint either (the
+"accessory authorization" framework silently blocks vendor-class devices with no prompt). Tried CDC
+with IAD, pure CDC, vendor class — all blocked. Apparently a regression in Apple's DriverKit-era USB
+stack that's been hitting TinyUSB users broadly.</p>
+
+<p>Workaround: keep a Linux laptop on the bench for live debug. Production builds default the flag
+off; we no longer attempt to use the USB console on macOS.</p>
+
+<h2>Bonus mini-stories</h2>
+<ul>
+  <li><strong>Soft-DFU via TAMP backup register.</strong> Writing <code>DFU\n</code> to the CDC port reboots
+  the chip into the STM32 system bootloader with no BOOT0 + slider gymnastics. Implementation: stash
+  magic <code>0xDEADBEEF</code> in <code>TAMP-&gt;BKP0R</code>, soft-reset, check magic before
+  <code>HAL_Init</code>, jump to <code>0x0BF90000</code>. A direct branch from running firmware leaks too
+  much state on STM32U5; the bootloader sees a clean post-reset chip and brings up DFU cleanly.</li>
+
+  <li><strong>Mode-switch via the same TAMP trick.</strong> Box boots into BLE mode and advertises. iPhone
+  GUI sends "start log" → firmware writes magic + duration to BKP1R/BKP2R, resets, comes up in LOG mode
+  with BLE off, logs for N seconds, resets back. BLE and SDMMC never run concurrently — neat sidestep
+  of the Issue #12 root cause while it's still being narrowed.</li>
+
+  <li><strong>Visualizer in pure Rust.</strong> <code>stbox-viz</code> reads the on-card CSVs, runs Madgwick
+  6-DoF fusion, 4th-order Butterworth + filtfilt, scipy-equivalent STFT via <code>rustfft</code>, and
+  emits interactive Plotly HTML (Scattermap + 5 stacked panels) or animated GIFs with a software-rasterised
+  3D foil mesh. One binary, no Python runtime, builds on macOS / Linux / Windows from one workspace.</li>
+
+  <li><strong>Cross-platform GUI: <code>MovementLogger</code>.</strong> egui drag-and-drop wrapper around the
+  visualizer, plus a BLE FileSync panel (<code>btleplug</code> + tokio worker) that lists / reads / deletes
+  files on the box without ejecting the SD card. Signed and notarized for macOS; the workspace patches
+  <code>winit</code> to no-op <code>set_blur</code> because eframe → winit 0.30 calls a private
+  CoreGraphics API (<code>_CGSSetWindowBackgroundBlurRadius</code>) that Apple's binary scanner rejects.
+  Notarize the <code>.app</code> first, not just the DMG — Gatekeeper looks for the ticket on the app
+  itself when users drag it out.</li>
+</ul>
+
+<h2>What we'd tell our past selves</h2>
+<ul>
+  <li><strong>Audit your weak symbols.</strong> A missing strong handler is a silent infinite loop. Grep every
+  IRQ name in your NVIC config against the actual handlers in <code>*_it.c</code>.</li>
+  <li><strong>One compile flag is rarely enough.</strong> "Disable feature X" means: gate the code path, the
+  hardware init, the power rails, the GPIOs, the clocks. Build a minimal repro with the flag off and
+  inspect what still differs from the no-feature baseline.</li>
+  <li><strong>Burn build numbers on every invocation.</strong> Our Makefile bumps <code>.build_counter</code>
+  even on clean / failed builds, and bakes the number into the binary filename, the SD-card
+  <code>FW_INFO_v&lt;N&gt;.TXT</code> and the error log boot marker. After a six-build bisect this is the
+  difference between "Peter's third firmware that morning" and "build 254".</li>
+  <li><strong>If you can move parsing out of an IRQ, do.</strong> Especially on RTOS systems. The IRQ does one
+  job: shovel bytes into a ring buffer. The thread parses at thread priority.</li>
+  <li><strong>Field testers are co-authors.</strong> A bug that reproduces only on one modded board, only with
+  one peripheral combo, requires someone willing to flash, observe, photograph the LED morse, and ship
+  back the error log. Write the firmware so their feedback channel is rich (boot markers, reset-reason
+  decode, per-stage status bytes in a backup register surfaced to LEDs / buzzer / SD log) and they will
+  carry the project further than any debugger.</li>
+</ul>
+
+<h2>Try it</h2>
+<p>The complete codebase — firmware, visualizer, GUI, documentation — is on GitHub:</p>
+<p><a href="https://github.com/zdavatz/fp-sns-stbox1">github.com/zdavatz/fp-sns-stbox1</a></p>
+<p>Pre-built MovementLogger binaries (signed for macOS and Windows) are attached to each
+<a href="https://github.com/zdavatz/fp-sns-stbox1/releases">release</a>. Firmware <code>.bin</code> files for
+DFU flashing live alongside them. PRs welcome.</p>
+
+</body>
+</html>

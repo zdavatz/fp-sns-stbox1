@@ -492,6 +492,8 @@ GPS auto-detection (used by `combined` and `animate`) accepts two naming forms n
 
 User-facing fusion explainer at `Documentation/Sensor_Fusion.{html,pdf}` — render with the same headless-Chrome command pattern as `BLE_FileSync.{html,pdf}`.
 
+Project narrative / external-audience write-up at `Documentation/Odyssey.{html,pdf}` — short field-notes article for [medevel.com](https://medevel.com/) covering the 3.3 V mod, Issue #12, EXTI11 weak-symbol infinite loop, BLE advertising-name truncation, macOS Sequoia USB CDC blocker, and the Rust visualizer + GUI. Refresh whenever a new long-running bug story closes; matches the A4 CSS style of the other Documentation/*.html files. Same render command as the other PDFs.
+
 ### `combined` HTML
 Time axis: default UTC anchored to GPS clock. `--tz-offset-h <h>` shifts to local (`3` for EEST, `2` for CEST, `1` for CET). Date defaults to sensor file mtime; override with `--date YYYY-MM-DD`.
 

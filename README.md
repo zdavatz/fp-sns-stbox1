@@ -37,6 +37,7 @@ Here is the list of references to user documents:
 - [DB4008: STM32Cube function pack for the Pro Mode of the SensorTile.box wireless multi sensor development kit ](https://www.st.com/resource/en/data_brief/fp-sns-STBOX1.pdf)
 - [UM2626: Getting started with the STM32Cube function pack for the Pro Mode of the SensorTile.box wireless multi sensor development kit](https://www.st.com/resource/en/user_manual/um2626-getting-started-with-the-stm32cube-function-pack-for-the-pro-mode-of-the-sensortilebox-wireless-multi-sensor-development-kit-stmicroelectronics.pdf)
 - [FP-SNS-STBOX1 Quick Start Guide](https://www.st.com/content/ccc/resource/sales_and_marketing/presentation/product_presentation/group0/5c/4e/96/c2/a6/98/4a/7f/FP-SNS-STBOX1_Quick_Start_Guide/files/FP-SNS-STBOX1_Quick_Start_Guide.pdf/jcr:content/translations/en.FP-SNS-STBOX1_Quick_Start_Guide.pdf)
+- [**Documentation/Odyssey.pdf**](Documentation/Odyssey.pdf) — short field-notes article on building this open-source movement logger on top of ST's package: the 3.3 V mod, Issue #12 (BLE-on / SD-write-hang), the EXTI11 weak-symbol infinite loop, advertising-name truncation, macOS Sequoia killing USB CDC, the Rust visualizer + GUI. Written for [medevel.com](https://medevel.com/).
 
 ## Supported Devices and Boards
 
