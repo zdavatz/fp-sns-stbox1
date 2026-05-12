@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    sched.c
-  * @brief   SysTick-driven cooperative scheduler.
+  * @brief   SysTick-driven cooperative scheduler with edge-triggered cadences.
   ******************************************************************************
   */
 
@@ -9,10 +9,10 @@
 #include "sched.h"
 
 static volatile uint32_t g_tick_count;
+static uint32_t g_last_fire[PL_SCHED_SLOT_COUNT];
 
-/* Called by HAL_IncTick() (which the SysTick_Handler calls). Lets us keep
-   our own counter independent of HAL_GetTick(), so tasks aren't affected
-   if HAL's clock book-keeping ever needs to skip a beat. */
+/* Called by HAL_IncTick() (which the SysTick_Handler calls). Keeps our
+   own counter independent of HAL_GetTick(). */
 void HAL_SYSTICK_Callback(void)
 {
   g_tick_count++;
@@ -26,16 +26,18 @@ uint32_t sched_tick(void)
 void sched_wait_next_tick(void)
 {
   uint32_t before = g_tick_count;
-  /* WFI suspends the CPU until the next interrupt. SysTick wakes us within
-     ≤ 1 ms. Any other interrupt (when we eventually have them) would also
-     wake us, which is fine — the loop body re-checks the work it has. */
   while (g_tick_count == before) {
     __WFI();
   }
 }
 
-bool sched_should_run(uint32_t cadence)
+bool sched_due(pl_sched_slot_t slot, uint32_t cadence_ticks)
 {
-  if (cadence == 0) return true;
-  return (g_tick_count % cadence) == 0;
+  if (slot >= PL_SCHED_SLOT_COUNT) return false;
+  uint32_t now = g_tick_count;
+  if ((uint32_t)(now - g_last_fire[slot]) >= cadence_ticks) {
+    g_last_fire[slot] = now;
+    return true;
+  }
+  return false;
 }

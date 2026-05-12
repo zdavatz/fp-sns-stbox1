@@ -3,16 +3,18 @@
   * @file    stm32u5xx_it.c
   * @brief   Cortex + STM32 system interrupt handlers.
   *
-  *          Only SysTick is wired up here — per F-ARCH-6 we run no
-  *          application-level ISRs. SysTick is the system time base; HAL
-  *          chains the SysTick callback into sched.c which advances the
-  *          tick counter.
+  *          SysTick is the system time base. UART4_IRQHandler is the only
+  *          application-level ISR — a deliberate exception to F-ARCH-6 for
+  *          GPS byte-by-byte RX. The DMA-based GPS path proved too fragile
+  *          (one framing error halted the channel; Build #8/#9 ERRLOG showed
+  *          bytes=1 over 6 minutes). The IRQ pattern is lifted from the
+  *          original SDDataLogFileX::gps_nmea.c — proven to work, IRQ load
+  *          is bounded (<10 µs/byte at 38400 baud = <0.5% CPU).
   ******************************************************************************
   */
 
 #include "main.h"
 
-/* Cortex handlers (default — let HAL/CMSIS provide the bodies). */
 void NMI_Handler(void)            { while (1) {} }
 void HardFault_Handler(void)      { while (1) {} }
 void MemManage_Handler(void)      { while (1) {} }
@@ -22,10 +24,16 @@ void SVC_Handler(void)            { }
 void DebugMon_Handler(void)       { }
 void PendSV_Handler(void)         { }
 
-/* System tick — HAL needs this to drive HAL_GetTick(), and we hook
-   HAL_SYSTICK_Callback() in sched.c for the scheduler tick. */
 void SysTick_Handler(void)
 {
   HAL_IncTick();
   HAL_SYSTICK_IRQHandler();
+}
+
+/* UART4 RX IRQ — single source for the GPS byte stream. Delegates to HAL
+   which drives the RxCplt/Error callbacks in gps.c. */
+void GPS_UART_IRQHandler(void);
+void UART4_IRQHandler(void)
+{
+  GPS_UART_IRQHandler();
 }

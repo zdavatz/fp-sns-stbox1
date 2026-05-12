@@ -3,31 +3,45 @@
   * @file    main.c
   * @brief   PumpLogger entry point. Bare-metal cooperative scheduler.
   *
-  *          Phase 2 deliverable: cold-boot → SystemClock_Config → GPIOs +
-  *          buzzer init → boot beep → main loop that toggles the green
-  *          LED at 0.5 Hz. Demonstrates that the scheduler ticks, the
-  *          buzzer works, and the firmware runs cleanly with zero
-  *          application-level ISRs.
-  *
-  *          Subsequent phases bolt logger / BLE / watchdog tasks onto the
-  *          same scheduler skeleton.
+  *          Phase 3 deliverable: cold-boot → clocks/LED/buzzer → SD mount →
+  *          error log → sensor + GPS init → IWDG → main loop calling
+  *          watchdog/logger/gps tasks. Per F-ARCH-6 no application ISRs;
+  *          SysTick + IWDG only.
   ******************************************************************************
   */
 
 #include "main.h"
 #include "sched.h"
 #include "buzzer.h"
+#include "watchdog.h"
+#include "sd_fatfs.h"
+#include "errlog.h"
+#include "sensors_imu.h"
+#include "sensors_mag.h"
+#include "sensors_baro.h"
+#include "sensors_fuel.h"
+#include "gps.h"
+#include "logger.h"
+
+/* Captured *before* HAL clears anything so the error log can decode the
+   reset reason in ErrLog_Init(). */
+uint32_t BootResetCsr;
 
 static void gpio_init_leds(void);
+static void beep_pattern(uint16_t freq, uint8_t reps, uint16_t ms_on, uint16_t ms_off);
 
 int main(void)
 {
   /* HAL_MspInit (defined below) lands SMPS + VDDIO2 + UCPD-dead-battery
      setup INSIDE HAL_Init() so the chip is ready for scale 1 / 160 MHz
-     before any other HAL call. Required on STM32U5: doing the PWR
-     config *after* HAL_Init hangs SystemClock_Config at the voltage-
-     stabilization wait. */
+     before any other HAL call. */
   HAL_Init();
+
+  /* Snapshot reset cause first, then clear flags so the NEXT reset's bits
+     come back clean. */
+  BootResetCsr = RCC->CSR;
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+
   SystemClock_Config();
 
   /* Red LED on while we set up peripherals; green LED idle off. */
@@ -44,20 +58,95 @@ int main(void)
   HAL_GPIO_WritePin(PL_LED_RED_PORT,   PL_LED_RED_PIN,   GPIO_PIN_RESET);
   HAL_GPIO_WritePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN, GPIO_PIN_SET);
 
+  /* Sensor-bus enable. PI0 is a board-level mux that gates the SPI/I²C
+     traces to the LSM6DSV16X, LIS2MDL and LPS22DF — must be driven LOW
+     before any sensor init or they NAK every transaction. PI5 is the
+     LSM6DSV16X SPI chip-select, kept idle HIGH. Both lifted from the
+     SDDataLogFileX::InitMemsSensors sequence. */
+  __HAL_RCC_GPIOI_CLK_ENABLE();
+  HAL_GPIO_WritePin(GPIOI, GPIO_PIN_5, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOI, GPIO_PIN_0, GPIO_PIN_RESET);
+  {
+    GPIO_InitTypeDef g = {0};
+    g.Mode  = GPIO_MODE_OUTPUT_PP;
+    g.Pull  = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_LOW;
+    g.Pin   = GPIO_PIN_5;
+    HAL_GPIO_Init(GPIOI, &g);
+    g.Pin   = GPIO_PIN_0;
+    HAL_GPIO_Init(GPIOI, &g);
+  }
+
+  pl_fx_status_t sd_rc = SDFat_Mount();
+  if (sd_rc != PL_FX_OK) {
+    beep_pattern(800, 4, 200, 200);
+  } else {
+    Buzzer_Beep(3000U, 60U);
+    ErrLog_Init();
+    if (FUEL_Init() != 0) {
+      ErrLog_Write("fuel: init FAIL");
+      beep_pattern(2000, 4, 60, 80);
+    } else {
+      ErrLog_Write("fuel: ok (STC3115)");
+    }
+    if (IMU_Init() != 0) {
+      ErrLog_Write("imu: init FAIL");
+      beep_pattern(2000, 1, 60, 80);
+    } else {
+      ErrLog_Write("imu: ok (LSM6DSV16X)");
+    }
+    if (MAG_Init() != 0) {
+      ErrLog_Write("mag: init FAIL");
+      beep_pattern(2000, 2, 60, 80);
+    } else {
+      ErrLog_Write("mag: ok (LIS2MDL)");
+    }
+    if (BARO_Init() != 0) {
+      ErrLog_Write("baro: init FAIL");
+      beep_pattern(2000, 3, 60, 80);
+    } else {
+      ErrLog_Write("baro: ok (LPS22DF)");
+    }
+    if (GPS_Init() != 0) {
+      ErrLog_Write("gps: init FAIL");
+      beep_pattern(2000, 5, 60, 80);
+    } else {
+      ErrLog_Write("gps: ok (MAX-M10S UART4)");
+    }
+    if (Logger_Init() != 0) {
+      ErrLog_Write("logger: init FAIL");
+      beep_pattern(800, 6, 100, 100);
+    } else {
+      ErrLog_Write("logger: session opened");
+    }
+    ErrLog_Flush();
+  }
+
+  Watchdog_Init();
+
   for (;;)
   {
-    if (sched_should_run(PL_CADENCE_LED_BLINK)) {
+    Watchdog_Tick();
+    Logger_Tick();
+    GPS_Tick();
+
+    if (sched_due(PL_SCHED_LED, PL_CADENCE_LED_BLINK)) {
       HAL_GPIO_TogglePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN);
     }
-
-    /* Phase 3 hooks land here: logger_tick(), gps_tick(), battery_tick(), ... */
-    /* Phase 4 hooks land here: ble_tick(). */
 
     sched_wait_next_tick();
   }
 }
 
 /* ----------------------------------------------------------------------- */
+
+static void beep_pattern(uint16_t freq, uint8_t reps, uint16_t ms_on, uint16_t ms_off)
+{
+  for (uint8_t i = 0; i < reps; i++) {
+    Buzzer_Beep(freq, ms_on);
+    HAL_Delay(ms_off);
+  }
+}
 
 static void gpio_init_leds(void)
 {
@@ -119,9 +208,6 @@ void SystemClock_Config(void)
     Error_Handler(__FILE__, __LINE__);
   }
 
-  /* PLL2/PLL3 for ADCDAC/MDF1 — kept identical to SDDataLogFileX so
-     future phases (battery ADC, mic if ever re-enabled) work without
-     reconfiguring. */
   pc.PeriphClockSelection = RCC_PERIPHCLK_MDF1 | RCC_PERIPHCLK_ADF1 | RCC_PERIPHCLK_ADCDAC;
   pc.Mdf1ClockSelection   = RCC_MDF1CLKSOURCE_PLL3;
   pc.Adf1ClockSelection   = RCC_ADF1CLKSOURCE_PLL3;
@@ -147,13 +233,28 @@ void SystemClock_Config(void)
   if (HAL_RCCEx_PeriphCLKConfig(&pc) != HAL_OK) {
     Error_Handler(__FILE__, __LINE__);
   }
+
+  /* Phase 3 peripheral kernel-clock sources. Required so I²C2 / SPI2 /
+     UART4 / I²C4 run at the rate their Timing/baud config assumes
+     (160 MHz PCLK1 for I²C2/SPI2/UART4; HSI16 for I²C4 to match
+     SDDataLogFileX). Without these, the peripherals default to HSI16
+     and the timing values produce wrong frequencies → bus dead. */
+  RCC_PeriphCLKInitTypeDef bus = {0};
+  bus.PeriphClockSelection = RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_I2C4
+                           | RCC_PERIPHCLK_SPI2 | RCC_PERIPHCLK_UART4;
+  bus.I2c1ClockSelection   = RCC_I2C1CLKSOURCE_PCLK1;
+  bus.I2c4ClockSelection   = RCC_I2C4CLKSOURCE_PCLK1;
+  bus.Spi2ClockSelection   = RCC_SPI2CLKSOURCE_PCLK1;
+  bus.Uart4ClockSelection  = RCC_UART4CLKSOURCE_PCLK1;
+  if (HAL_RCCEx_PeriphCLKConfig(&bus) != HAL_OK) {
+    Error_Handler(__FILE__, __LINE__);
+  }
 }
 
 void Error_Handler(const char *file, int line)
 {
   (void)file; (void)line;
   __disable_irq();
-  /* Solid red LED. No serial / no log — Phase 2 keeps it bare. */
   HAL_GPIO_WritePin(PL_LED_RED_PORT, PL_LED_RED_PIN, GPIO_PIN_SET);
   for (;;) {}
 }
@@ -166,11 +267,6 @@ void assert_failed(uint8_t *file, uint32_t line)
 }
 #endif
 
-/* Override the weak HAL_MspInit so PWR config lands INSIDE HAL_Init.
-   Same body as SDDataLogFileX's HAL_MspInit — disable the UCPD
-   dead-battery pull-downs, enable VddIO2 (for PG[15:2] / PI pins),
-   and switch the regulator from LDO to SMPS so the chip can deliver
-   the higher current required at scale 1 / 160 MHz. */
 void HAL_MspInit(void)
 {
   __HAL_RCC_PWR_CLK_ENABLE();

@@ -20,6 +20,10 @@ extern "C" {
 void SystemClock_Config(void);
 void Error_Handler(const char *file, int line);
 
+/* Snapshotted RCC->CSR captured by main() right after HAL_Init(), used by
+   ErrLog_Init() to decode the reset reason. */
+extern uint32_t BootResetCsr;
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,9 +1,10 @@
 /**
   ******************************************************************************
   * @file    sched.h
-  * @brief   Cooperative tick scheduler. SysTick fires at PL_TICK_HZ; modules
-  *          gate their work on `sched_should_run(N)` which returns true once
-  *          every N ticks.
+  * @brief   Cooperative tick scheduler. SysTick fires at PL_TICK_HZ.
+  *          Modules gate their work on `sched_due(slot, cadence)` which fires
+  *          after at least `cadence` ticks since the previous fire — robust
+  *          against missed tick boundaries when handler work overruns 1 ms.
   ******************************************************************************
   */
 
@@ -13,18 +14,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Current tick count since boot. Driven by the SysTick handler. */
 uint32_t sched_tick(void);
+void     sched_wait_next_tick(void);
 
-/* Sleeps the main loop until the next tick boundary (i.e. SysTick fires).
-   Implemented with WFI so we hand the CPU back to the LPM logic in
-   between work. Cheap; wake latency is one SysTick period. */
-void sched_wait_next_tick(void);
+/* Per-slot edge-triggered scheduling. Each call site gets its own slot so
+   "due since last fire" is tracked independently. Earlier sched_should_run()
+   used `tick % cadence == 0` which silently dropped fires whenever a Logger_Tick
+   iteration overran a tick boundary (e.g. during an SD sector flush). */
+typedef enum {
+  PL_SCHED_SENSOR = 0,    /* IMU + MAG @ PL_CADENCE_SENSOR (100 Hz) */
+  PL_SCHED_BARO,          /* LPS22DF  @ PL_CADENCE_BARO    (25 Hz)  */
+  PL_SCHED_BATTERY,       /* STC3115  @ PL_CADENCE_BATTERY (1 Hz)   */
+  PL_SCHED_FLUSH,         /* SD flush @ PL_CADENCE_FLUSH   (1 Hz)   */
+  PL_SCHED_LED,           /* Green LED toggle              (2 Hz)   */
+  PL_SCHED_PLAUSIBLE,     /* Sensor-plausibility watchdog          */
+  PL_SCHED_SLOT_COUNT
+} pl_sched_slot_t;
 
-/* Convenience: true iff the *current* tick is a multiple of `cadence`.
-   Used by tasks like:
-       if (sched_should_run(PL_CADENCE_LED_BLINK)) toggle_led();
-   Holds true for exactly one tick out of every `cadence` ticks. */
-bool sched_should_run(uint32_t cadence);
+bool sched_due(pl_sched_slot_t slot, uint32_t cadence_ticks);
 
 #endif /* PUMPLOGGER_SCHED_H */
