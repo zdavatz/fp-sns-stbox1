@@ -15,6 +15,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ble;
+mod installer;
+mod update;
 
 use eframe::egui;
 use std::collections::VecDeque;
@@ -133,6 +135,35 @@ struct AppState {
     /// in BLE mode and Scan-able). Drives the countdown banner that
     /// replaces the file list while the box is silent.
     ble_session_running: Option<(std::time::Instant, u32)>,
+
+    // ----- In-app updater ----------------------------------------------
+    /// Receiver for the one-shot startup version-check thread.
+    update_rx: Option<mpsc::Receiver<Option<update::UpdateInfo>>>,
+    /// Latest version info from the GitHub Releases API. Some = banner
+    /// shown; None = up-to-date or check hasn't completed yet.
+    update_info: Option<update::UpdateInfo>,
+    /// True while the version-check request is in flight.
+    update_checking: bool,
+    /// One-line status badge ("Update available: vX.Y.Z" / "You're on
+    /// the latest version (vA.B.C).") — sticks around so the user has
+    /// feedback after manually re-checking.
+    update_status_msg: Option<String>,
+    /// Receiver for InstallEvent stream from the install worker thread.
+    install_rx: Option<mpsc::Receiver<installer::InstallEvent>>,
+    /// True while the macOS install pipeline is downloading/swapping.
+    installing: bool,
+    /// Live phase + progress fraction + detail string for the UI bar.
+    install_progress: Arc<Mutex<InstallProgress>>,
+    /// Last hard error from the install pipeline. Surfaced under the
+    /// banner; cleared on next "Update now" click.
+    install_error: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct InstallProgress {
+    phase: String,
+    fraction: f32,
+    detail: String,
 }
 
 #[derive(Clone, Debug)]
@@ -444,9 +475,72 @@ impl AppState {
             tz_offset_h: 3.0,
             fps: 15,
             ble_session_duration_s: 1800,  // 30-min default
+            update_rx: Some(spawn_update_check()),
+            update_checking: true,
             ..Self::default()
         }
     }
+
+    fn trigger_update_check(&mut self) {
+        if self.update_checking { return; }
+        self.update_status_msg = None;
+        self.update_checking = true;
+        self.update_rx = Some(spawn_update_check());
+    }
+
+    fn start_install(&mut self) {
+        if self.installing { return; }
+        let Some(info) = self.update_info.clone() else { return };
+        let Some(dmg_url) = info.dmg_url.clone() else {
+            self.install_error = Some("This release has no macOS DMG attached yet.".into());
+            return;
+        };
+        let Some(app) = installer::current_app_bundle() else {
+            self.install_error = Some(
+                "In-app update is only available when running the installed .app from /Applications. \
+                 Open the release page to download manually.".into()
+            );
+            return;
+        };
+        if let Err(e) = installer::check_writable_parent(&app) {
+            self.install_error = Some(format!(
+                "Cannot install update in place: {}. Quit and reinstall manually from the release page.",
+                e
+            ));
+            return;
+        }
+
+        self.install_error = None;
+        if let Ok(mut p) = self.install_progress.lock() { *p = InstallProgress::default(); }
+        let (tx, rx) = mpsc::channel::<installer::InstallEvent>();
+        self.install_rx = Some(rx);
+        self.installing = true;
+        push_log(&self.log, format!("Starting in-app update to {}…", info.pretty()));
+
+        thread::spawn(move || {
+            match installer::install_macos(&dmg_url, &app, tx.clone()) {
+                Ok(()) => {
+                    // Helper script is detached and waiting for our PID
+                    // to die. Give the user 600 ms to read the success
+                    // line, then exit so the swap can run.
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    std::process::exit(0);
+                }
+                Err(e) => { let _ = tx.send(installer::InstallEvent::Error(e)); }
+            }
+        });
+    }
+}
+
+fn spawn_update_check() -> mpsc::Receiver<Option<update::UpdateInfo>> {
+    let (tx, rx) = mpsc::channel::<Option<update::UpdateInfo>>();
+    thread::spawn(move || {
+        let _ = tx.send(update::check_latest(env!("CARGO_PKG_VERSION")));
+    });
+    rx
+}
+
+impl AppState {
 
     fn ensure_ble(&mut self) -> &BleBackend {
         if self.ble.is_none() {
@@ -601,6 +695,165 @@ impl AppState {
         b.send(BleCmd::Read { name: name.clone(), size });
         self.ble_dl_in_flight = true;
         push_log(&self.log, format!("ble: reading {name} ({size} B)"));
+    }
+
+    /// Drain pending update-check + install-pipeline events into the
+    /// visible state. Called once per frame.
+    fn pump_update_events(&mut self) {
+        if let Some(rx) = &self.update_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.update_checking = false;
+                self.update_rx = None;
+                match result {
+                    Some(info) => {
+                        push_log(
+                            &self.log,
+                            format!(
+                                "Update available: v{} → {}",
+                                env!("CARGO_PKG_VERSION"),
+                                info.pretty()
+                            ),
+                        );
+                        self.update_status_msg =
+                            Some(format!("Update available: {}", info.pretty()));
+                        self.update_info = Some(info);
+                    }
+                    None => {
+                        self.update_status_msg = Some(format!(
+                            "You're on the latest version (v{}).",
+                            env!("CARGO_PKG_VERSION")
+                        ));
+                    }
+                }
+            }
+        }
+
+        if let Some(rx) = &self.install_rx {
+            let mut done = false;
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    installer::InstallEvent::Log(s) => push_log(&self.log, s),
+                    installer::InstallEvent::Phase(phase) => {
+                        if let Ok(mut p) = self.install_progress.lock() {
+                            p.phase = phase;
+                        }
+                    }
+                    installer::InstallEvent::DownloadProgress { bytes, total } => {
+                        if let Ok(mut p) = self.install_progress.lock() {
+                            p.phase = "Downloading update".into();
+                            p.fraction =
+                                if total == 0 { 0.0 } else { bytes as f32 / total as f32 };
+                            p.detail = if total == 0 {
+                                format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+                            } else {
+                                format!(
+                                    "{:.1} / {:.1} MB",
+                                    bytes as f64 / 1_048_576.0,
+                                    total as f64 / 1_048_576.0,
+                                )
+                            };
+                        }
+                    }
+                    installer::InstallEvent::Done => {
+                        push_log(&self.log, "Update staged. Restarting…".into());
+                        if let Ok(mut p) = self.install_progress.lock() {
+                            p.phase = "Restarting…".into();
+                            p.fraction = 1.0;
+                            p.detail.clear();
+                        }
+                        // The worker thread calls process::exit shortly
+                        // after sending Done; nothing else to do here.
+                    }
+                    installer::InstallEvent::Error(e) => {
+                        self.install_error = Some(e.clone());
+                        push_log(&self.log, format!("Update failed: {}", e));
+                        done = true;
+                    }
+                }
+            }
+            if done {
+                self.installing = false;
+                self.install_rx = None;
+                if let Ok(mut p) = self.install_progress.lock() {
+                    *p = InstallProgress::default();
+                }
+            }
+        }
+    }
+
+    /// Render the "Update available" banner at the top of the central
+    /// panel. macOS gets an in-app "Update now" button that downloads
+    /// the DMG, swaps the .app, and relaunches; other platforms get an
+    /// "Open release page" button that opens the GitHub release in the
+    /// default browser.
+    fn render_update_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(info) = self.update_info.clone() else { return };
+        let can_in_app_update = cfg!(target_os = "macos")
+            && info.dmg_url.is_some()
+            && installer::current_app_bundle().is_some();
+        egui::Frame::none()
+            .fill(egui::Color32::from_rgb(220, 240, 255))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 130, 200)))
+            .inner_margin(8.0)
+            .rounding(4.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(20, 60, 120),
+                        format!(
+                            "⬆ Update available: {} (you have v{})",
+                            info.pretty(),
+                            env!("CARGO_PKG_VERSION")
+                        ),
+                    );
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if !self.installing && ui.button("Dismiss").clicked() {
+                                self.update_info = None;
+                            }
+                            if can_in_app_update {
+                                let label = if self.installing { "Updating…" } else { "Update now" };
+                                let resp = ui.add_enabled(
+                                    !self.installing,
+                                    egui::Button::new(label),
+                                );
+                                if resp.clicked() {
+                                    self.start_install();
+                                }
+                            } else if ui.button("Open release page").clicked() {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(info.url.clone()));
+                            }
+                        },
+                    );
+                });
+                if self.installing {
+                    let p = self.install_progress.lock().unwrap().clone();
+                    let bar = if p.fraction > 0.0 {
+                        egui::ProgressBar::new(p.fraction).show_percentage().animate(true)
+                    } else {
+                        egui::ProgressBar::new(0.0).animate(true)
+                    };
+                    let phase_label = if p.phase.is_empty() {
+                        "Working".to_string()
+                    } else {
+                        p.phase.clone()
+                    };
+                    ui.add_space(4.0);
+                    ui.add(bar.text(phase_label));
+                    if !p.detail.is_empty() {
+                        ui.label(egui::RichText::new(p.detail).weak().small());
+                    }
+                }
+                if let Some(err) = self.install_error.clone() {
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(160, 30, 30),
+                        format!("Update failed: {}", err),
+                    );
+                }
+            });
+        ui.add_space(6.0);
     }
 
     /// If the saved file is a Sens*.csv or matching _gps.csv, set it on
@@ -1099,6 +1352,8 @@ impl eframe::App for AppState {
         // Drain BLE worker events into AppState before laying out the
         // UI so the FileSync panel renders the latest state every frame.
         self.pump_ble_events();
+        // Same idea for the version-check + install pipeline.
+        self.pump_update_events();
 
         // Lazy-load the in-app logo on the first frame after the egui
         // context becomes available.
@@ -1143,6 +1398,9 @@ impl eframe::App for AppState {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(6.0);
+
+            // ----- Update banner --------------------------------------
+            self.render_update_banner(ui);
 
             // ----- Drop zone ------------------------------------------
             let zone_color = if hovering {
@@ -1295,6 +1553,18 @@ impl eframe::App for AppState {
                         v.clear();
                     }
                 }
+                let check_label = if self.update_checking { "Checking…" } else { "Check for updates" };
+                if ui
+                    .add_enabled(!self.update_checking, egui::Button::new(check_label))
+                    .clicked()
+                {
+                    self.trigger_update_check();
+                }
+                if let Some(msg) = &self.update_status_msg {
+                    if self.update_info.is_none() {
+                        ui.label(egui::RichText::new(msg).weak().small());
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match (running, self.last_status) {
                         (true, _) => {
@@ -1388,6 +1658,13 @@ impl eframe::App for AppState {
             self.ble_state,
             BleState::Scanning | BleState::Connecting | BleState::Connected
         ) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+        }
+
+        // Update-check + install pipeline ticks: keep redrawing while
+        // either is in flight so the version banner and download
+        // progress bar update without user input.
+        if self.update_checking || self.installing {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
     }
