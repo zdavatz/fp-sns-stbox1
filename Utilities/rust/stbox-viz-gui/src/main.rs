@@ -491,22 +491,17 @@ impl AppState {
     fn start_install(&mut self) {
         if self.installing { return; }
         let Some(info) = self.update_info.clone() else { return };
-        let Some(dmg_url) = info.dmg_url.clone() else {
-            self.install_error = Some("This release has no macOS DMG attached yet.".into());
-            return;
-        };
-        let Some(app) = installer::current_app_bundle() else {
+        let Some(download_url) = info.download_url.clone() else {
             self.install_error = Some(
-                "In-app update is only available when running the installed .app from /Applications. \
-                 Open the release page to download manually.".into()
+                "This release has no artifact for the current platform yet.".into(),
             );
             return;
         };
-        if let Err(e) = installer::check_writable_parent(&app) {
-            self.install_error = Some(format!(
-                "Cannot install update in place: {}. Quit and reinstall manually from the release page.",
-                e
-            ));
+        if !installer::can_in_app_update() {
+            self.install_error = Some(
+                "In-app update is not supported in this build context (e.g. `cargo run`). \
+                 Open the release page to download manually.".into()
+            );
             return;
         }
 
@@ -518,7 +513,7 @@ impl AppState {
         push_log(&self.log, format!("Starting in-app update to {}…", info.pretty()));
 
         thread::spawn(move || {
-            match installer::install_macos(&dmg_url, &app, tx.clone()) {
+            match installer::install(&download_url, tx.clone()) {
                 Ok(()) => {
                     // Helper script is detached and waiting for our PID
                     // to die. Give the user 600 ms to read the success
@@ -788,9 +783,8 @@ impl AppState {
     /// default browser.
     fn render_update_banner(&mut self, ui: &mut egui::Ui) {
         let Some(info) = self.update_info.clone() else { return };
-        let can_in_app_update = cfg!(target_os = "macos")
-            && info.dmg_url.is_some()
-            && installer::current_app_bundle().is_some();
+        let can_in_app_update =
+            info.download_url.is_some() && installer::can_in_app_update();
         egui::Frame::none()
             .fill(egui::Color32::from_rgb(220, 240, 255))
             .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 130, 200)))

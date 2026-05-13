@@ -1,8 +1,9 @@
 //! Lightweight GitHub-releases update check. Hits the public Releases
 //! API once on startup, finds the newest non-prerelease tag matching
 //! `vX.Y.Z`, and reports it back if it's newer than the running
-//! `CARGO_PKG_VERSION`. Also pulls out the macOS DMG asset URL so the
-//! in-app updater can download it without extra round trips.
+//! `CARGO_PKG_VERSION`. Also pulls out the platform-specific download
+//! asset URL so the in-app updater can fetch it without extra round
+//! trips.
 
 use serde::Deserialize;
 
@@ -29,9 +30,11 @@ struct GithubAsset {
 pub struct UpdateInfo {
     pub version: (u32, u32, u32),
     pub url: String,
-    /// Direct download URL for the notarized macOS aarch64 DMG, when
-    /// the release exposes one.
-    pub dmg_url: Option<String>,
+    /// Direct download URL for the platform-specific release artifact:
+    /// `-macos-aarch64.dmg` on Apple Silicon, the matching tar.gz on
+    /// x86_64 Linux, the matching .zip on x86_64 Windows. None when the
+    /// release page hasn't published the artifact for this target yet.
+    pub download_url: Option<String>,
 }
 
 impl UpdateInfo {
@@ -50,10 +53,29 @@ pub fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
-fn find_dmg(assets: &[GithubAsset]) -> Option<String> {
+/// Suffix the platform-specific release asset is expected to end with.
+/// Empty string = no in-app update on this target (e.g. aarch64 Linux,
+/// which only ships a CLI-only tarball without the GUI).
+pub const fn target_asset_suffix() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "-macos-aarch64.dmg"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "-x86_64-unknown-linux-gnu.tar.gz"
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "-x86_64-pc-windows-msvc.zip"
+    } else {
+        ""
+    }
+}
+
+fn find_asset(assets: &[GithubAsset]) -> Option<String> {
+    let suffix = target_asset_suffix();
+    if suffix.is_empty() {
+        return None;
+    }
     assets
         .iter()
-        .find(|a| a.name.ends_with("-macos-aarch64.dmg"))
+        .find(|a| a.name.ends_with(suffix))
         .map(|a| a.browser_download_url.clone())
 }
 
@@ -83,7 +105,7 @@ pub fn check_latest(current: &str) -> Option<UpdateInfo> {
             best = Some(UpdateInfo {
                 version: v,
                 url: r.html_url,
-                dmg_url: find_dmg(&r.assets),
+                download_url: find_asset(&r.assets),
             });
         }
     }
