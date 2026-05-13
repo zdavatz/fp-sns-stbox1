@@ -22,6 +22,7 @@
 #include "sensors_fuel.h"
 #include "gps.h"
 #include "logger.h"
+#include "ble.h"
 
 /* Captured *before* HAL clears anything so the error log can decode the
    reset reason in ErrLog_Init(). */
@@ -119,6 +120,10 @@ int main(void)
     } else {
       ErrLog_Write("logger: session opened");
     }
+    if (BLE_Init() != 0) {
+      ErrLog_Write("ble: init FAIL");
+      beep_pattern(2000, 7, 60, 80);
+    }
     ErrLog_Flush();
   }
 
@@ -129,6 +134,7 @@ int main(void)
     Watchdog_Tick();
     Logger_Tick();
     GPS_Tick();
+    BLE_Tick();
 
     if (sched_due(PL_SCHED_LED, PL_CADENCE_LED_BLINK)) {
       HAL_GPIO_TogglePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN);
