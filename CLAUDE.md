@@ -104,6 +104,12 @@ Fallback: in BLE mode a short user-button press starts a 5-minute LOG session vi
 
 `ErrorLog_Open()` runs unconditionally at boot so the error log captures BLE-mode boots too.
 
+### Issue #17 watchdog auto-recovery
+
+The duration-expiry check at `app_filex.c:1130` is gated inside `case COMMAND_SAVE_SENSORS:`, so it only fires when fx_thread dequeues a SAVE_SENSORS message. If fx_thread wedges earlier (most often inside the periodic `fx_media_flush` on the 3.3 V-modded box — failure probability scales with flush count, so long sessions disproportionately hit it), the expiry branch is never reached and the box stays stuck in LOG mode until the user power-cycles.
+
+IWDG (independent watchdog, LSI/32, ~2 s timeout) is started in `main.c::Iwdg_Start()` just before `MX_ThreadX_Init` and refreshed once per fx_thread main-loop iteration via `Iwdg_Refresh()`. fx_thread's `tx_queue_receive` is a 500 ms poll (not `TX_WAIT_FOREVER`) so the kick still happens in BLE mode where the queue is normally empty. Any wedge inside a COMMAND_* handler stops the kick → IWDG fires → chip resets → `BKP1R==0` (cleared at the start of LOG mode) → boots back into BLE mode automatically. Reset-reason decoder surfaces it as `reset: IWDG` in the next boot block.
+
 ## SD Card Data Format (SDDataLogFileX)
 
 - `SensNNN.csv` — sensors @ ~100 Hz: tick, acc XYZ (mg), gyro XYZ (mdps), mag XYZ (mgauss), pressure (hPa), temp (°C). Gyro FS 500 dps (17.5 mdps/LSB), accel FS 4 g (0.122 mg/LSB).
