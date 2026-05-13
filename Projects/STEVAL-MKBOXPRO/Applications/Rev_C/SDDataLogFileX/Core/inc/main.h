@@ -61,6 +61,10 @@ extern unsigned int ErrorLog_Flush(void);
 extern void ErrorLog_Close(void);
 extern void DiagBlinkRed(uint8_t n);
 
+/* Issue #17: independent watchdog kick. Refreshed by fx_thread's main
+ * loop. Started in main() before MX_ThreadX_Init. 2 s timeout. */
+extern void Iwdg_Refresh(void);
+
 /* Mode-switch (issue #14, 2026-05-10). Each mode runs ST's reference
  * design exactly — never concurrent. Boot picks one based on TAMP
  * backup register. fx_thread + ble_sync_thread read this and adjust

@@ -93,6 +93,35 @@
    apart before. */
 uint32_t BootResetCsr;
 
+/* IWDG watchdog (issue #17). Independent of the SysTick / HAL stack — runs
+ * off LSI (~32 kHz). Refreshed from fx_thread's main loop. If fx_thread
+ * wedges (e.g. fx_media_flush hangs on the 3.3 V-modded box during long
+ * LOG sessions), the watchdog fires within ~2 s and the chip resets. Since
+ * main.c clears BKP1R at the start of LOG mode, a watchdog reset boots
+ * back into BLE mode and the box is back advertising — no manual
+ * power-cycle needed.
+ *
+ * PR=3 → /32 prescaler, LSI/32 ≈ 1 kHz, RLR=2000 → ~2.0 s timeout
+ * (LSI tolerance ±10% → 1.8 s..2.2 s effective). Window disabled. */
+static void Iwdg_Start(void)
+{
+  IWDG->KR  = 0xCCCCU;  /* start counter (also auto-enables LSI) */
+  IWDG->KR  = 0x5555U;  /* unlock PR/RLR/WINR */
+  IWDG->PR  = 0x03U;    /* /32 */
+  IWDG->RLR = 2000U;    /* ~2.0 s */
+  /* Wait for prescaler + reload latch. SR bits PVU/RVU clear after LSI
+   * sync (~3 LSI cycles ≈ 100 µs). Bound the spin so we never hang here
+   * even if LSI is dead — IWDG would just fire 2 s later anyway. */
+  uint32_t spin = 100000U;
+  while ((IWDG->SR & 0x07U) != 0U && --spin) { __NOP(); }
+  IWDG->WINR = 0xFFFU;  /* window-mode off — also reloads counter */
+}
+
+void Iwdg_Refresh(void)
+{
+  IWDG->KR = 0xAAAAU;
+}
+
 /* Mode-switch (issue #14, 2026-05-10). g_app_mode is set very early in
  * main() from the TAMP backup register and read by fx_thread + ble_sync
  * to decide what to do. */
@@ -261,6 +290,12 @@ int main(void)
   } else {
     DiagBlinkRed(7);
   }
+
+  /* Issue #17: start the independent watchdog AFTER all blocking pre-RTOS
+   * init (sensor probes, USB CDC bring-up) so they can use HAL_Delay
+   * without false-firing. fx_thread refreshes it on each main-loop
+   * iteration (max 500 ms between refreshes, well under the 2 s window). */
+  Iwdg_Start();
 
   /* USER CODE END 2 */
 

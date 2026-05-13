@@ -377,12 +377,22 @@ static void fx_thread_entry(ULONG thread_input)
 
   while (1)
   {
-    /* Determine whether a message MessageQueue  is available */
-    status = tx_queue_receive(&MessageQueue, &RMsg, TX_WAIT_FOREVER);
+    /* Issue #17: kick the watchdog on every loop iteration. Refresh is
+     * just one register write (~ns). If fx_thread wedges inside any
+     * COMMAND_* handler — most commonly fx_media_flush on the 3.3 V mod
+     * box — this kick stops happening and IWDG (2 s timeout) resets the
+     * chip back to BLE mode automatically. */
+    Iwdg_Refresh();
+
+    /* Poll the queue with a 500 ms timeout instead of TX_WAIT_FOREVER so
+     * the watchdog refresh above runs even when nothing is happening
+     * (BLE mode, no button presses, no sensor IRQs). 500 ms is well
+     * under the 2 s IWDG window; ~4 refreshes per timeout. */
+    status = tx_queue_receive(&MessageQueue, &RMsg, 50U);
     /* v71: WriteCheckpointFile(6, 1) REMOVED — same reason as CHK04. */
-    MessageRemoved++;
     if (status == TX_SUCCESS)
     {
+      MessageRemoved++;
       switch (RMsg->CommandType)
       {
         case COMMAND_START_LOG:
