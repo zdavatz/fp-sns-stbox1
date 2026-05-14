@@ -319,6 +319,17 @@ static int ble_aci_cmd(uint16_t opcode, const uint8_t *payload, uint16_t plen,
   return -11;
 }
 
+/* (Re-)enable advertising. BLE stops advertising the moment a connection
+   is established and does NOT auto-resume after the link drops — so this
+   must be called both at init and from the Disconnection_Complete handler,
+   otherwise the box is invisible after its first connect/disconnect cycle.
+   adv_config + adv_data only need to be set once; this is just the enable. */
+static int ble_adv_enable(void)
+{
+  uint8_t p[6] = { 0x01, 0x01, 0x00, 0x00, 0x00, 0x00 };
+  return ble_aci_cmd(ACI_OP_GAP_SET_ADV_ENABLE, p, sizeof(p), NULL, 0);
+}
+
 /* ----- FileData notify --------------------------------------------------- */
 
 /* Send a notification on the FileData characteristic. val_handle is the
@@ -856,20 +867,12 @@ int BLE_Init(void)
     if (rc != 0) return -12;
   }
 
-  /* ACI_GAP_SET_ADVERTISING_ENABLE
-       enable (1) = 0x01
-       number_of_sets (1) = 0x01
-       set[0]: handle (1) = 0
-               duration (2) = 0 (forever)
-               max_extended_events (1) = 0 (unlimited)
-  */
-  {
-    uint8_t p[6] = { 0x01, 0x01, 0x00, 0x00, 0x00, 0x00 };
-    rc = ble_aci_cmd(ACI_OP_GAP_SET_ADV_ENABLE, p, sizeof(p), NULL, 0);
-    snprintf(buf, sizeof(buf), "ble: adv_enable cc=%d", rc);
-    ErrLog_Write(buf);
-    if (rc != 0) return -13;
-  }
+  /* First advertising enable — adv_config + adv_data above only need to be
+     set once; re-enabling later (after a disconnect) just needs this call. */
+  rc = ble_adv_enable();
+  snprintf(buf, sizeof(buf), "ble: adv_enable cc=%d", rc);
+  ErrLog_Write(buf);
+  if (rc != 0) return -13;
 
   g_advertising = 1;
   ErrLog_Write("ble: advertising as " BLE_ADV_NAME);
@@ -935,8 +938,12 @@ void BLE_Tick(void)
          asked for. */
       g_conn_handle       = 0;
       g_stream_subscribed = 0;
-      snprintf(buf, sizeof(buf), "ble: disconnected reason=0x%02x",
-               (n >= 7) ? evt[6] : 0);
+      /* Re-arm advertising — the chip stopped it on connect and won't
+         resume on its own. Without this the box is invisible to any
+         further connection attempt. */
+      int arc = ble_adv_enable();
+      snprintf(buf, sizeof(buf), "ble: disconnected reason=0x%02x re-adv=%d",
+               (n >= 7) ? evt[6] : 0, arc);
       ErrLog_Write(buf);
     }
   } else if (evt[0] == 0x82) {
