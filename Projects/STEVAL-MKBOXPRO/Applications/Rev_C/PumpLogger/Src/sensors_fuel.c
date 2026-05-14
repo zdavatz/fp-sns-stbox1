@@ -11,7 +11,6 @@
   */
 #include "main.h"
 #include "sensors_fuel.h"
-#include "watchdog.h"
 #include <string.h>
 
 static I2C_HandleTypeDef g_hi2c4;
@@ -91,8 +90,5 @@ int FUEL_Read(PL_FuelSample *out)
   out->soc_x10        = (uint16_t)(((uint32_t)soc_raw * 10) / 512);
   out->tick_ms        = HAL_GetTick();
   out->valid          = 1;
-
-  uint32_t h = ((uint32_t)v_raw) ^ ((uint32_t)cur_raw << 16) ^ soc_raw;
-  Watchdog_Feed(PL_WD_FUEL, h);
   return 0;
 }

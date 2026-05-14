@@ -675,3 +675,162 @@ pl_fx_status_t SDFat_Close(PL_File *f)
   f->used = 0;
   return s;
 }
+
+/* ============================================================================
+   BLE FileSync support (Phase 5) */
+
+/* Convert an 11-byte padded 8.3 name into a NUL-terminated "NAME.EXT" string.
+   `out` must hold at least 13 bytes. */
+static void name83_to_str(const char name83[11], char *out)
+{
+  int o = 0;
+  for (int i = 0; i < 8 && name83[i] != ' '; i++) out[o++] = name83[i];
+  if (name83[8] != ' ') {
+    out[o++] = '.';
+    for (int i = 8; i < 11 && name83[i] != ' '; i++) out[o++] = name83[i];
+  }
+  out[o] = '\0';
+}
+
+typedef struct {
+  SDFat_ListCb cb;
+  void        *user;
+  int          stop;
+} list_ctx_t;
+
+static int list_cb(const dir_entry_t *e, void *user)
+{
+  list_ctx_t *c = (list_ctx_t *)user;
+  char name[13];
+  name83_to_str(e->name83, name);
+  if (c->cb(name, e->size, c->user)) { c->stop = 1; return 1; }
+  return 0;
+}
+
+pl_fx_status_t SDFat_ListRoot(SDFat_ListCb cb, void *user)
+{
+  if (!g_mounted) return PL_FX_ERR_INIT;
+  if (!cb)        return PL_FX_ERR_INVAL;
+  list_ctx_t c = { .cb = cb, .user = user, .stop = 0 };
+  return walk_root(list_cb, &c);
+}
+
+pl_fx_status_t SDFat_OpenRead(PL_File *out, const char *name)
+{
+  if (!g_mounted || !out || !name) return PL_FX_ERR_INVAL;
+  memset(out, 0, sizeof(*out));
+  to_83(name, out->name83);
+
+  find_ctx_t c = { .name83 = out->name83, .ok = 0 };
+  walk_root(find_cb, &c);
+  if (!c.ok) return PL_FX_ERR_NOT_FOUND;
+
+  out->first_cluster = c.found.first_cluster;
+  out->cur_cluster   = c.found.first_cluster;
+  out->cur_offset    = 0;
+  out->size          = c.found.size;
+  out->dir_block     = c.found.dir_block;
+  out->dir_entry_idx = c.found.dir_idx;
+  out->sector_lba    = 0;
+  out->rd_pos        = 0;
+  out->used          = 1;
+  return PL_FX_OK;
+}
+
+pl_fx_status_t SDFat_Read(PL_File *f, void *buf, uint32_t len, uint32_t *got)
+{
+  if (got) *got = 0;
+  if (!f || !f->used) return PL_FX_ERR_INVAL;
+
+  uint32_t cluster_bytes = g_sec_per_clus * 512u;
+  uint8_t *dst = (uint8_t *)buf;
+  uint32_t total = 0;
+
+  while (len > 0 && f->rd_pos < f->size) {
+    /* Cross to the next cluster if the within-cluster cursor is exhausted. */
+    if (f->cur_offset >= cluster_bytes) {
+      uint32_t next;
+      if (fat_get_next(f->cur_cluster, &next) != PL_FX_OK) return PL_FX_ERR_IO;
+      if (next < 2 || next >= 0x0FFFFFF8u) break;   /* end of chain */
+      f->cur_cluster = next;
+      f->cur_offset  = 0;
+    }
+
+    uint32_t sec_in_cl  = f->cur_offset / 512u;
+    uint32_t sec_off    = f->cur_offset % 512u;
+    uint32_t target_lba = cluster_to_lba(f->cur_cluster) + sec_in_cl;
+
+    if (sd_read_block(target_lba, g_scratch) != HAL_OK) return PL_FX_ERR_IO;
+
+    uint32_t avail_in_sec  = 512u - sec_off;
+    uint32_t avail_in_file = f->size - f->rd_pos;
+    uint32_t take = len;
+    if (take > avail_in_sec)  take = avail_in_sec;
+    if (take > avail_in_file) take = avail_in_file;
+
+    memcpy(dst, &g_scratch[sec_off], take);
+    dst           += take;
+    total         += take;
+    len           -= take;
+    f->cur_offset += take;
+    f->rd_pos     += take;
+  }
+
+  if (got) *got = total;
+  return PL_FX_OK;
+}
+
+pl_fx_status_t SDFat_Seek(PL_File *f, uint32_t offset)
+{
+  if (!f || !f->used) return PL_FX_ERR_INVAL;
+  if (offset > f->size) offset = f->size;
+
+  uint32_t cluster_bytes = g_sec_per_clus * 512u;
+  uint32_t cluster = f->first_cluster;
+  uint32_t skip    = offset / cluster_bytes;
+  for (uint32_t i = 0; i < skip; i++) {
+    uint32_t next;
+    if (fat_get_next(cluster, &next) != PL_FX_OK) return PL_FX_ERR_IO;
+    if (next < 2 || next >= 0x0FFFFFF8u) return PL_FX_ERR_IO;
+    cluster = next;
+  }
+  f->cur_cluster = cluster;
+  f->cur_offset  = offset % cluster_bytes;
+  f->rd_pos      = offset;
+  return PL_FX_OK;
+}
+
+pl_fx_status_t SDFat_Delete(const char *name)
+{
+  if (!g_mounted || !name) return PL_FX_ERR_INVAL;
+
+  char n83[11];
+  to_83(name, n83);
+  find_ctx_t c = { .name83 = n83, .ok = 0 };
+  walk_root(find_cb, &c);
+  if (!c.ok) return PL_FX_ERR_NOT_FOUND;
+
+  /* Free the cluster chain: walk first→next, marking each cluster 0 (free).
+     Capture `next` before zeroing the current entry. A zero or invalid
+     first_cluster means the file body was never allocated — skip. */
+  uint32_t cluster = c.found.first_cluster;
+  while (cluster >= 2 && cluster < 0x0FFFFFF8u) {
+    uint32_t next;
+    if (fat_get_next(cluster, &next) != PL_FX_OK) return PL_FX_ERR_IO;
+    if (fat_set_next(cluster, 0) != PL_FX_OK)     return PL_FX_ERR_IO;
+    cluster = next;
+  }
+  if (fat_flush_page() != PL_FX_OK) return PL_FX_ERR_IO;
+
+  /* Mark the directory entry deleted (first byte 0xE5). */
+  if (sd_read_block(c.found.dir_block, g_scratch) != HAL_OK) return PL_FX_ERR_IO;
+  g_scratch[c.found.dir_idx * 32u] = 0xE5;
+  if (sd_write_block(c.found.dir_block, g_scratch) != HAL_OK) return PL_FX_ERR_IO;
+  sd_wait_idle();
+
+  /* Reclaim the freed clusters on the next allocation. */
+  if (c.found.first_cluster >= 2 && c.found.first_cluster < g_alloc_hint) {
+    g_alloc_hint = c.found.first_cluster;
+  }
+  return PL_FX_OK;
+}

@@ -19,7 +19,6 @@
   */
 #include "main.h"
 #include "gps.h"
-#include "watchdog.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -139,9 +138,6 @@ static void parse_rmc(char *fields[], int n)
   g_latest.tick_ms   = HAL_GetTick();
   g_latest.valid     = 1;
   g_updated          = 1;
-
-  uint32_t h = (uint32_t)g_latest.tick_ms ^ (uint32_t)(g_latest.lat * 1e7);
-  Watchdog_Feed(PL_WD_GPS, h);
 }
 
 static void parse_gga(char *fields[], int n)

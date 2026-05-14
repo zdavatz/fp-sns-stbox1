@@ -41,7 +41,7 @@ are new in the same BlueST-style namespace.
 |---|---|---|---|---|
 | FileCmd | `00000080-0010-11e1-ac36-0002a5d5c51b` | write w/o response | 20 B | host → box. Opcode + args. |
 | FileData | `00000040-0010-11e1-ac36-0002a5d5c51b` | notify | 20 B | box → host. Notification chunks: file listing rows, file body chunks, single-byte status replies. |
-| SensorStream | `00000100-0010-11e1-ac36-0002a5d5c51b` | notify | 46 B (single notify w/ MTU upgrade) or 3 × ~20 B chunks (default MTU fallback) | box → host. One packed all-sensor snapshot every 2 s (Section 3). Only active in STREAM mode. |
+| SensorStream | `00000100-0010-11e1-ac36-0002a5d5c51b` | notify | 46 B (single notify w/ MTU upgrade) or 3 × ~20 B chunks (default MTU fallback) | box → host. One packed all-sensor snapshot every 2 s (Section 3). Emitted automatically while a client is subscribed to this CCCD — **concurrent with SD logging, never instead of it**. |
 | BatteryStatus | `00000200-0010-11e1-ac36-0002a5d5c51b` | read + notify | 8 B | box → host. SOC / mV / current. Notify once per minute when connected (Section 4). |
 
 Each notify-capable characteristic carries an implicit CCCD descriptor
@@ -64,15 +64,20 @@ payload.
 | Opcode | Name | Payload | Notes |
 |---|---|---|---|
 | `0x01` | `LIST` | none | Request a listing of the SD root. |
-| `0x02` | `READ` | `<name>\0<offset:u32-LE>` | Read `<name>` from byte `<offset>` to EOF. `<name>` is a NUL-terminated ASCII filename (≤ 12 chars incl. NUL, i.e. 8.3 names). `offset = 0` = whole file. |
-| `0x03` | `DELETE` | `<name>\0` | Delete the file. Returns single-byte status. |
-| `0x10` | `STREAM_START` | none | Switch to STREAM mode. Closes active SD files. |
-| `0x11` | `STREAM_STOP` | none | Return to LOG mode. Opens next `SensNNN+1.csv` etc. |
+| `0x02` | `READ` | `<name>\0[<offset:u32-LE>]` | Read `<name>` from byte `<offset>` to EOF. `<name>` is a NUL-terminated ASCII 8.3 filename. The 4-byte little-endian offset is optional — absent (write ends at the NUL) means `offset = 0` = whole file. A resumed transfer after a dropped link sends `offset = bytes already received`. Works on the *active* session's files too — returns a consistent snapshot up to the last 1 Hz flush. |
+| `0x03` | `DELETE` | `<name>\0` | Delete the file. `<name>` NUL-terminated. Returns single-byte status. |
+| `0x04` | `STOP_LOG` | none | Optional: flush + close the current session and rotate to the next `SensNNN+1.csv`. **Not required for READ** — it exists only as a file-rotation convenience. Logging resumes immediately with the new session. |
 | any other | reserved | — | Box replies `0xE3 BAD_REQUEST` on FileData. |
 
-The box rejects any opcode (except `STREAM_STOP`) that arrives while a
-LIST or READ stream is in flight, replying `0xB0 BUSY` on FileData and
-not changing state. STREAM_STOP is always accepted.
+**No mode switch.** There is deliberately no STREAM_START / STREAM_STOP
+and no LOG-vs-STREAM mode. SD logging is *always on* — there is no state
+the box can be left in where it silently stops recording. Live streaming
+(Section 3) is a side effect of a client subscribing to the SensorStream
+CCCD, runs concurrently with logging, and stops on its own when the
+client unsubscribes or disconnects. The earlier mutually-exclusive-mode
+design was inherited from the ThreadX firmware (where BLE and SDMMC could
+not coexist); the polling architecture here has no such constraint, so
+the mode — and its lost-session failure mode — is simply removed.
 
 ### Box → host (FileData notifies)
 
@@ -99,10 +104,10 @@ strictly request-then-response, single-outstanding-request).
 
 - A single notify carrying the status byte (table below).
 
-**STREAM_START / STREAM_STOP**
+**STOP_LOG**
 
-- No FileData notify. The host observes the mode change via subsequent
-  SensorStream / FileSync behavior.
+- No FileData notify. The host observes the rotation via a subsequent
+  LIST (the new `SensNNN+1.csv` appears).
 
 ### Status bytes
 
@@ -131,6 +136,13 @@ acceptable corner case.)
 throughout, **46 bytes**. Notify cadence: **0.5 Hz** (one packet every
 2 seconds — sufficient for live calibration and debugging; higher rates
 are a future feature if needed).
+
+Emitted only while a client has subscribed to the SensorStream CCCD;
+no subscriber → no stream → zero cost. The emitter reuses the latest
+sensor samples the logger already polled — it does not add sensor
+reads, and it never pauses or replaces SD logging. While a FileSync
+READ transfer is in flight the 0.5 Hz stream is skipped for that
+window so the two don't contend for BLE bandwidth.
 
 ```
 offset  size  field                   units             source
@@ -161,7 +173,7 @@ offset  size  field                   units             source
 **flags** (bit 0 = LSB):
 - bit 0: gps_valid (set when the most-recent GPS fix is fresh — within the last 5 seconds).
 - bit 1: low_battery_warning_active.
-- bit 2: in_log_mode_concurrent (always 0 in STREAM, reserved for future use).
+- bit 2: logging_active (1 = the box is recording this snapshot to SD as well; with the no-mode design this is normally always 1).
 - bits 3-7: reserved, must be 0.
 
 **Gyro scaling**: the LSM6DSV16X at ±500 dps with 17.5 mdps/LSB has a
@@ -211,7 +223,7 @@ offset  size  field         units               source
 
 **flags**:
 - bit 0: low_battery_warning_active (SOC < 10 %).
-- bit 1: in_stream_mode (vs LOG mode) — handy for the GUI to confirm.
+- bit 1: logging_active (normally always 1 — see the no-mode design in Section 2).
 - bits 2-7: reserved.
 
 Notify cadence: once per minute while connected. Also notified
@@ -436,7 +448,7 @@ PumpLogger/
     ├── logger.c           ; sensor sample → CSV row → SD
     ├── ble.c              ; HCI bringup + event dispatch
     ├── filesync.c         ; LIST/READ/DELETE state machines
-    ├── stream.c           ; SensorStream emitter + mode-switch
+    ├── stream.c           ; SensorStream emitter (no mode-switch — always-log design)
     ├── battery.c          ; STC3115 polling + BatteryStatus notify
     ├── buzzer.c           ; beep pattern engine
     ├── watchdog.c         ; IWDG + plausibility check

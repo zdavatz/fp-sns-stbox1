@@ -28,6 +28,13 @@ static int     g_session = -1;
    sensor row gets the most recent pressure/temperature without re-reading. */
 static PL_BaroSample g_baro_cache;
 
+/* Latest-sample cache for the BLE SensorStream emitter (see Logger_GetSnapshot).
+   Refreshed in Logger_Tick as each sensor is polled. */
+static PL_ImuSample  g_last_imu;
+static PL_MagSample  g_last_mag;
+static PL_FuelSample g_last_fuel;
+static PL_GpsFix     g_last_gps;
+
 int Logger_Init(void)
 {
   if (!SDFat_IsMounted()) return -1;
@@ -154,18 +161,26 @@ void Logger_Tick(void)
   if (sched_due(PL_SCHED_SENSOR, PL_CADENCE_SENSOR)) {
     PL_ImuSample imu; PL_MagSample mag;
     if (IMU_Read(&imu) == 0 && MAG_Read(&mag) == 0 && g_baro_cache.valid) {
+      g_last_imu = imu;
+      g_last_mag = mag;
       emit_sensor_row(&imu, &mag, &g_baro_cache);
     }
   }
 
   if (GPS_FixUpdated()) {
     PL_GpsFix f;
-    if (GPS_GetLatestFix(&f) == 0) emit_gps_row(&f);
+    if (GPS_GetLatestFix(&f) == 0) {
+      g_last_gps = f;
+      emit_gps_row(&f);
+    }
   }
 
   if (sched_due(PL_SCHED_BATTERY, PL_CADENCE_BATTERY)) {
     PL_FuelSample fuel;
-    if (FUEL_Read(&fuel) == 0) emit_bat_row(&fuel);
+    if (FUEL_Read(&fuel) == 0) {
+      g_last_fuel = fuel;
+      emit_bat_row(&fuel);
+    }
   }
 
   if (sched_due(PL_SCHED_FLUSH, PL_CADENCE_FLUSH)) {
@@ -198,4 +213,25 @@ void Logger_FlushAll(void)
   SDFat_Flush(&g_gps);
   SDFat_Flush(&g_bat);
   ErrLog_Flush();
+}
+
+void Logger_Stop(void)
+{
+  if (!g_active) return;
+  g_active = 0;                 /* stop Logger_Tick writing first */
+  SDFat_Close(&g_sens);
+  SDFat_Close(&g_gps);
+  SDFat_Close(&g_bat);
+  ErrLog_Write("logger: session stopped (BLE STOP_LOG)");
+  ErrLog_Flush();
+}
+
+void Logger_GetSnapshot(PL_Snapshot *out)
+{
+  if (!out) return;
+  out->imu  = g_last_imu;
+  out->mag  = g_last_mag;
+  out->baro = g_baro_cache;
+  out->fuel = g_last_fuel;
+  out->gps  = g_last_gps;
 }

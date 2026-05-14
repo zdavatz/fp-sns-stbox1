@@ -13,7 +13,6 @@
   */
 #include "main.h"
 #include "sensors_imu.h"
-#include "watchdog.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -211,9 +210,5 @@ int IMU_Read(PL_ImuSample *out)
   out->az = (int16_t)((b[11] << 8) | b[10]);
   out->tick_ms = HAL_GetTick();
   out->valid   = 1;
-
-  uint32_t h = 0;
-  for (int i = 0; i < 12; i++) h ^= ((uint32_t)b[i] << ((i & 3) * 8));
-  Watchdog_Feed(PL_WD_IMU, h);
   return 0;
 }

@@ -52,6 +52,7 @@ typedef struct PL_File {
   uint8_t   sector_buf[512];   /* current write-back data sector */
   uint8_t   sector_dirty;
   uint32_t  sector_lba;        /* LBA of buffered sector (0 = none) */
+  uint32_t  rd_pos;            /* absolute read cursor (read-mode files only) */
 } PL_File;
 
 /* Mount the SD card and parse the FAT32 layout. Must be called before any
@@ -83,5 +84,27 @@ pl_fx_status_t SDFat_Close(PL_File *file);
 
 /* Total free space approximation (bytes). 0 if not mounted. */
 uint64_t SDFat_FreeBytes(void);
+
+/* ---- BLE FileSync support (Phase 5) ------------------------------------- */
+
+/* Root-directory enumeration. The callback gets the 8.3 name (already
+   converted to a NUL-terminated "NAME.EXT" string, no padding) and the
+   file size in bytes. Return non-zero from the callback to stop early. */
+typedef int (*SDFat_ListCb)(const char *name, uint32_t size, void *user);
+pl_fx_status_t SDFat_ListRoot(SDFat_ListCb cb, void *user);
+
+/* Open an existing file for reading. `name` is a regular 8.3 string. Returns
+   PL_FX_ERR_NOT_FOUND if it doesn't exist. */
+pl_fx_status_t SDFat_OpenRead(PL_File *out, const char *name);
+
+/* Read up to `len` bytes from the current read cursor into `buf`. *got is
+   set to the number actually read (0 at EOF). */
+pl_fx_status_t SDFat_Read(PL_File *file, void *buf, uint32_t len, uint32_t *got);
+
+/* Seek the read cursor to an absolute byte offset. */
+pl_fx_status_t SDFat_Seek(PL_File *file, uint32_t offset);
+
+/* Delete a file: free its FAT cluster chain and mark the dir entry 0xE5. */
+pl_fx_status_t SDFat_Delete(const char *name);
 
 #endif /* PL_SD_FATFS_H */

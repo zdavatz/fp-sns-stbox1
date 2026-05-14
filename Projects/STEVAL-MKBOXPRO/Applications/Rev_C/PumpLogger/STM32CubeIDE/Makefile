@@ -64,6 +64,7 @@ C_SOURCES = \
   $(APP)/Src/gps.c \
   $(APP)/Src/logger.c \
   $(APP)/Src/ble.c \
+  $(APP)/Src/stream.c \
   $(APP)/Src/stm32u5xx_it.c \
   $(APP)/Src/system_stm32u5xx.c \
   Application/User/syscalls.c \

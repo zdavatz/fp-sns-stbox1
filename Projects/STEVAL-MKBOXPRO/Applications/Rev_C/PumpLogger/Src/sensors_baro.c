@@ -7,7 +7,6 @@
 #include "main.h"
 #include "sensors_baro.h"
 #include "sensors_mag.h"   /* for I2C1_ReadReg / WriteReg */
-#include "watchdog.h"
 #include <stdio.h>
 
 extern void ErrLog_Write(const char *msg);
@@ -68,8 +67,5 @@ int BARO_Read(PL_BaroSample *out)
   out->temperature_cC = t_cC;
   out->tick_ms        = HAL_GetTick();
   out->valid          = 1;
-
-  uint32_t h = (uint32_t)raw_p ^ ((uint32_t)t_cC << 16);
-  Watchdog_Feed(PL_WD_BARO, h);
   return 0;
 }

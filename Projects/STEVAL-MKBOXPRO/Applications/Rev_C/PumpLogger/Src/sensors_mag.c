@@ -7,7 +7,6 @@
   */
 #include "main.h"
 #include "sensors_mag.h"
-#include "watchdog.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -170,9 +169,5 @@ int MAG_Read(PL_MagSample *out)
   out->mz = (int16_t)((b[5] << 8) | b[4]);
   out->tick_ms = HAL_GetTick();
   out->valid   = 1;
-
-  uint32_t h = 0;
-  for (int i = 0; i < 6; i++) h ^= ((uint32_t)b[i] << ((i & 3) * 8));
-  Watchdog_Feed(PL_WD_MAG, h);
   return 0;
 }
