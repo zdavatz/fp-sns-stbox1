@@ -205,6 +205,31 @@ static int uart4_init_at(uint32_t baud)
   return (HAL_UART_Init(&g_huart4) == HAL_OK) ? 0 : -1;
 }
 
+/* Listen for `ms_window` milliseconds and return the count of '\n' bytes
+   that landed in the ring during the window. Used by GPS_Init to verify
+   that the currently-configured UART baud matches the GPS module's
+   output rate — if we see real NMEA newlines, we're decoding; if not,
+   the framing is wrong. Re-arms the RX IRQ each entry so calling this
+   right after a baud-rate change works. */
+static int listen_newlines(uint32_t ms_window)
+{
+  g_rx_head = g_rx_tail = 0;
+  /* Re-arm RX (returns non-OK if previous Rx was still active — fine,
+     either way the IRQ will keep pushing bytes into the ring). */
+  HAL_UART_Receive_IT(&g_huart4, &g_rx_byte, 1);
+
+  uint32_t newlines = 0;
+  uint32_t t0 = HAL_GetTick();
+  while ((HAL_GetTick() - t0) < ms_window) {
+    while (g_rx_head != g_rx_tail) {
+      uint8_t b = g_rx_ring[g_rx_tail];
+      g_rx_tail = (uint16_t)((g_rx_tail + 1u) % GPS_RX_RING_SIZE);
+      if (b == '\n') newlines++;
+    }
+  }
+  return (int)newlines;
+}
+
 int GPS_Init(void)
 {
   memset(&g_latest, 0, sizeof(g_latest));
@@ -226,36 +251,72 @@ int GPS_Init(void)
   HAL_GPIO_Init(GPIOA, &g);
 
   extern void ErrLog_Write(const char *msg);
-  /* Step 1: 9600 baud (factory default) → ask GPS to switch to 38400 */
-  if (uart4_init_at(9600) != 0) { ErrLog_Write("gps: uart_init@9600 FAIL"); return -1; }
-  ErrLog_Write("gps: uart@9600 ok");
-  gps_cfg_port_uart1(GPS_UART_BAUDRATE);
-  HAL_Delay(200);
+  extern void ErrLog_Writef(const char *fmt, ...);
 
-  /* Step 2: re-init UART4 at the new baud */
-  HAL_UART_DeInit(&g_huart4);
-  if (uart4_init_at(GPS_UART_BAUDRATE) != 0) { ErrLog_Write("gps: uart_reinit FAIL"); return -1; }
-  /* Disable the overrun detection — if our main loop falls behind on draining
-     the ring, OVRDIS=1 lets the UART silently drop bytes rather than latching
-     ORE and halting the next RX. */
+  /* Enable UART4 IRQ early — we need it armed during the baud-detection
+     listen window so bytes accumulate in the ring. Priority 6 (below
+     SDMMC1 at ~14 so SD writes aren't preempted; above SysTick at 15
+     so a single-byte ring push finishes in <10 µs). */
+  HAL_NVIC_SetPriority(UART4_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(UART4_IRQn);
+
+  /* Listen-first baud detection. We don't know what state the module is
+     in (could be at factory 9600 or persisted at 38400 from a previous
+     SDDataLogFileX session). Try the most likely first, listen for
+     NMEA newlines, fall back if nothing comes through. Deliberately
+     NO blind UBX-CFG-PRT switch attempt — that path silently failed
+     for weeks and made post-mortems hard. */
+  uint32_t locked_baud = 0;
+  uint16_t meas_ms     = (uint16_t)(1000U / GPS_RATE_HZ);   /* 100 ms = 10 Hz default */
+
+  /* Attempt 1: 38400 (our preferred rate; what the module persists to). */
+  if (uart4_init_at(GPS_UART_BAUDRATE) != 0) {
+    ErrLog_Write("gps: uart_init@38400 FAIL"); return -1;
+  }
   g_huart4.Instance->CR3 |= USART_CR3_OVRDIS;
   __HAL_UART_CLEAR_FLAG(&g_huart4, UART_CLEAR_OREF | UART_CLEAR_NEF
                                  | UART_CLEAR_FEF  | UART_CLEAR_PEF);
-  ErrLog_Write("gps: uart@38400 ok");
-  HAL_Delay(50);
+  int nl = listen_newlines(1500);
 
-  /* Step 3: send UBX-CFG-RATE for the requested rate. Best-effort, no ACK
-     wait here (we don't have polling RX while DMA is being set up). */
+  if (nl >= 3) {
+    locked_baud = GPS_UART_BAUDRATE;
+    ErrLog_Writef("gps: locked @38400 (%d newlines in 1500ms)", nl);
+  } else {
+    /* Attempt 2: 9600 (u-blox factory default). At 9600 we have to drop
+       to 5 Hz — 10 Hz × ~150 bytes/fix = 1500 B/s, doesn't fit in
+       9600 baud (~960 B/s). 5 Hz fits comfortably. */
+    ErrLog_Writef("gps: no NMEA @38400 (newlines=%d) — falling back to 9600", nl);
+    HAL_UART_DeInit(&g_huart4);
+    if (uart4_init_at(9600) != 0) {
+      ErrLog_Write("gps: uart_init@9600 FAIL"); return -1;
+    }
+    g_huart4.Instance->CR3 |= USART_CR3_OVRDIS;
+    __HAL_UART_CLEAR_FLAG(&g_huart4, UART_CLEAR_OREF | UART_CLEAR_NEF
+                                   | UART_CLEAR_FEF  | UART_CLEAR_PEF);
+    nl = listen_newlines(1500);
+    if (nl >= 3) {
+      locked_baud = 9600;
+      meas_ms     = 200;                  /* 5 Hz */
+      ErrLog_Writef("gps: locked @9600 (%d newlines in 1500ms), rate forced to 5Hz", nl);
+    } else {
+      ErrLog_Write("*** GPS: no baud lock — neither 38400 nor 9600 produced NMEA ***");
+      ErrLog_Write("*** factory-reset the module via u-center if the baud isn't standard ***");
+      return -1;
+    }
+  }
+
+  /* Send UBX-CFG-RATE for the determined rate. Best-effort still (we
+     don't ACK-check — but we know the baud matches now so the command
+     reaches the module). */
   uint8_t rate_p[6];
-  uint16_t meas_ms = (uint16_t)(1000U / GPS_RATE_HZ);
   rate_p[0] = (uint8_t)(meas_ms & 0xFF);
   rate_p[1] = (uint8_t)(meas_ms >> 8);
-  rate_p[2] = 0x01; rate_p[3] = 0x00;   /* navRate = 1 */
-  rate_p[4] = 0x01; rate_p[5] = 0x00;   /* timeRef = GPS */
+  rate_p[2] = 0x01; rate_p[3] = 0x00;     /* navRate = 1 */
+  rate_p[4] = 0x01; rate_p[5] = 0x00;     /* timeRef = GPS */
   ubx_send(0x06, 0x08, rate_p, sizeof(rate_p));
   HAL_Delay(80);
 
-  /* Disable noisy NMEA sentences. */
+  /* Disable noisy NMEA sentences (GLL/GSA/GSV/VTG). */
   const uint8_t off[4][2] = { {0xF0,0x01}, {0xF0,0x02}, {0xF0,0x03}, {0xF0,0x05} };
   for (int i = 0; i < 4; i++) {
     uint8_t p[3] = { off[i][0], off[i][1], 0 };
@@ -263,24 +324,17 @@ int GPS_Init(void)
     HAL_Delay(40);
   }
 
-  /* Persist. */
+  /* Persist all sections so next boot starts at the same baud. */
   uint8_t save_p[13] = {0};
   save_p[4] = 0xFF; save_p[5] = 0xFF;
   save_p[12] = 0x17;
   ubx_send(0x06, 0x09, save_p, sizeof(save_p));
   HAL_Delay(120);
 
-  /* Step 4: enable UART4 IRQ at NVIC priority 6 (same as the original
-     SDDataLogFileX). Below SDMMC1 (BSP default ~14) so SD writes aren't
-     preempted; above SysTick (default 15) so a single-byte ring push
-     finishes in <10 µs and never blocks the scheduler. */
-  HAL_NVIC_SetPriority(UART4_IRQn, 6, 0);
-  HAL_NVIC_EnableIRQ(UART4_IRQn);
-
-  /* Arm the first RX. Each completion callback re-arms. */
-  if (HAL_UART_Receive_IT(&g_huart4, &g_rx_byte, 1) != HAL_OK) {
-    ErrLog_Write("gps: uart_recv_it FAIL"); return -3;
-  }
+  /* RX IRQ is already armed (from inside listen_newlines). Suppress
+     the unused suppress-static-fn warning here — gps_cfg_port_uart1
+     is dead code now that we don't blind-switch the baud. */
+  (void)locked_baud;
   ErrLog_Write("gps: rx_irq armed");
   return 0;
 }
