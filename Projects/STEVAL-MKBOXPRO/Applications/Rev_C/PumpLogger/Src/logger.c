@@ -214,10 +214,10 @@ void Logger_Tick(void)
     static uint8_t s_gps_broken_announced = 0;
     if (!s_gps_broken_announced && now_diag >= 30000 && lg == 0) {
       s_gps_broken_announced = 1;
-      ErrLog_Writef("*** GPS BROKEN: no NMEA after %lus (bytes=%lu errors=%lu) ***",
+      ErrLog_Writef("*** GPS NO NMEA: %lus, 0 lines parsed (bytes=%lu errors=%lu) ***",
                     (unsigned long)(now_diag / 1000),
                     (unsigned long)b, (unsigned long)err);
-      ErrLog_Writef("*** GpsNNN.csv will be header-only — check baud/wiring/module ***");
+      ErrLog_Writef("*** module is sending, we can't decode — check UART baud/wiring ***");
     }
   }
 }
