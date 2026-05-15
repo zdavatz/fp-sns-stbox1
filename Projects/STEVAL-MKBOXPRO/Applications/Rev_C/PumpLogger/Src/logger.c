@@ -203,6 +203,22 @@ void Logger_Tick(void)
     ErrLog_Writef("gps_diag: bytes=%lu lines_good=%lu lines_bad=%lu rmc=%lu gga=%lu errors=%lu",
                   (unsigned long)b, (unsigned long)lg, (unsigned long)lb,
                   (unsigned long)rmc, (unsigned long)gga, (unsigned long)err);
+
+    /* One-shot loud marker if GPS communication is fundamentally broken.
+       Fires once per boot at 30 s if lines_good is still 0 — the
+       deliberate hand-signal that "the GPS file will be empty, go look
+       at the module / wiring / baud rate, the firmware can't see NMEA".
+       No retry logic on purpose: a retry path is hard to test reliably
+       and a loud error marker is enough to drive the human to fix the
+       root cause (factory-reset the module, check wires, etc.). */
+    static uint8_t s_gps_broken_announced = 0;
+    if (!s_gps_broken_announced && now_diag >= 30000 && lg == 0) {
+      s_gps_broken_announced = 1;
+      ErrLog_Writef("*** GPS BROKEN: no NMEA after %lus (bytes=%lu errors=%lu) ***",
+                    (unsigned long)(now_diag / 1000),
+                    (unsigned long)b, (unsigned long)err);
+      ErrLog_Writef("*** GpsNNN.csv will be header-only — check baud/wiring/module ***");
+    }
   }
 }
 
