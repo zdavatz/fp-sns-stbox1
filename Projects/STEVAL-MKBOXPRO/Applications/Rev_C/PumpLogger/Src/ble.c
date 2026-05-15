@@ -385,21 +385,29 @@ static int ble_notify(uint16_t val_handle, const uint8_t *data, uint16_t len)
   return ble_aci_cmd(ACI_OP_GATT_SRV_NOTIFY, p, (uint16_t)i, NULL, 0);
 }
 
-/* Notify with congestion handling. The BlueNRG-LP TX buffer holds only a
-   handful of pending notifications; once full, aci_gatt_srv_notify returns
-   non-zero (INSUFFICIENT_RESOURCES). We back off + retry the SAME payload —
-   the radio drains a packet roughly every connection interval. The IWDG is
-   kicked each retry so a large transfer doesn't trip the 8 s watchdog.
-   Returns 0 on success, -1 if it never drains within the retry budget. */
-static int ble_notify_blocking(uint16_t val_handle, const uint8_t *data, uint16_t len)
+/* Notify with bounded congestion handling. The BlueNRG-LP TX buffer holds
+   only a handful of pending notifications; once full, aci_gatt_srv_notify
+   returns non-zero (INSUFFICIENT_RESOURCES). We back off + retry the SAME
+   payload for at most `max_ms` of wall-clock time — the radio drains a
+   packet roughly every connection interval (typical 30 ms on macOS).
+   Returns 0 on success, -1 on timeout.
+
+   Deliberately NO Watchdog_Kick here. State-machine-robustness rule
+   (DESIGN.md Section 11): a retry loop must not pet the watchdog. If the
+   bus is genuinely stuck, IWDG (2 s) must be allowed to fire — masking
+   that defeats the safety net. The caller is responsible for picking
+   max_ms low enough that the total time inside BLE_Tick stays below the
+   IWDG budget. */
+static int ble_notify_try(uint16_t val_handle, const uint8_t *data,
+                          uint16_t len, uint32_t max_ms)
 {
-  for (int retry = 0; retry < 400; retry++) {
+  uint32_t t0 = HAL_GetTick();
+  for (;;) {
     int rc = ble_notify(val_handle, data, len);
     if (rc == 0) return 0;
-    Watchdog_Kick();
-    HAL_Delay(10);   /* let the radio push one packet out */
+    if (HAL_GetTick() - t0 >= max_ms) return -1;
+    HAL_Delay(1);                                 /* tight poll — drain is fast */
   }
-  return -1;
 }
 
 /* ----- FileSync command handling ----------------------------------------- */
@@ -418,7 +426,7 @@ static int list_emit_cb(const char *name, uint32_t size, void *user)
   char row[40];
   int n = snprintf(row, sizeof(row), "%s,%lu\n", name, (unsigned long)size);
   if (n > 0) {
-    ble_notify_blocking(g_filedata_handle + 1, (const uint8_t *)row, (uint16_t)n);
+    ble_notify_try(g_filedata_handle + 1, (const uint8_t *)row, (uint16_t)n, 500);
   }
   return 0;   /* continue enumeration */
 }
@@ -438,7 +446,7 @@ static void ble_process_command(void)
     ErrLog_Write(buf);
     SDFat_ListRoot(list_emit_cb, NULL);
     uint8_t term = '\n';
-    int rc = ble_notify_blocking(g_filedata_handle + 1, &term, 1);
+    int rc = ble_notify_try(g_filedata_handle + 1, &term, 1, 500);
     snprintf(buf, sizeof(buf), "ble: LIST done term_rc=%d", rc);
     ErrLog_Write(buf);
   } else if (op == FSYNC_OP_READ) {
@@ -514,11 +522,14 @@ static void ble_process_command(void)
       uint32_t got = 0;
       if (SDFat_Read(&f, chunk, sizeof(chunk), &got) != PL_FX_OK) { fail = 1; break; }
       if (got == 0) break;                         /* EOF */
-      if (ble_notify_blocking(g_filedata_handle + 1, chunk, (uint16_t)got) != 0) {
+      if (ble_notify_try(g_filedata_handle + 1, chunk, (uint16_t)got, 500) != 0) {
         fail = 1; break;                           /* TX never drained */
       }
       sent += got;
-      Watchdog_Kick();                             /* keep IWDG happy on big files */
+      /* No Watchdog_Kick here — IWDG must remain the safety net.
+         Step 2 (state-machine refactor) replaces this loop with one
+         chunk per BLE_Tick; main-loop's single Watchdog_Kick then
+         covers the long-running transfer naturally. */
     }
     SDFat_Close(&f);
     snprintf(buf, sizeof(buf), "ble: READ '%s' done off=%lu sent=%lu size=%lu%s",
@@ -537,7 +548,7 @@ static void ble_process_command(void)
       ErrLog_Write("ble: DELETE (test shortcut → GPS000.CSV)");
     } else if (nlen > sizeof(name) - 1) {
       uint8_t st = FSYNC_ST_BAD_REQ;
-      ble_notify_blocking(g_filedata_handle + 1, &st, 1);
+      ble_notify_try(g_filedata_handle + 1, &st, 1, 500);
       ErrLog_Write("ble: DELETE bad request");
       return;
     } else {
@@ -549,7 +560,7 @@ static void ble_process_command(void)
     uint8_t st = (s == PL_FX_OK)              ? FSYNC_ST_OK
                : (s == PL_FX_ERR_NOT_FOUND)   ? FSYNC_ST_NOT_FOUND
                                               : FSYNC_ST_IO_ERROR;
-    ble_notify_blocking(g_filedata_handle + 1, &st, 1);
+    ble_notify_try(g_filedata_handle + 1, &st, 1, 500);
     snprintf(buf, sizeof(buf), "ble: DELETE '%s' s=%d st=0x%02x", name, s, st);
     ErrLog_Write(buf);
   } else if (op == FSYNC_OP_STOP_LOG) {
