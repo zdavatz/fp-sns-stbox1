@@ -191,9 +191,11 @@ void Logger_Tick(void)
     uint8_t n = g_last_gps.num_sat;
     if (n > 16) n = 16;                  /* cap so worst case stays ~2 s */
     if (g_last_gps.fix_q > 0 && n > 0) {
+      /* 100 ms beep + 250 ms gap = 350 ms per "count tick" → 10 sats =
+         3.5 s burst. Slow enough for the ear to count. */
       for (uint8_t i = 0; i < n; i++) {
-        Buzzer_Beep(2000, 60);
-        HAL_Delay(80);
+        Buzzer_Beep(2000, 100);
+        HAL_Delay(250);
       }
     }
   }

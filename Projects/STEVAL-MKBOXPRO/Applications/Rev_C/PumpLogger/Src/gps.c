@@ -230,6 +230,64 @@ static int listen_newlines(uint32_t ms_window)
   return (int)newlines;
 }
 
+/* Watch the ring buffer for a UBX-ACK-ACK (or ACK-NAK) frame matching the
+   given class+id. Returns 0 on ACK, -2 on NAK, -1 on timeout. Scans
+   bytewise via a small state machine — NMEA bytes (which start with '$')
+   never trigger the 0xB5 sync, so non-UBX traffic flows through harmless.
+   Per UBX spec the ACK frame is fixed length:
+     B5 62 05 01 02 00 <cls> <id> <ck0> <ck1>   (ACK-ACK)
+     B5 62 05 00 02 00 <cls> <id> <ck0> <ck1>   (ACK-NAK)
+   The checksum bytes are validated implicitly by message length. */
+static int ubx_wait_ack(uint8_t cls, uint8_t id, uint32_t timeout_ms)
+{
+  enum { S_B5, S_62, S_C, S_I, S_L0, S_L1, S_RCLS, S_RID } s = S_B5;
+  uint8_t  rcls = 0;
+  uint8_t  ack_kind = 0;                 /* 1 = ACK, 0 = NAK */
+  uint32_t t0 = HAL_GetTick();
+  HAL_UART_Receive_IT(&g_huart4, &g_rx_byte, 1);
+
+  while ((HAL_GetTick() - t0) < timeout_ms) {
+    while (g_rx_head != g_rx_tail) {
+      uint8_t b = g_rx_ring[g_rx_tail];
+      g_rx_tail = (uint16_t)((g_rx_tail + 1u) % GPS_RX_RING_SIZE);
+      switch (s) {
+        case S_B5:  s = (b == 0xB5) ? S_62 : S_B5; break;
+        case S_62:  s = (b == 0x62) ? S_C  : S_B5; break;
+        case S_C:   s = (b == 0x05) ? S_I  : S_B5; break;
+        case S_I:
+          if      (b == 0x01) { ack_kind = 1; s = S_L0; }
+          else if (b == 0x00) { ack_kind = 0; s = S_L0; }
+          else                  s = S_B5;
+          break;
+        case S_L0:  s = (b == 0x02) ? S_L1   : S_B5; break;
+        case S_L1:  s = (b == 0x00) ? S_RCLS : S_B5; break;
+        case S_RCLS: rcls = b; s = S_RID; break;
+        case S_RID:
+          if (rcls == cls && b == id) return ack_kind ? 0 : -2;
+          s = S_B5;
+          break;
+      }
+    }
+  }
+  return -1;
+}
+
+/* Send a UBX command and wait for its ACK-ACK. Retries up to `retries`
+   times on timeout or NAK. Returns 0 on success, -1 if all retries
+   failed. Each attempt has a 300 ms ACK budget — plenty even at 9600
+   baud (ACK is 10 bytes = ~11 ms airtime). */
+static int ubx_send_retry(uint8_t cls, uint8_t id, const uint8_t *payload,
+                          uint16_t len, int retries)
+{
+  for (int i = 0; i < retries; i++) {
+    ubx_send(cls, id, payload, len);
+    int rc = ubx_wait_ack(cls, id, 300);
+    if (rc == 0) return 0;
+    HAL_Delay(50);                       /* let any garbage drain */
+  }
+  return -1;
+}
+
 int GPS_Init(void)
 {
   memset(&g_latest, 0, sizeof(g_latest));
@@ -282,10 +340,8 @@ int GPS_Init(void)
     locked_baud = GPS_UART_BAUDRATE;
     ErrLog_Writef("gps: locked @38400 (%d newlines in 1500ms)", nl);
   } else {
-    /* Attempt 2: 9600 (u-blox factory default). At 9600 we have to drop
-       to 5 Hz — 10 Hz × ~150 bytes/fix = 1500 B/s, doesn't fit in
-       9600 baud (~960 B/s). 5 Hz fits comfortably. */
-    ErrLog_Writef("gps: no NMEA @38400 (newlines=%d) — falling back to 9600", nl);
+    /* Attempt 2: 9600 (u-blox factory default). */
+    ErrLog_Writef("gps: no NMEA @38400 (newlines=%d) — trying 9600", nl);
     HAL_UART_DeInit(&g_huart4);
     if (uart4_init_at(9600) != 0) {
       ErrLog_Write("gps: uart_init@9600 FAIL"); return -1;
@@ -295,9 +351,38 @@ int GPS_Init(void)
                                    | UART_CLEAR_FEF  | UART_CLEAR_PEF);
     nl = listen_newlines(1500);
     if (nl >= 3) {
-      locked_baud = 9600;
-      meas_ms     = 200;                  /* 5 Hz */
-      ErrLog_Writef("gps: locked @9600 (%d newlines in 1500ms), rate forced to 5Hz", nl);
+      ErrLog_Writef("gps: locked @9600 (%d newlines in 1500ms), upgrading…", nl);
+      /* We're at 9600 — ask the module to switch to 38400. This one
+         CAN'T be ACK-verified because the baud changes mid-stream
+         (module replies on the new baud, we're still on the old).
+         So: best-effort send, switch our UART, then listen-verify. */
+      gps_cfg_port_uart1(GPS_UART_BAUDRATE);
+      HAL_Delay(250);
+      HAL_UART_DeInit(&g_huart4);
+      if (uart4_init_at(GPS_UART_BAUDRATE) != 0) {
+        ErrLog_Write("gps: uart_reinit@38400 FAIL after upgrade"); return -1;
+      }
+      g_huart4.Instance->CR3 |= USART_CR3_OVRDIS;
+      __HAL_UART_CLEAR_FLAG(&g_huart4, UART_CLEAR_OREF | UART_CLEAR_NEF
+                                     | UART_CLEAR_FEF  | UART_CLEAR_PEF);
+      nl = listen_newlines(1500);
+      if (nl >= 3) {
+        locked_baud = GPS_UART_BAUDRATE;
+        ErrLog_Writef("gps: upgrade @9600 → @38400 succeeded (%d newlines)", nl);
+      } else {
+        /* Upgrade didn't take — fall back to 9600 / 5 Hz. */
+        ErrLog_Writef("gps: upgrade failed (newlines=%d), staying @9600 / 5Hz", nl);
+        HAL_UART_DeInit(&g_huart4);
+        if (uart4_init_at(9600) != 0) {
+          ErrLog_Write("gps: uart_reinit@9600 FAIL"); return -1;
+        }
+        g_huart4.Instance->CR3 |= USART_CR3_OVRDIS;
+        __HAL_UART_CLEAR_FLAG(&g_huart4, UART_CLEAR_OREF | UART_CLEAR_NEF
+                                       | UART_CLEAR_FEF  | UART_CLEAR_PEF);
+        listen_newlines(500);             /* re-arm IRQ + let bytes flow */
+        locked_baud = 9600;
+        meas_ms     = 200;                /* 5 Hz */
+      }
     } else {
       ErrLog_Write("*** GPS: no baud lock — neither 38400 nor 9600 produced NMEA ***");
       ErrLog_Write("*** factory-reset the module via u-center if the baud isn't standard ***");
@@ -305,37 +390,44 @@ int GPS_Init(void)
     }
   }
 
-  /* Send UBX-CFG-RATE for the determined rate. Best-effort still (we
-     don't ACK-check — but we know the baud matches now so the command
-     reaches the module). */
+  /* From here on we have a confirmed baud + working RX. All subsequent
+     UBX commands are ACK-verified with 3 retries each — same pattern
+     SDDataLogFileX used. The status of each lands in the errlog so a
+     post-mortem can tell exactly which step worked/failed. */
+
+  /* CFG-RATE — the most important one, set first. */
   uint8_t rate_p[6];
   rate_p[0] = (uint8_t)(meas_ms & 0xFF);
   rate_p[1] = (uint8_t)(meas_ms >> 8);
   rate_p[2] = 0x01; rate_p[3] = 0x00;     /* navRate = 1 */
   rate_p[4] = 0x01; rate_p[5] = 0x00;     /* timeRef = GPS */
-  ubx_send(0x06, 0x08, rate_p, sizeof(rate_p));
-  HAL_Delay(80);
+  int rate_rc = ubx_send_retry(0x06, 0x08, rate_p, sizeof(rate_p), 3);
+  ErrLog_Writef("gps: cfg-rate %luHz %s",
+                (unsigned long)(1000U / meas_ms),
+                (rate_rc == 0) ? "ACK" : "FAIL");
 
   /* Disable noisy NMEA sentences (GLL/GSA/GSV/VTG). */
   const uint8_t off[4][2] = { {0xF0,0x01}, {0xF0,0x02}, {0xF0,0x03}, {0xF0,0x05} };
+  int msg_acks = 0;
   for (int i = 0; i < 4; i++) {
     uint8_t p[3] = { off[i][0], off[i][1], 0 };
-    ubx_send(0x06, 0x01, p, sizeof(p));
-    HAL_Delay(40);
+    if (ubx_send_retry(0x06, 0x01, p, sizeof(p), 3) == 0) msg_acks++;
   }
+  ErrLog_Writef("gps: cfg-msg disable %d/4 ACK'd", msg_acks);
 
-  /* Persist all sections so next boot starts at the same baud. */
+  /* CFG-CFG-SAVE — persist baud + rate + msg config to BBR + Flash +
+     EEPROM so the next boot starts at the configured baud and Build #44's
+     listen-first lock happens on the first try (no 1.5 s fallback). */
   uint8_t save_p[13] = {0};
   save_p[4] = 0xFF; save_p[5] = 0xFF;
   save_p[12] = 0x17;
-  ubx_send(0x06, 0x09, save_p, sizeof(save_p));
-  HAL_Delay(120);
+  int save_rc = ubx_send_retry(0x06, 0x09, save_p, sizeof(save_p), 3);
+  ErrLog_Writef("gps: cfg-cfg-save %s", (save_rc == 0) ? "ACK" : "FAIL");
 
-  /* RX IRQ is already armed (from inside listen_newlines). Suppress
-     the unused suppress-static-fn warning here — gps_cfg_port_uart1
-     is dead code now that we don't blind-switch the baud. */
-  (void)locked_baud;
-  ErrLog_Write("gps: rx_irq armed");
+  /* RX IRQ stays armed across all the listen/ack calls. */
+  ErrLog_Writef("gps: ready @%lu baud, rate=%luHz",
+                (unsigned long)locked_baud,
+                (unsigned long)(1000U / meas_ms));
   return 0;
 }
 
