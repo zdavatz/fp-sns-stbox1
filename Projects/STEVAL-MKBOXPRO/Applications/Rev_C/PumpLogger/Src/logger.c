@@ -15,6 +15,7 @@
 #include "sensors_baro.h"
 #include "sensors_fuel.h"
 #include "gps.h"
+#include "buzzer.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -174,6 +175,29 @@ void Logger_Tick(void)
       emit_gps_row(&f);
     }
   }
+
+#if PL_GPS_ANTENNA_BEEP
+  /* Antenna-test mode: every 10 s beep N times where N = satellites in
+     fix. Direct audio feedback while swapping antennas — more sats =
+     better antenna. Build with `make GPS_ANTENNA_BEEP=1`. Blocks
+     Logger_Tick for ~N*140ms during the beep burst, which is fine for
+     a transient test build (we're not chasing 100 Hz IMU here, we're
+     listening to the buzzer). Default off so production logging
+     stays silent. */
+  static uint32_t s_last_ant_beep_ms = 0;
+  uint32_t now_ant = HAL_GetTick();
+  if (now_ant - s_last_ant_beep_ms >= 10000) {
+    s_last_ant_beep_ms = now_ant;
+    uint8_t n = g_last_gps.num_sat;
+    if (n > 16) n = 16;                  /* cap so worst case stays ~2 s */
+    if (g_last_gps.fix_q > 0 && n > 0) {
+      for (uint8_t i = 0; i < n; i++) {
+        Buzzer_Beep(2000, 60);
+        HAL_Delay(80);
+      }
+    }
+  }
+#endif
 
   if (sched_due(PL_SCHED_BATTERY, PL_CADENCE_BATTERY)) {
     PL_FuelSample fuel;

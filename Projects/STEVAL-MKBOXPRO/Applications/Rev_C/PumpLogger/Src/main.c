@@ -50,9 +50,11 @@ int main(void)
   HAL_GPIO_WritePin(PL_LED_RED_PORT,   PL_LED_RED_PIN,   GPIO_PIN_SET);
   HAL_GPIO_WritePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN, GPIO_PIN_RESET);
 
-  /* Buzzer last — depends on TIM1 + GPIOE clocks. */
+  /* Buzzer last — depends on TIM1 + GPIOE clocks. The two-tone "boot done"
+     beep is removed: logger has been past Phase-2 bring-up for weeks, and
+     the antenna-test build needs the buzzer silent at boot so it can use
+     it for the sat-count signal pattern instead. */
   Buzzer_Init();
-  Buzzer_BootDone();
 
   /* Hand-off: red off, green on. From here on the scheduler drives
      everything via SysTick. */
