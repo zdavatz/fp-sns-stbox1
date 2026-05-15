@@ -76,6 +76,34 @@ static void gps_cfg_port_uart1(uint32_t baud)
   ubx_send(0x06, 0x00, p, sizeof(p));
 }
 
+/* $PUBX,41 — u-blox proprietary NMEA sentence that configures a UART
+   port (baudrate + inProtoMask + outProtoMask). Critically, this
+   travels as NMEA, so it's accepted by the module even when its
+   persisted inProtoMask is set to NMEA-only (= our previous Build #45
+   trap, where every UBX command silently dropped). After this lands,
+   the module is at the new baud with UBX input re-enabled, and all
+   subsequent UBX commands ACK normally.
+
+   Wire format: $PUBX,41,1,0003,0002,<baud>,0*<XOR>\r\n
+     port 1     = UART
+     inMask 0x0003 = UBX + NMEA
+     outMask 0x0002 = NMEA only
+     autobaud 0  = off
+   The XOR checksum runs over everything between '$' and '*'. */
+static void send_pubx_port_cfg(uint32_t baud_out)
+{
+  char body[64];
+  int n = snprintf(body, sizeof(body), "PUBX,41,1,0003,0002,%lu,0",
+                   (unsigned long)baud_out);
+  if (n <= 0) return;
+  uint8_t cs = 0;
+  for (int i = 0; i < n; i++) cs ^= (uint8_t)body[i];
+  char full[80];
+  int m = snprintf(full, sizeof(full), "$%s*%02X\r\n", body, cs);
+  if (m > 0) HAL_UART_Transmit(&g_huart4, (uint8_t *)full,
+                               (uint16_t)m, 200);
+}
+
 /* ---------- NMEA parser ------------------------------------------------- */
 
 static uint8_t nmea_checksum_ok(const char *line)
@@ -351,12 +379,19 @@ int GPS_Init(void)
                                    | UART_CLEAR_FEF  | UART_CLEAR_PEF);
     nl = listen_newlines(1500);
     if (nl >= 3) {
-      ErrLog_Writef("gps: locked @9600 (%d newlines in 1500ms), upgrading…", nl);
-      /* We're at 9600 — ask the module to switch to 38400. This one
-         CAN'T be ACK-verified because the baud changes mid-stream
-         (module replies on the new baud, we're still on the old).
-         So: best-effort send, switch our UART, then listen-verify. */
-      gps_cfg_port_uart1(GPS_UART_BAUDRATE);
+      ErrLog_Writef("gps: locked @9600 (%d newlines in 1500ms), upgrading via $PUBX,41…", nl);
+      /* We're at 9600 — ask the module to switch to 38400 via the
+         u-blox proprietary NMEA sentence $PUBX,41. We used to send
+         UBX-CFG-PRT here, but Build #45's errlog showed all UBX
+         commands silently dropped — symptom of a persisted config
+         with inProtoMask = NMEA only. $PUBX,41 travels as NMEA so
+         it always reaches the module regardless of UBX-input state,
+         and ALSO re-enables UBX input as part of its payload —
+         unsticking the module from the UBX-locked-out state for
+         the rest of this boot. Can't be ACK-verified because the
+         baud changes mid-stream (reply comes back on the new baud
+         while we're still on the old). Verify by listen at 38400. */
+      send_pubx_port_cfg(GPS_UART_BAUDRATE);
       HAL_Delay(250);
       HAL_UART_DeInit(&g_huart4);
       if (uart4_init_at(GPS_UART_BAUDRATE) != 0) {
