@@ -136,6 +136,13 @@ static uint16_t          g_battery_handle  = 0;
 /* Current connection handle (0 = no active connection). Set in BLE_Tick on
    HCI_LE_Connection_Complete; cleared on Disconnection_Complete. */
 static uint16_t          g_conn_handle     = 0;
+/* Negotiated ATT MTU for the active connection. Default 23 (=20-byte
+   notify payload) per BLE spec; updated to actual negotiated value
+   when the BlueNRG-LP emits ACI_ATT_EXCHANGE_MTU_RESP_EVENT (0x0C17)
+   after a client kicks off MTU exchange. fsm_advance uses (mtu-3) as
+   the chunk size when it's > 20, giving up to ~12× the throughput on
+   clients that negotiate larger MTUs (typical iOS/macOS: 247). */
+static volatile uint16_t g_att_mtu         = 23;
 
 /* SensorStream: emitted only while a client has subscribed to its CCCD.
    No mode switch — SD logging runs regardless (DESIGN.md Section 2/3). */
@@ -482,7 +489,7 @@ static struct {
   uint32_t    sent;                 /* bytes notified to host so far */
   uint32_t    file_size;            /* total size, for done-marker */
   char        name[16];
-  uint8_t     buf[20];              /* current chunk in flight */
+  uint8_t     buf[244];             /* current chunk in flight; sized for max ATT MTU (247-3) */
   uint16_t    buf_len;              /* 0 = need to read fresh next call */
 } g_fsm;
 
@@ -531,7 +538,12 @@ static void fsm_advance(void)
   /* Read next chunk if our retry buffer is empty. */
   if (g_fsm.buf_len == 0) {
     uint32_t got = 0;
-    pl_fx_status_t s = SDFat_Read(&g_fsm.f, g_fsm.buf, sizeof(g_fsm.buf), &got);
+    /* Dynamic chunk size: ATT_MTU minus 3-byte ATT-header overhead.
+       Falls back to 20 if MTU hasn't been negotiated yet (default 23).
+       Clamped to buffer size to be defensive. */
+    uint16_t chunk_max = (g_att_mtu > 23) ? (uint16_t)(g_att_mtu - 3) : 20;
+    if (chunk_max > sizeof(g_fsm.buf)) chunk_max = sizeof(g_fsm.buf);
+    pl_fx_status_t s = SDFat_Read(&g_fsm.f, g_fsm.buf, chunk_max, &got);
     if (s != PL_FX_OK) {
       fsm_emergency_exit(SM_IO_ERROR, "sdread");
       return;
@@ -1260,6 +1272,31 @@ void BLE_Tick(void)
           g_battery_notify_ms  = HAL_GetTick() - BATTERY_PERIOD_MS;  /* notify soon */
           snprintf(buf, sizeof(buf), "ble: battery subscribed=%d",
                    g_battery_subscribed);
+          ErrLog_Write(buf);
+        }
+      } else if (ecode == 0x0C17) {
+        /* ACI_ATT_EXCHANGE_MTU_RESP_EVENT — the BlueNRG-LP just
+           negotiated a new ATT MTU with the connected client. Earlier
+           errlogs showed this event arriving as n=8 (= 4 bytes of
+           payload after the standard 4-byte vendor header), which on
+           BlueNRG-LP firmware means the payload is just (server_rx_mtu)
+           at evt[6..7] with no conn_handle. Some firmware variants
+           include conn_handle first, so we also check evt[8..9] as a
+           fallback and pick whichever yields a plausible MTU value. */
+        uint16_t mtu_a = (uint16_t)(evt[6] | (evt[7] << 8));
+        uint16_t mtu_b = (n >= 10) ? (uint16_t)(evt[8] | (evt[9] << 8)) : 0;
+        uint16_t mtu   = (mtu_a >= 23 && mtu_a <= 247) ? mtu_a :
+                         (mtu_b >= 23 && mtu_b <= 247) ? mtu_b : 0;
+        if (mtu) {
+          g_att_mtu = mtu;
+          snprintf(buf, sizeof(buf), "ble: att_mtu=%u (n=%d ev6=%02x%02x ev8=%02x%02x)",
+                   mtu, n, evt[7], evt[6],
+                   (n >= 10) ? evt[9] : 0, (n >= 10) ? evt[8] : 0);
+          ErrLog_Write(buf);
+        } else {
+          snprintf(buf, sizeof(buf), "ble: mtu event but no plausible value (n=%d ev6=%02x%02x ev8=%02x%02x)",
+                   n, evt[7], evt[6],
+                   (n >= 10) ? evt[9] : 0, (n >= 10) ? evt[8] : 0);
           ErrLog_Write(buf);
         }
       } else {
