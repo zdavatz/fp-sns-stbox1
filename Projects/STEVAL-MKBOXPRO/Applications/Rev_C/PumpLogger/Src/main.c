@@ -138,8 +138,29 @@ int main(void)
     GPS_Tick();
     BLE_Tick();
 
-    if (sched_due(PL_SCHED_LED, PL_CADENCE_LED_BLINK)) {
-      HAL_GPIO_TogglePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN);
+    /* Green-LED pattern based on GPS fix quality. Phase advances every
+       125 ms; eight 125 ms slots = one second per cycle. Pattern table:
+         NONE: 1 1 1 1 0 0 0 0  → slow blink (500 ms on / 500 ms off)
+         WEAK: 1 0 1 0 0 0 0 0  → double flash (4-6 sats)
+         GOOD: 1 0 1 0 1 0 0 0  → triple flash (≥7 sats)
+       The slow-blink case is identical in feel to the pre-Build-#49
+       LED — so when GPS isn't fixed yet (boot, indoors, etc.) the
+       operator sees the familiar "logger alive" heartbeat. Adding
+       a 2nd / 3rd flash means GPS is actually producing valid fixes,
+       letting the operator drop the dedicated GPS module LEDs to save
+       power without losing GPS-status feedback. */
+    if (sched_due(PL_SCHED_LED, PL_CADENCE_LED_PHASE)) {
+      static const uint8_t LED_PATTERN[3][8] = {
+        { 1, 1, 1, 1, 0, 0, 0, 0 },   /* PL_GPS_QUALITY_NONE */
+        { 1, 0, 1, 0, 0, 0, 0, 0 },   /* PL_GPS_QUALITY_WEAK */
+        { 1, 0, 1, 0, 1, 0, 0, 0 },   /* PL_GPS_QUALITY_GOOD */
+      };
+      static uint8_t led_phase = 0;
+      pl_gps_quality_t q = GPS_LastFixQuality();
+      if (q > PL_GPS_QUALITY_GOOD) q = PL_GPS_QUALITY_GOOD;
+      HAL_GPIO_WritePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN,
+                        LED_PATTERN[q][led_phase] ? GPIO_PIN_SET : GPIO_PIN_RESET);
+      led_phase = (uint8_t)((led_phase + 1u) & 0x07u);
     }
 
     /* Red LED solid-on as soon as ErrLog latches a '***' warning. The

@@ -45,6 +45,7 @@ static volatile uint32_t g_diag_bytes;
 static volatile uint32_t g_diag_lines_good;
 static volatile uint32_t g_diag_lines_bad;
 static volatile uint32_t g_diag_rmc;
+static volatile uint32_t g_latest_valid_tick;   /* HAL_GetTick() of last status='A' RMC; 0 = never */
 static volatile uint32_t g_diag_gga;
 static volatile uint32_t g_diag_errors;        /* UART RX error callbacks invoked */
 
@@ -156,6 +157,11 @@ static void parse_rmc(char *fields[], int n)
   const char *cog    = fields[8];
   if (status[0] != 'A') return;
   g_diag_rmc++;
+  /* Wall-clock stamp of the latest valid RMC. GPS_LastFixQuality uses
+     this to detect signal loss mid-session — if no fresh-valid RMC has
+     arrived in ~3 s, the LED pattern falls back to "no fix" instead of
+     latching the previous good state forever. */
+  g_latest_valid_tick = HAL_GetTick();
 
   strncpy(g_latest.utc, utc, sizeof(g_latest.utc) - 1);
   g_latest.utc[sizeof(g_latest.utc) - 1] = '\0';
@@ -528,6 +534,19 @@ void GPS_GetStats(uint32_t *bytes, uint32_t *lines_good, uint32_t *lines_bad,
   if (rmc)        *rmc        = g_diag_rmc;
   if (gga)        *gga        = g_diag_gga;
   if (errors)     *errors     = g_diag_errors;
+}
+
+pl_gps_quality_t GPS_LastFixQuality(void)
+{
+  if (g_latest_valid_tick == 0) return PL_GPS_QUALITY_NONE;
+  /* Staleness: if no fresh status='A' RMC in the last 3 s, treat as
+     no-fix (signal lost). At 10 Hz fix rate that's 30 missed RMCs —
+     conservatively long enough to ride out one or two cycle drops
+     without flickering the LED pattern. */
+  if ((HAL_GetTick() - g_latest_valid_tick) > 3000U) return PL_GPS_QUALITY_NONE;
+  if (g_latest.num_sat >= 7) return PL_GPS_QUALITY_GOOD;
+  if (g_latest.num_sat >= 4) return PL_GPS_QUALITY_WEAK;
+  return PL_GPS_QUALITY_NONE;
 }
 
 int GPS_GetLatestFix(PL_GpsFix *out)
