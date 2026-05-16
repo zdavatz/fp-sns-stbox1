@@ -11,6 +11,19 @@ share/
 Projects/*/Applications/*/BLESensorsPnPL/STM32CubeIDE/build/
 Projects/*/Applications/*/SDDataLogFileX/STM32CubeIDE/build/
 Projects/STEVAL-MKBOXPRO/Applications/Rev_C/SDDataLogFileX/STM32CubeIDE/build/
+Projects/STEVAL-MKBOXPRO/Applications/Rev_C/BLEDualProgram/STM32CubeIDE/build/
+Projects/STEVAL-MKBOXPRO/Applications/Rev_C/PumpLogger/STM32CubeIDE/build/
+
+# PumpLogger build counter — bumps every `make`, embedded via
+# -DPL_BUILD_NUM. Local-only; committing would create spurious diffs.
+Projects/STEVAL-MKBOXPRO/Applications/Rev_C/PumpLogger/STM32CubeIDE/.build_counter
+
+# stbox-viz generated HTML (regenerable from CSVs)
+Utilities/rust/stbox-viz/html/
+
+# Finder-induced "Kopie" duplicates — never intended to be committed
+*Kopie*
+* Kopie*
 
 # Temp video extraction
 frames/
