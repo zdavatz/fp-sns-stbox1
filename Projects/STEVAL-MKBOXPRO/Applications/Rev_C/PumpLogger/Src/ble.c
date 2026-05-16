@@ -455,8 +455,16 @@ static int list_emit_cb(const char *name, uint32_t size, void *user)
 /* Per-state deadlines. READ_DEADLINE is generous (1 MB at ~17 KB/s ≈
    60 s); STALL_DEADLINE catches a vanished peer within seconds. Both
    measured in HAL ticks (1 ms). */
-#define FSM_READ_DEADLINE_MS    60000
-#define FSM_STALL_DEADLINE_MS    5000
+/* Bumped 2026-05-16 after a real-life sync test aborted SENS000.CSV
+   (332 KB at ~3 KB/s) with the old 60 s deadline at 60% progress.
+   Files easily reach 1+ MB after long sessions; a 10-minute budget
+   covers realistic worst-case sustained-3 KB/s transfers.
+   Stall-deadline lifted from 5 s → 15 s to ride out macOS Bluetooth
+   power-management hiccups without false "stall" aborts. Real
+   peer-gone (disconnect / out-of-range) still gets caught within
+   reason, just slightly slower. */
+#define FSM_READ_DEADLINE_MS   600000
+#define FSM_STALL_DEADLINE_MS   15000
 
 /* Per-chunk notify budget INSIDE fsm_advance. Short on purpose: each
    BLE_Tick may eat at most this much wall-clock so Logger_Tick stays
