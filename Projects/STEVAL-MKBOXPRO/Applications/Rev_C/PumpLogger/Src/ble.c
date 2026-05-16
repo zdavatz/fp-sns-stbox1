@@ -602,12 +602,15 @@ static void ble_process_command(void)
     uint32_t offset = 0;
 
     if (g_cmd_len <= 1) {
-      /* TEST SHORTCUT: a bare 0x02 reads a fixed default file at offset 0.
-         nRF Connect Mobile caps the hex-write field at 16 chars, too short
-         for "02 <name> 00 <4-byte offset>". Real clients send the full
-         command. Remove or repurpose in Phase 8. */
-      strcpy(name, "BAT000.CSV");
-      ErrLog_Write("ble: READ (test shortcut → BAT000.CSV @0)");
+      /* Bare 0x02 with no filename is malformed by spec — reject. The
+         pre-Phase-8 builds had a "bare 0x02 → BAT000.CSV" test shortcut
+         here for nRF Connect Mobile's 16-char input limit, removed
+         in production: real clients always send the full opcode +
+         NUL-terminated name + optional 4-byte offset. */
+      uint8_t st = FSYNC_ST_BAD_REQ;
+      ble_notify_try(g_filedata_handle + 1, &st, 1, 50);
+      ErrLog_Write("ble: READ bad request (no filename)");
+      return;
     } else {
       /* Locate the NUL terminator inside g_cmd_buf[1 .. g_cmd_len-1]. */
       int nul = -1;
@@ -667,24 +670,20 @@ static void ble_process_command(void)
              name, (unsigned long)offset, (unsigned long)f_open.size);
     ErrLog_Write(buf);
   } else if (op == FSYNC_OP_DELETE) {
-    /* DELETE <name>: free the file's clusters + mark the dir entry deleted.
-       Reply is a single status byte on FileData. Same 16-char nRF input
-       limit applies → a bare 0x03 deletes a fixed test file. */
+    /* DELETE <name>: free the file's clusters + mark the dir entry
+       deleted. Reply is a single status byte on FileData. The bare-0x03
+       test shortcut (→ GPS000.CSV) was removed in Phase 8; a real
+       client always sends opcode + name. */
     char name[16];
     uint8_t nlen = (g_cmd_len > 1) ? (uint8_t)(g_cmd_len - 1) : 0;
-    if (nlen == 0) {
-      strcpy(name, "GPS000.CSV");          /* TEST SHORTCUT */
-      nlen = (uint8_t)strlen(name);
-      ErrLog_Write("ble: DELETE (test shortcut → GPS000.CSV)");
-    } else if (nlen > sizeof(name) - 1) {
+    if (nlen == 0 || nlen > sizeof(name) - 1) {
       uint8_t st = FSYNC_ST_BAD_REQ;
       ble_notify_try(g_filedata_handle + 1, &st, 1, 500);
-      ErrLog_Write("ble: DELETE bad request");
+      ErrLog_Write("ble: DELETE bad request (no/too-long filename)");
       return;
-    } else {
-      memcpy(name, &g_cmd_buf[1], nlen);
-      name[nlen] = '\0';
     }
+    memcpy(name, &g_cmd_buf[1], nlen);
+    name[nlen] = '\0';
 
     pl_fx_status_t s = SDFat_Delete(name);
     uint8_t st = (s == PL_FX_OK)              ? FSYNC_ST_OK

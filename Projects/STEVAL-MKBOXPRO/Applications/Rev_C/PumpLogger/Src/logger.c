@@ -172,7 +172,13 @@ void Logger_Tick(void)
     PL_GpsFix f;
     if (GPS_GetLatestFix(&f) == 0) {
       g_last_gps = f;
-      emit_gps_row(&f);
+      /* Only write to GpsNNN.csv when the fix is actually valid. GGA
+         alone bumps the update flag (parse_gga sets g_updated=1 even
+         with fix_q=0), so without this filter every disconnected
+         antenna or open-sky-blocked moment writes "ghost" rows with
+         the last-known lat/lon and nsat=0 / hdop=99.9 — confusing the
+         visualisation tools that interpret each row as a real fix. */
+      if (f.fix_q > 0) emit_gps_row(&f);
     }
   }
 
