@@ -142,6 +142,16 @@ int main(void)
       HAL_GPIO_TogglePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN);
     }
 
+    /* Red LED solid-on as soon as ErrLog latches a '***' warning. The
+       operator notices something needs attention without needing to
+       pull the SD card mid-session. Once latched stays latched until
+       reset — single transition per boot, no LED flicker. Green keeps
+       blinking so the operator can tell "warning + still running"
+       apart from the fatal-Error_Handler case ("warning + green dark"). */
+    if (ErrLog_WarningLatched()) {
+      HAL_GPIO_WritePin(PL_LED_RED_PORT, PL_LED_RED_PIN, GPIO_PIN_SET);
+    }
+
     sched_wait_next_tick();
   }
 }
@@ -262,8 +272,18 @@ void SystemClock_Config(void)
 void Error_Handler(const char *file, int line)
 {
   (void)file; (void)line;
+  /* Fatal-error LED+buzzer convention (DESIGN.md §11-ish):
+       red LED on solid + green LED dark → "the box is dead, check errlog"
+       one long low-frequency beep → audible even if the box is in a
+       rucksack or you're not looking at it.
+     Order matters: beep + LED updates BEFORE __disable_irq, because
+     Buzzer_Beep uses HAL_Delay which spins on SysTick and would hang
+     forever once interrupts are off. Once the alarm has sounded we
+     disable IRQs and park the CPU. */
+  HAL_GPIO_WritePin(PL_LED_RED_PORT,   PL_LED_RED_PIN,   GPIO_PIN_SET);
+  HAL_GPIO_WritePin(PL_LED_GREEN_PORT, PL_LED_GREEN_PIN, GPIO_PIN_RESET);
+  Buzzer_Beep(800U, 800U);          /* 800 Hz, 0.8 s = unmistakable alarm */
   __disable_irq();
-  HAL_GPIO_WritePin(PL_LED_RED_PORT, PL_LED_RED_PIN, GPIO_PIN_SET);
   for (;;) {}
 }
 
