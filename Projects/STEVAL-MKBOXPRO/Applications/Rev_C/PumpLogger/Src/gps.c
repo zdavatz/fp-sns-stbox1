@@ -241,10 +241,20 @@ static int uart4_init_at(uint32_t baud)
    right after a baud-rate change works. */
 static int listen_newlines(uint32_t ms_window)
 {
+  /* Robust re-arm: after multiple DeInit/Init cycles the HAL's RxState
+     can land in BUSY_RX or RESET leftovers, and a fresh HAL_UART_Receive_IT
+     then returns HAL_BUSY silently. Abort first, then arm, then check.
+     If arming truly fails we log it — otherwise "0 newlines" gets
+     mis-attributed to "wrong baud" when the real reason was a stuck
+     UART driver. */
+  extern void ErrLog_Write(const char *msg);
+  HAL_UART_AbortReceive_IT(&g_huart4);
   g_rx_head = g_rx_tail = 0;
-  /* Re-arm RX (returns non-OK if previous Rx was still active — fine,
-     either way the IRQ will keep pushing bytes into the ring). */
-  HAL_UART_Receive_IT(&g_huart4, &g_rx_byte, 1);
+  HAL_StatusTypeDef rs = HAL_UART_Receive_IT(&g_huart4, &g_rx_byte, 1);
+  if (rs != HAL_OK) {
+    ErrLog_Write("gps: listen: HAL_UART_Receive_IT FAIL");
+    return 0;
+  }
 
   uint32_t newlines = 0;
   uint32_t t0 = HAL_GetTick();
