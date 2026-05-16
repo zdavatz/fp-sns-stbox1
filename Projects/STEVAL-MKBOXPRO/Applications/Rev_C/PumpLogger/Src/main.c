@@ -82,7 +82,12 @@ int main(void)
 
   pl_fx_status_t sd_rc = SDFat_Mount();
   if (sd_rc != PL_FX_OK) {
-    beep_pattern(800, 4, 200, 200);
+    /* No SD card = no logging = useless box. Treat as fatal: red LED
+       on solid + green off + long beep, then halt. The operator must
+       NOT be able to start a pumpfoil session and discover hours later
+       that the SD slot was empty — same failure mode as forgetting
+       the film in a camera. Hard halt, no second chance. */
+    Error_Handler(__FILE__, __LINE__);
   } else {
     Buzzer_Beep(3000U, 60U);
     ErrLog_Init();
