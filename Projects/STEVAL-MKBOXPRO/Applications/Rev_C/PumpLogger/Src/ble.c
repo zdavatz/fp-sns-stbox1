@@ -546,7 +546,7 @@ static void fsm_advance(void)
        ~5×. If it refuses, notify_try will return -1 and the FSM aborts
        cleanly with stall — no corruption, just a clear failure signal
        in errlog and we roll back. */
-    uint16_t chunk_max = (g_att_mtu > 23) ? (uint16_t)(g_att_mtu - 3) : 100;
+    uint16_t chunk_max = (g_att_mtu > 23) ? (uint16_t)(g_att_mtu - 3) : 240;
     if (chunk_max > sizeof(g_fsm.buf)) chunk_max = sizeof(g_fsm.buf);
     pl_fx_status_t s = SDFat_Read(&g_fsm.f, g_fsm.buf, chunk_max, &got);
     if (s != PL_FX_OK) {
