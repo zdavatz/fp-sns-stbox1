@@ -493,6 +493,28 @@ static struct {
   uint16_t    buf_len;              /* 0 = need to read fresh next call */
 } g_fsm;
 
+/* Force the chip to drop the current connection. Fire-and-forget — the
+   chip responds with Command Status (0x0F) not Command Complete, so
+   we don't bother waiting via ble_hci_cmd. The actual disconnect lands
+   asynchronously, and the existing Disconnection_Complete event handler
+   (BLE_Tick, code 0x05) then re-arms advertising via ble_adv_enable.
+   Called from fsm_emergency_exit to recover from "stall" cases where
+   macOS quietly stopped acking but the chip's LL supervision timeout
+   hasn't fired yet — without this the box stays connected-in-limbo
+   and never re-advertises, becoming invisible to nRF / GUI. */
+static int ble_hci_disconnect(uint16_t conn_handle, uint8_t reason)
+{
+  uint8_t frame[7];
+  frame[0] = 0x01;                                 /* HCI command type */
+  frame[1] = 0x06;                                 /* opcode 0x0406 lo */
+  frame[2] = 0x04;                                 /* opcode 0x0406 hi */
+  frame[3] = 0x03;                                 /* plen */
+  frame[4] = (uint8_t)(conn_handle & 0xFF);
+  frame[5] = (uint8_t)(conn_handle >> 8);
+  frame[6] = reason;
+  return ble_hci_send(frame, sizeof(frame));
+}
+
 static void fsm_emergency_exit(int code, const char *why)
 {
   uint32_t held_ms = HAL_GetTick() - g_fsm.entered_tick;
@@ -505,12 +527,23 @@ static void fsm_emergency_exit(int code, const char *why)
     SDFat_Close(&g_fsm.f);
   }
   /* Best-effort status byte. If the peer is genuinely gone the send
-     fails fast (500 ms cap) and we don't care. */
+     fails fast (50 ms cap) and we don't care. */
   if (g_conn_handle != 0) {
     uint8_t st = (code == SM_IO_ERROR) ? FSYNC_ST_IO_ERROR :
                  (code == SM_BAD_STATE) ? FSYNC_ST_BAD_REQ :
                                           FSYNC_ST_IO_ERROR;
     ble_notify_try(g_filedata_handle + 1, &st, 1, 50);
+  }
+  /* Recovery for the "stall" / "deadline" / "sdread" cases: if our local
+     g_conn_handle is still set, the chip almost certainly thinks the
+     connection is alive — we need to actively tear it down so the
+     Disconnection_Complete event handler can re-arm advertising. The
+     "disconnect" path doesn't need this (g_conn_handle is already 0). */
+  if (g_conn_handle != 0) {
+    uint16_t ch = g_conn_handle;
+    int rc = ble_hci_disconnect(ch, 0x13);       /* reason: Remote User */
+    snprintf(buf, sizeof(buf), "fsm: forcing HCI disconnect handle=0x%04x rc=%d", ch, rc);
+    ErrLog_Write(buf);
   }
   g_fsm.state = FSM_IDLE;
 }
