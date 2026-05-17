@@ -535,14 +535,24 @@ static void fsm_emergency_exit(int code, const char *why)
     ble_notify_try(g_filedata_handle + 1, &st, 1, 50);
   }
   /* Recovery for the "stall" / "deadline" / "sdread" cases: if our local
-     g_conn_handle is still set, the chip almost certainly thinks the
-     connection is alive — we need to actively tear it down so the
-     Disconnection_Complete event handler can re-arm advertising. The
-     "disconnect" path doesn't need this (g_conn_handle is already 0). */
+     g_conn_handle is still set, the chip thinks the connection is
+     alive — we need to actively tear it down AND re-arm advertising.
+     Build #56 only sent HCI_Disconnect and relied on the chip to emit
+     Disconnection_Complete back — but in real-world testing (Mac BT
+     toggled off), the chip never raised that event, so re-advertising
+     never fired and the box stayed invisible. Build #57 belt-and-
+     suspenders: HCI_Disconnect AND a direct local re-arm without
+     waiting for any chip event. */
   if (g_conn_handle != 0) {
     uint16_t ch = g_conn_handle;
-    int rc = ble_hci_disconnect(ch, 0x13);       /* reason: Remote User */
-    snprintf(buf, sizeof(buf), "fsm: forcing HCI disconnect handle=0x%04x rc=%d", ch, rc);
+    int hd_rc  = ble_hci_disconnect(ch, 0x13);       /* reason: Remote User */
+    HAL_Delay(500);                                  /* give chip time to process */
+    g_conn_handle        = 0;
+    g_stream_subscribed  = 0;
+    g_battery_subscribed = 0;
+    int adv_rc = ble_adv_enable();
+    snprintf(buf, sizeof(buf), "fsm: hci_disc=0x%04x rc=%d, re-adv rc=%d",
+             ch, hd_rc, adv_rc);
     ErrLog_Write(buf);
   }
   g_fsm.state = FSM_IDLE;
