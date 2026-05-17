@@ -493,6 +493,57 @@ static struct {
   uint16_t    buf_len;              /* 0 = need to read fresh next call */
 } g_fsm;
 
+/* Re-set ALL advertising state on the chip (config + data + enable) and
+   return the enable's return code. Use this instead of bare ble_adv_enable
+   in recovery paths. Background: after several rapid connect-disconnect
+   cycles the BlueNRG-LP loses or invalidates the advertising-configuration
+   internally; subsequent bare aci_gap_set_advertising_enable calls then
+   fail with status 0xD3 (= "configuration not valid"), per the ST community
+   thread "BLE Does not advertise after a disconnection — BlueNRG-LP". Fix:
+   re-send aci_gap_set_advertising_configuration + aci_gap_set_advertising_data_nwk
+   right before enable, so the chip always has fresh, valid state. The
+   re-sets are idempotent — harmless if the state was still good. */
+static int ble_adv_reenable_full(void)
+{
+  /* Adv config: same payload as in BLE_Init (extended-advertising, legacy
+     PDU type, 100 ms interval, all 3 channels). */
+  {
+    uint8_t p[27] = {0};
+    int i = 0;
+    p[i++] = 0x00;                                  /* handle */
+    p[i++] = 0x02;                                  /* general discoverable */
+    p[i++] = 0x13; p[i++] = 0x00;                   /* event_properties LE */
+    p[i++] = 0xA0; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;  /* int_min */
+    p[i++] = 0xA0; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;  /* int_max */
+    p[i++] = 0x07;                                  /* channel_map */
+    p[i++] = 0x00;                                  /* peer_addr_type */
+    for (int k = 0; k < 6; k++) p[i++] = 0;         /* peer_addr */
+    p[i++] = 0x00;                                  /* filter_policy */
+    p[i++] = 0x00;                                  /* tx_power */
+    p[i++] = 0x01;                                  /* primary phy 1M */
+    p[i++] = 0x00;                                  /* secondary skip */
+    p[i++] = 0x01;                                  /* secondary phy 1M */
+    p[i++] = 0x00;                                  /* SID */
+    p[i++] = 0x00;                                  /* scan_req_notif */
+    (void)ble_aci_cmd(ACI_OP_GAP_SET_ADV_CONFIGURATION, p, (uint16_t)i, NULL, 0);
+  }
+  /* Adv data: same Flags + Complete-Local-Name payload as in BLE_Init. */
+  {
+    uint8_t p[64];
+    int i = 0;
+    p[i++] = 0x00;                                  /* handle */
+    p[i++] = 0x03;                                  /* complete data */
+    uint8_t name_len = (uint8_t)BLE_ADV_NAME_LEN;
+    uint8_t data_len = 3 + (2 + name_len);
+    p[i++] = data_len;
+    p[i++] = 0x02; p[i++] = 0x01; p[i++] = 0x06;    /* Flags AD */
+    p[i++] = (uint8_t)(1 + name_len); p[i++] = 0x09;
+    memcpy(&p[i], BLE_ADV_NAME, name_len); i += name_len;
+    (void)ble_aci_cmd(ACI_OP_GAP_SET_ADV_DATA_NWK, p, (uint16_t)i, NULL, 0);
+  }
+  return ble_adv_enable();
+}
+
 /* Force the chip to drop the current connection. Fire-and-forget — the
    chip responds with Command Status (0x0F) not Command Complete, so
    we don't bother waiting via ble_hci_cmd. The actual disconnect lands
@@ -550,7 +601,13 @@ static void fsm_emergency_exit(int code, const char *why)
     g_conn_handle        = 0;
     g_stream_subscribed  = 0;
     g_battery_subscribed = 0;
-    int adv_rc = ble_adv_enable();
+    /* Use the FULL re-enable path here (config + data + enable). After
+       rapid stall→disconnect→reconnect cycles the chip's advertising
+       configuration gets invalidated → bare ble_adv_enable() returns
+       0xD3 ("config not valid"). Build #57 saw this on the 3rd cycle
+       under Mac BT toggle, Build #57 retest saw it on the 2nd cycle
+       with 25 MB file sync. Reproducible. ST-confirmed root cause. */
+    int adv_rc = ble_adv_reenable_full();
     snprintf(buf, sizeof(buf), "fsm: hci_disc=0x%04x rc=%d, re-adv rc=%d",
              ch, hd_rc, adv_rc);
     ErrLog_Write(buf);
@@ -1266,8 +1323,11 @@ void BLE_Tick(void)
       }
       /* Re-arm advertising — the chip stopped it on connect and won't
          resume on its own. Without this the box is invisible to any
-         further connection attempt. */
-      int arc = ble_adv_enable();
+         further connection attempt. Use the FULL re-enable (config +
+         data + enable) for defensive consistency with the FSM path
+         and to survive chip-state-invalidation after rapid cycles
+         (BlueNRG-LP 0xD3 issue, see ble_adv_reenable_full comment). */
+      int arc = ble_adv_reenable_full();
       snprintf(buf, sizeof(buf), "ble: disconnected reason=0x%02x re-adv=%d",
                (n >= 7) ? evt[6] : 0, arc);
       ErrLog_Write(buf);
