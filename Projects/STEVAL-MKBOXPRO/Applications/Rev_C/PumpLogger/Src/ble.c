@@ -930,14 +930,19 @@ static void ble_chip_reset(void)
 {
   cs_hi();
   HAL_GPIO_WritePin(BLE_RST_PORT, BLE_RST_PIN, GPIO_PIN_RESET);
-  HAL_Delay(10);
+  /* Aggressive NRST hold: 100 ms (was 10 ms). Build #61 showed the
+     10 ms-low-pulse reset wasn't enough to fully clear the BlueNRG-LP
+     after a stall — recovery "succeeded" per HCI return codes but the
+     chip didn't actually emit advertising packets. Hypothesis: short
+     NRST is a soft reset that leaves internal radio-subsystem state
+     intact; longer hold forces deeper reset closer to a power-cycle. */
+  HAL_Delay(100);
   HAL_GPIO_WritePin(BLE_RST_PORT, BLE_RST_PIN, GPIO_PIN_SET);
-  /* ST middleware does 150 ms here, then sends hci_reset, then waits another
-     2000 ms before issuing any other HCI command. Build #13 with only 200 ms
-     here returned cc=-10 (send timeout) on hci_reset → chip wasn't actually
-     ready. Bumped to 500 ms; the 2-second post-hci-reset settle is in the
-     caller. */
-  HAL_Delay(500);
+  /* Long settle (was 500 ms): give the chip plenty of time to come
+     fully online, especially when we're re-resetting an already-stuck
+     chip rather than cold-booting a fresh one. The 2-second post-
+     hci-reset settle in the caller is on top of this. */
+  HAL_Delay(1500);
 }
 
 /* Drain whatever the chip pushed at us during boot (startup-vendor-event,
