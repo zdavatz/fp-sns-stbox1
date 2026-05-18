@@ -130,6 +130,14 @@ static uint8_t           g_advertising = 0;
    must NEVER take down the data-collection path. User notices the box
    is invisible to nRF/GUI and power-cycles when convenient. */
 static volatile uint8_t  g_ble_dead    = 0;
+/* "Reset pending" — set by fsm_emergency_exit when chip is stuck. The
+   next BLE_Tick sees the flag, pulses the BlueNRG-LP's NRST pin, and
+   runs the full BLE_Init sequence again to bring the chip back online.
+   Logger pauses for ~3 s during recovery (cost: 300 missed 100 Hz IMU
+   samples). After successful recovery: both flags clear, BLE works
+   again, GUI auto-reconnects with offset-resume. After failed recovery:
+   g_ble_dead stays set, no further retries. */
+static volatile uint8_t  g_ble_reset_pending = 0;
 
 /* GATT handles captured during BLE_Init from ACI add_service / add_char
    responses. cmd_handle is what the host writes commands to; data_handle
@@ -625,8 +633,9 @@ static void fsm_emergency_exit(int code, const char *why)
        is invisible to nRF/GUI and power-cycles when convenient (between
        sessions). Pumpfoil session continues recording unaffected. */
     if (adv_rc != 0) {
-      ErrLog_Write("*** BLE chip stuck — disabling BLE, logger continues ***");
-      g_ble_dead = 1;
+      ErrLog_Write("*** BLE chip stuck — scheduling NRST reset on next BLE_Tick ***");
+      g_ble_dead          = 1;   /* immediately stop BLE work */
+      g_ble_reset_pending = 1;   /* trigger recovery in next BLE_Tick */
     }
   }
   g_fsm.state = FSM_IDLE;
@@ -1286,6 +1295,31 @@ static void ble_battery_tick(void)
 
 void BLE_Tick(void)
 {
+  /* Chip-reset recovery — runs before any other gating, because we want
+     the recovery to happen even when g_advertising/g_ble_dead are set
+     (they're set when the chip is in a bad state). Synchronous, takes
+     ~3 seconds total; Logger pauses for that window then resumes. */
+  if (g_ble_reset_pending) {
+    extern void ErrLog_Writef(const char *fmt, ...);
+    g_ble_reset_pending = 0;
+    /* Reset connection + subscription + MTU state before re-init. */
+    g_conn_handle        = 0;
+    g_stream_subscribed  = 0;
+    g_battery_subscribed = 0;
+    g_advertising        = 0;
+    g_att_mtu            = 23;
+    ErrLog_Write("*** ble: chip-reset recovery starting (logger pauses ~3s) ***");
+    int rc = BLE_Init();
+    if (rc == 0) {
+      g_ble_dead = 0;
+      ErrLog_Write("*** ble: recovered, advertising as PumpTsueri again ***");
+    } else {
+      ErrLog_Writef("*** ble: recovery FAILED rc=%d — BLE permanently down this session ***", rc);
+      /* g_ble_dead stays 1, no further retries this session. */
+    }
+    return;
+  }
+
   if (!g_advertising) return;
   /* Chip-dead short-circuit. If the BLE side has latched dead (chip
      stuck after stall + failed recovery), skip all BLE work so the
