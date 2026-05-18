@@ -123,6 +123,13 @@ static const uint8_t BLE_BATTERY_UUID[16] = {
 /* ----- State ------------------------------------------------------------- */
 static SPI_HandleTypeDef g_hspi1;
 static uint8_t           g_advertising = 0;
+/* "BLE dead" latch — set when the BlueNRG-LP chip is so stuck that even
+   re-config + re-data + re-enable all fail. Once set, BLE_Tick returns
+   immediately (no event processing, no stream/battery notifies). Logger
+   continues unaffected — this is by deliberate design: a BLE failure
+   must NEVER take down the data-collection path. User notices the box
+   is invisible to nRF/GUI and power-cycles when convenient. */
+static volatile uint8_t  g_ble_dead    = 0;
 
 /* GATT handles captured during BLE_Init from ACI add_service / add_char
    responses. cmd_handle is what the host writes commands to; data_handle
@@ -609,19 +616,17 @@ static void fsm_emergency_exit(int code, const char *why)
     snprintf(buf, sizeof(buf), "fsm: hci_disc=0x%04x rc=%d, re-adv rc=%d",
              ch, hd_rc, adv_rc);
     ErrLog_Write(buf);
-    /* Last resort: if even the full re-enable failed (chip in deep limbo
-       from rapid cycles, NUM_LINKS exhausted, etc.), reboot the whole
-       box. Logger auto-resumes in a new session file, BLE comes back
-       fresh from cold-init, GUI auto-reconnects + offset-resumes. User
-       experience: ~6 s outage, box visible again. Better than indefinite
-       invisibility. The ErrLog_Flush ensures the marker hits disk before
-       the reset. */
+    /* If even the full re-enable failed, the BlueNRG-LP chip is in a
+       state we can't recover from the STM32 side (NUM_LINKS exhausted,
+       internal counter overflow, whatever). Logger has absolute
+       priority over BLE — we do NOT reset the box. Instead: latch the
+       g_ble_dead flag so all BLE activity short-circuits, leaving CPU
+       cycles + IRQ pipeline free for Logger_Tick. User notices the box
+       is invisible to nRF/GUI and power-cycles when convenient (between
+       sessions). Pumpfoil session continues recording unaffected. */
     if (adv_rc != 0) {
-      ErrLog_Write("*** BLE chip stuck — NVIC_SystemReset to recover ***");
-      ErrLog_Flush();
-      HAL_Delay(100);                                /* let SD flush settle */
-      NVIC_SystemReset();
-      /* unreachable */
+      ErrLog_Write("*** BLE chip stuck — disabling BLE, logger continues ***");
+      g_ble_dead = 1;
     }
   }
   g_fsm.state = FSM_IDLE;
@@ -1282,6 +1287,10 @@ static void ble_battery_tick(void)
 void BLE_Tick(void)
 {
   if (!g_advertising) return;
+  /* Chip-dead short-circuit. If the BLE side has latched dead (chip
+     stuck after stall + failed recovery), skip all BLE work so the
+     main loop stays fast for Logger_Tick. Logger has absolute priority. */
+  if (g_ble_dead) return;
 
   /* Stream + battery emit run every tick regardless of pending events —
      they're timers, not event responses. */
