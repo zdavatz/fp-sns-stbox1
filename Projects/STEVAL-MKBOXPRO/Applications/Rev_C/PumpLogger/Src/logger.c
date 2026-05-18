@@ -251,6 +251,31 @@ void Logger_Tick(void)
                     (unsigned long)b, (unsigned long)err);
       ErrLog_Writef("*** module is sending, we can't decode — check UART baud/wiring ***");
     }
+
+    /* Mid-session GPS-death detection + auto-re-init. Triggered by the
+       pumpfoil session today: GPS module's RAM config was lost mid-
+       session (cfg-cfg-save FAIL = no flash-persist, likely brown-out)
+       and reverted from 38400 to 9600 → our UART stayed at 38400 →
+       garbage for the rest of the session, 0 RMC fixes for 2.5 hours.
+       Detection: lines_good grew once, then stopped growing for 2 min.
+       Recovery: call GPS_Init() again (full listen-first re-detection
+       + UBX re-config). Logger pauses ~3 s during re-init — bounded
+       and one-shot per failure event. */
+    static uint32_t s_gps_last_lg            = 0;
+    static uint32_t s_gps_last_lg_growth_ms  = 0;
+    if (s_gps_last_lg_growth_ms == 0) s_gps_last_lg_growth_ms = now_diag;
+    if (lg > s_gps_last_lg) {
+      s_gps_last_lg           = lg;
+      s_gps_last_lg_growth_ms = now_diag;
+    } else if (lg > 0 && (now_diag - s_gps_last_lg_growth_ms) > 120000U) {
+      ErrLog_Writef("*** GPS: lines_good stuck at %lu for 120s — re-init ***",
+                    (unsigned long)lg);
+      int rc = GPS_Init();
+      ErrLog_Writef("*** GPS: re-init rc=%d ***", rc);
+      s_gps_last_lg           = lg;
+      s_gps_last_lg_growth_ms = HAL_GetTick();
+      if (rc == 0) s_gps_broken_announced = 0;   /* allow loud marker to re-fire if needed */
+    }
   }
 }
 
