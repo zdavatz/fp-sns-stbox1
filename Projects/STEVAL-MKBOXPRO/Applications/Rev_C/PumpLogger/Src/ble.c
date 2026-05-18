@@ -503,45 +503,43 @@ static struct {
    re-send aci_gap_set_advertising_configuration + aci_gap_set_advertising_data_nwk
    right before enable, so the chip always has fresh, valid state. The
    re-sets are idempotent — harmless if the state was still good. */
+/* Returns 0 on success, ble_adv_enable's return code on failure.
+   Now logs all three sub-step return codes individually so a failing
+   recovery can be diagnosed without guessing which step broke. */
 static int ble_adv_reenable_full(void)
 {
-  /* Adv config: same payload as in BLE_Init (extended-advertising, legacy
-     PDU type, 100 ms interval, all 3 channels). */
+  extern void ErrLog_Writef(const char *fmt, ...);
+  int cfg_rc, dat_rc, en_rc;
   {
     uint8_t p[27] = {0};
     int i = 0;
-    p[i++] = 0x00;                                  /* handle */
-    p[i++] = 0x02;                                  /* general discoverable */
-    p[i++] = 0x13; p[i++] = 0x00;                   /* event_properties LE */
-    p[i++] = 0xA0; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;  /* int_min */
-    p[i++] = 0xA0; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;  /* int_max */
-    p[i++] = 0x07;                                  /* channel_map */
-    p[i++] = 0x00;                                  /* peer_addr_type */
-    for (int k = 0; k < 6; k++) p[i++] = 0;         /* peer_addr */
-    p[i++] = 0x00;                                  /* filter_policy */
-    p[i++] = 0x00;                                  /* tx_power */
-    p[i++] = 0x01;                                  /* primary phy 1M */
-    p[i++] = 0x00;                                  /* secondary skip */
-    p[i++] = 0x01;                                  /* secondary phy 1M */
-    p[i++] = 0x00;                                  /* SID */
-    p[i++] = 0x00;                                  /* scan_req_notif */
-    (void)ble_aci_cmd(ACI_OP_GAP_SET_ADV_CONFIGURATION, p, (uint16_t)i, NULL, 0);
+    p[i++] = 0x00; p[i++] = 0x02;
+    p[i++] = 0x13; p[i++] = 0x00;
+    p[i++] = 0xA0; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;
+    p[i++] = 0xA0; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;
+    p[i++] = 0x07;
+    p[i++] = 0x00;
+    for (int k = 0; k < 6; k++) p[i++] = 0;
+    p[i++] = 0x00; p[i++] = 0x00;
+    p[i++] = 0x01; p[i++] = 0x00; p[i++] = 0x01;
+    p[i++] = 0x00; p[i++] = 0x00;
+    cfg_rc = ble_aci_cmd(ACI_OP_GAP_SET_ADV_CONFIGURATION, p, (uint16_t)i, NULL, 0);
   }
-  /* Adv data: same Flags + Complete-Local-Name payload as in BLE_Init. */
   {
     uint8_t p[64];
     int i = 0;
-    p[i++] = 0x00;                                  /* handle */
-    p[i++] = 0x03;                                  /* complete data */
+    p[i++] = 0x00; p[i++] = 0x03;
     uint8_t name_len = (uint8_t)BLE_ADV_NAME_LEN;
     uint8_t data_len = 3 + (2 + name_len);
     p[i++] = data_len;
-    p[i++] = 0x02; p[i++] = 0x01; p[i++] = 0x06;    /* Flags AD */
+    p[i++] = 0x02; p[i++] = 0x01; p[i++] = 0x06;
     p[i++] = (uint8_t)(1 + name_len); p[i++] = 0x09;
     memcpy(&p[i], BLE_ADV_NAME, name_len); i += name_len;
-    (void)ble_aci_cmd(ACI_OP_GAP_SET_ADV_DATA_NWK, p, (uint16_t)i, NULL, 0);
+    dat_rc = ble_aci_cmd(ACI_OP_GAP_SET_ADV_DATA_NWK, p, (uint16_t)i, NULL, 0);
   }
-  return ble_adv_enable();
+  en_rc = ble_adv_enable();
+  ErrLog_Writef("ble: re-adv detail cfg=%d data=%d en=%d", cfg_rc, dat_rc, en_rc);
+  return en_rc;
 }
 
 /* Force the chip to drop the current connection. Fire-and-forget — the
@@ -611,6 +609,20 @@ static void fsm_emergency_exit(int code, const char *why)
     snprintf(buf, sizeof(buf), "fsm: hci_disc=0x%04x rc=%d, re-adv rc=%d",
              ch, hd_rc, adv_rc);
     ErrLog_Write(buf);
+    /* Last resort: if even the full re-enable failed (chip in deep limbo
+       from rapid cycles, NUM_LINKS exhausted, etc.), reboot the whole
+       box. Logger auto-resumes in a new session file, BLE comes back
+       fresh from cold-init, GUI auto-reconnects + offset-resumes. User
+       experience: ~6 s outage, box visible again. Better than indefinite
+       invisibility. The ErrLog_Flush ensures the marker hits disk before
+       the reset. */
+    if (adv_rc != 0) {
+      ErrLog_Write("*** BLE chip stuck — NVIC_SystemReset to recover ***");
+      ErrLog_Flush();
+      HAL_Delay(100);                                /* let SD flush settle */
+      NVIC_SystemReset();
+      /* unreachable */
+    }
   }
   g_fsm.state = FSM_IDLE;
 }
