@@ -138,6 +138,14 @@ static volatile uint8_t  g_ble_dead    = 0;
    again, GUI auto-reconnects with offset-resume. After failed recovery:
    g_ble_dead stays set, no further retries. */
 static volatile uint8_t  g_ble_reset_pending = 0;
+/* Stale-connection detection: HAL_GetTick() of last peer-initiated event
+   (connect, attribute write). When connected + FSM idle + this timestamp
+   is older than 30 s, the peer has silently gone away (Mac BT killed,
+   GUI quit, etc.) without a clean LL disconnect. Detected case: peer
+   subscribed but never sends another command, chip slowly degrades
+   into rc=211 state without our FSM ever triggering recovery. Solution:
+   force a disconnect + chip reset to bring the box back to discoverable. */
+static volatile uint32_t g_last_peer_activity_ms = 0;
 
 /* GATT handles captured during BLE_Init from ACI add_service / add_char
    responses. cmd_handle is what the host writes commands to; data_handle
@@ -1331,6 +1339,27 @@ void BLE_Tick(void)
      main loop stays fast for Logger_Tick. Logger has absolute priority. */
   if (g_ble_dead) return;
 
+  /* Stale-connection detection. If we're connected + FSM idle + no peer
+     activity in 30 s, the peer silently went away (GUI quit, Mac BT
+     killed, app backgrounded) without a clean LL disconnect. Chip stays
+     "connected" → no re-advertising → box invisible to nRF. After Build
+     #62's test showed exactly this pattern with no FSM stall to trigger
+     normal recovery, schedule a chip-reset here too. */
+  if (g_conn_handle != 0 && g_fsm.state == FSM_IDLE) {
+    uint32_t now = HAL_GetTick();
+    if ((now - g_last_peer_activity_ms) > 30000U) {
+      ErrLog_Write("*** ble: stale connection (30s silent) — forcing reset ***");
+      ble_hci_disconnect(g_conn_handle, 0x13);   /* best-effort */
+      g_conn_handle           = 0;
+      g_stream_subscribed     = 0;
+      g_battery_subscribed    = 0;
+      g_ble_dead              = 1;
+      g_ble_reset_pending     = 1;
+      g_last_peer_activity_ms = now;             /* avoid retrigger */
+      return;
+    }
+  }
+
   /* Stream + battery emit run every tick regardless of pending events —
      they're timers, not event responses. */
   ble_stream_tick();
@@ -1360,6 +1389,7 @@ void BLE_Tick(void)
         uint8_t  st = evt[4];
         uint16_t ch = (uint16_t)(evt[5] | (evt[6] << 8));
         g_conn_handle = ch;
+        g_last_peer_activity_ms = HAL_GetTick();
         snprintf(buf, sizeof(buf), "ble: connected st=%d conn=0x%04x sub=0x%02x",
                  st, ch, evt[3]);
         ErrLog_Write(buf);
@@ -1409,6 +1439,7 @@ void BLE_Tick(void)
         uint16_t attr = (uint16_t)(evt[8]  | (evt[9]  << 8));
         uint16_t dlen = (uint16_t)(evt[10] | (evt[11] << 8));
         uint8_t  op   = (n >= 13) ? evt[12] : 0;
+        g_last_peer_activity_ms = HAL_GetTick();
         snprintf(buf, sizeof(buf), "ble: write attr=0x%04x dlen=%u op=0x%02x",
                  attr, dlen, op);
         ErrLog_Write(buf);
