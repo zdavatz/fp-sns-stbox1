@@ -493,7 +493,7 @@ static int list_emit_cb(const char *name, uint32_t size, void *user)
    power-management hiccups without false "stall" aborts. Real
    peer-gone (disconnect / out-of-range) still gets caught within
    reason, just slightly slower. */
-#define FSM_READ_DEADLINE_MS   600000
+#define FSM_READ_DEADLINE_MS  1800000   /* 30 min — Build #64 test hit 600s on a clean 5 MB run; user wants room for full 50 MB syncs */
 #define FSM_STALL_DEADLINE_MS   15000
 
 /* Per-chunk notify budget INSIDE fsm_advance. Short on purpose: each
